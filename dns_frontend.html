@@ -17,6 +17,8 @@ button{padding:6px 10px;margin:4px 2px;}
 table{width:100%;border-collapse:collapse;margin-top:8px;}
 th,td{border:1px solid #ddd;padding:6px;text-align:left;}
 #historyBox{height:220px;overflow:auto;background:#fff;border:1px solid #ddd;padding:8px;}
+.domain-table input{width:70%;}
+.domain-table select{width:25%;}
 </style>
 </head>
 <body>
@@ -24,13 +26,16 @@ th,td{border:1px solid #ddd;padding:6px;text-align:left;}
   <button id="menuSettings">Settings</button>
   <button id="menuStatus">Status</button>
   <button id="menuQuery">Query</button>
+  <button id="menuIPs">All IPs</button>
 </nav>
 
 <div id="settings" class="section">
   <h3>Settings</h3>
-  <label>Domains (one per line)
-    <textarea id="domains" rows="4" placeholder="example.com"></textarea>
-  </label>
+  <table class="domain-table" id="domainTable">
+    <thead><tr><th>Domain</th><th>Type</th><th>TXT Decode</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <button id="addDomain">Add Domain</button>
   <label>Servers (comma separated)
     <input id="servers" type="text" />
   </label>
@@ -46,7 +51,7 @@ th,td{border:1px solid #ddd;padding:6px;text-align:left;}
 <div id="status" class="section">
   <h3>Current Status</h3>
   <table id="resultsTable">
-    <thead><tr><th>Domain</th><th>Server</th><th>IPs (last seen)</th><th>Last Seen</th><th>History</th></tr></thead>
+    <thead><tr><th>Domain</th><th>Type</th><th>Server</th><th>Values</th><th>Decoded IPs</th><th>Last Seen</th><th>History</th></tr></thead>
     <tbody></tbody>
   </table>
   <h4>Domain History</h4>
@@ -54,29 +59,76 @@ th,td{border:1px solid #ddd;padding:6px;text-align:left;}
 </div>
 
 <div id="query" class="section">
-  <h3>Query by IP</h3>
-  <label>IP to search
-    <input id="queryIp" type="text" placeholder="1.2.3.4" />
+  <h3>Query</h3>
+  <label>Search value (IP or TXT fragment)
+    <input id="queryValue" type="text" placeholder="1.2.3.4 or example-txt" />
   </label>
   <button id="doQuery">Search</button>
   <div id="queryResult"></div>
 </div>
 
+<div id="ips" class="section">
+  <h3>All IPs</h3>
+  <table id="ipsTable">
+    <thead><tr><th>IP</th><th>Domains</th><th>Count</th><th>Last Seen</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+
 <script>
 function showSection(name){
-  ['settings','status','query'].forEach(id=>{
-    document.getElementById(id).classList.remove('active');
-  });
+  ['settings','status','query','ips'].forEach(id=>document.getElementById(id).classList.remove('active'));
   document.getElementById(name).classList.add('active');
 }
 document.getElementById('menuSettings').onclick = ()=> showSection('settings');
 document.getElementById('menuStatus').onclick = ()=> showSection('status');
 document.getElementById('menuQuery').onclick = ()=> showSection('query');
+document.getElementById('menuIPs').onclick = ()=> showSection('ips');
 
 function log(msg){ document.getElementById('log').textContent += msg + "\n"; }
-function parseDomainsFromTextarea() {
-  const raw = document.getElementById('domains').value || '';
-  return raw.replace(/\r/g,'').split(/[\n,]+/).map(s=>s.trim()).filter(Boolean);
+
+function addDomainRow(obj){
+  const tbody = document.querySelector('#domainTable tbody');
+  const tr = document.createElement('tr');
+  const tdName = document.createElement('td');
+  const inp = document.createElement('input'); inp.type='text'; inp.value = obj && obj.name ? obj.name : '';
+  tdName.appendChild(inp);
+  const tdType = document.createElement('td');
+  const sel = document.createElement('select');
+  ['A','TXT'].forEach(t=>{ const o = document.createElement('option'); o.value=t; o.text=t; sel.appendChild(o); });
+  if(obj && obj.type) sel.value = obj.type.toUpperCase();
+  tdType.appendChild(sel);
+  const tdDecode = document.createElement('td');
+  const selDecode = document.createElement('select');
+  // 옵션은 백엔드와 동일하게 맞춰야 함
+  ['cafebabe_xor_base64','plain_base64','btea_variant'].forEach(t=>{
+    const o = document.createElement('option'); o.value=t; o.text=t; selDecode.appendChild(o);
+  });
+  if(obj && obj.txt_decode) selDecode.value = obj.txt_decode;
+  tdDecode.appendChild(selDecode);
+  const tdBtn = document.createElement('td');
+  const del = document.createElement('button'); del.textContent='Delete'; del.onclick = ()=> { tr.remove(); };
+  tdBtn.appendChild(del);
+  tr.appendChild(tdName); tr.appendChild(tdType); tr.appendChild(tdDecode); tr.appendChild(tdBtn);
+  tbody.appendChild(tr);
+}
+
+document.getElementById('addDomain').onclick = ()=> addDomainRow();
+
+function collectDomainsFromUI(){
+  const rows = document.querySelectorAll('#domainTable tbody tr');
+  const out = [];
+  rows.forEach(r=>{
+    const name = (r.querySelector('input').value||'').trim();
+    const typ = (r.querySelector('select').value||'A').toUpperCase();
+    const txt_decode = r.querySelectorAll('select')[1].value;
+    if(name) {
+      const obj = {name: name, type: typ};
+      if(typ === 'TXT') obj.txt_decode = txt_decode;
+      out.push(obj);
+    }
+  });
+  return out;
 }
 
 async function loadCfg(){
@@ -84,7 +136,11 @@ async function loadCfg(){
     const r = await fetch('/config');
     if(!r.ok){ log('Failed to load config'); return; }
     const j = await r.json();
-    document.getElementById('domains').value = (j.domains||[]).join('\n');
+    document.querySelector('#domainTable tbody').innerHTML = '';
+    (j.domains||[]).forEach(d=>{
+      if(typeof d === 'string') addDomainRow({name:d, type:'A'});
+      else addDomainRow(d);
+    });
     document.getElementById('servers').value = (j.servers||[]).join(',');
     document.getElementById('interval').value = j.interval || 60;
     log('Loaded config');
@@ -94,7 +150,7 @@ document.getElementById('load').onclick = loadCfg;
 
 document.getElementById('save').onclick = async ()=>{
   const payload = {
-    domains: parseDomainsFromTextarea(),
+    domains: collectDomainsFromUI(),
     servers: document.getElementById('servers').value.split(',').map(s=>s.trim()).filter(Boolean),
     interval: parseInt(document.getElementById('interval').value) || 60
   };
@@ -106,7 +162,7 @@ document.getElementById('save').onclick = async ()=>{
 };
 
 document.getElementById('force').onclick = async ()=>{
-  const domains = parseDomainsFromTextarea();
+  const domains = collectDomainsFromUI();
   try{
     const r = await fetch('/resolve', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({domains: domains})});
     const j = await r.json();
@@ -128,14 +184,16 @@ async function refreshResults(){
         const info = srvMap[srv];
         const tr = document.createElement('tr');
         const tdDomain = document.createElement('td'); tdDomain.textContent = d;
+        const tdType = document.createElement('td'); tdType.textContent = info.type || 'A';
         const tdSrv = document.createElement('td'); tdSrv.textContent = srv;
-        const tdIps = document.createElement('td'); tdIps.textContent = (info.ips||[]).join(', ');
+        const tdVals = document.createElement('td'); tdVals.textContent = (info.values||[]).join(' | ');
+        const tdDecoded = document.createElement('td'); tdDecoded.textContent = (info.decoded_ips||[]).join(', ');
         const tdTs = document.createElement('td'); tdTs.textContent = info.ts ? new Date(info.ts*1000).toISOString() : '-';
-        const tdHist = document.createElement('td'); 
+        const tdHist = document.createElement('td');
         const btn = document.createElement('button'); btn.textContent='History';
         btn.onclick = ()=> loadHistory(d);
         tdHist.appendChild(btn);
-        tr.appendChild(tdDomain); tr.appendChild(tdSrv); tr.appendChild(tdIps); tr.appendChild(tdTs); tr.appendChild(tdHist);
+        tr.appendChild(tdDomain); tr.appendChild(tdType); tr.appendChild(tdSrv); tr.appendChild(tdVals); tr.appendChild(tdDecoded); tr.appendChild(tdTs); tr.appendChild(tdHist);
         tbody.appendChild(tr);
       });
     });
@@ -156,9 +214,9 @@ async function loadHistory(domain){
     const lines = arr.map(h=>{
       const t = new Date(h.ts*1000).toISOString();
       if(h.new && h.old){
-        return `${t} [${h.server}] ${ (h.old.ips||[]).join(',') } -> ${ (h.new.ips||[]).join(',') }`;
-      } else if(h.ips){
-        return `${t} [${h.server}] ${ (h.ips||[]).join(',') }`;
+        return `${t} [${h.server}] (${h.type}) ${ (h.old.values||[]).join(',') } -> ${ (h.new.values||[]).join(',') }`;
+      } else if(h.values){
+        return `${t} [${h.server}] (${h.type}) ${ (h.values||[]).join(',') }`;
       } else {
         return JSON.stringify(h);
       }
@@ -168,37 +226,69 @@ async function loadHistory(domain){
 }
 
 document.getElementById('doQuery').onclick = async ()=>{
-  const ip = document.getElementById('queryIp').value.trim();
-  if(!ip){ alert('Enter IP'); return; }
-  try{
-    const r = await fetch('/ip?ip='+encodeURIComponent(ip));
-    if(!r.ok){ document.getElementById('queryResult').textContent = 'Query failed'; return; }
+  const v = document.getElementById('queryValue').value.trim();
+  if(!v){ alert('Enter search value'); return; }
+  // try IP first via /ip, then fallback to scanning /results/history via backend? use /ip for IPs only
+  const ipPattern = /^(\d{1,3}\.){3}\d{1,3}$/;
+  if(ipPattern.test(v)){
+    const r = await fetch('/ip?ip='+encodeURIComponent(v));
     const j = await r.json();
-    const matches = j.matches || [];
-    if(matches.length === 0){
-      document.getElementById('queryResult').textContent = 'No matches for ' + ip;
-      return;
-    }
-    const out = matches.map(m=>{
-      const t = m.ts ? new Date(m.ts*1000).toISOString() : '-';
-      if(m.type === 'current'){
-        return `[CURRENT] ${t} ${m.domain}@${m.server} -> ${ (m.ips||[]).join(', ') }`;
-      } else {
-        if(m.new){
-          return `[HISTORY] ${t} ${m.domain}@${m.server} -> ${ (m.old.ips||[]).join(', ') } -> ${ (m.new.ips||[]).join(', ') }`;
-        } else if(m.ips){
-          return `[HISTORY] ${t} ${m.domain}@${m.server} -> ${ (m.ips||[]).join(', ') }`;
-        } else {
-          return JSON.stringify(m);
+    document.getElementById('queryResult').textContent = JSON.stringify(j, null, 2);
+  } else {
+    // search value across history/current by fetching /results + /history client-side (simple approach)
+    const r1 = await fetch('/results'); const res = await r1.json();
+    const matches = [];
+    for(const d of Object.keys(res.results||{})){
+      const srvMap = res.results[d];
+      for(const s of Object.keys(srvMap)){
+        const info = srvMap[s];
+        if((info.values||[]).some(x=>x.includes(v))){
+          matches.push({domain:d, server:s, type:info.type, ts:info.ts, values:info.values});
         }
       }
-    }).join('\n');
-    document.getElementById('queryResult').textContent = out;
-  }catch(e){ document.getElementById('queryResult').textContent = 'Error: '+e; }
+    }
+    // also check histories
+    const r2 = await fetch('/history?domain=ALL'); // not implemented server-side to return all; instead fetch each domain
+    // fallback: fetch history per domain from results list
+    const histMatches = [];
+    for(const d of Object.keys(res.results||{})){
+      const hresp = await fetch('/history?domain='+encodeURIComponent(d));
+      const hj = await hresp.json();
+      (hj.history||[]).forEach(ev=>{
+        if(ev.new && (ev.new.values||[]).some(x=>x.includes(v)) || ev.old && (ev.old.values||[]).some(x=>x.includes(v))){
+          histMatches.push({domain:d, server:ev.server, ts:ev.ts, old:ev.old, new:ev.new});
+        } else if(ev.values && (ev.values||[]).some(x=>x.includes(v))){
+          histMatches.push({domain:d, server:ev.server, ts:ev.ts, values:ev.values});
+        }
+      });
+    }
+    document.getElementById('queryResult').textContent = JSON.stringify({current:matches, history:histMatches}, null, 2);
+  }
 };
 
+async function refreshIPs(){
+  try{
+    const r = await fetch('/ips');
+    if(!r.ok) return;
+    const j = await r.json();
+    const tbody = document.querySelector('#ipsTable tbody');
+    tbody.innerHTML = '';
+    const arr = j.ips || [];
+    arr.forEach(it=>{
+      const tr = document.createElement('tr');
+      const tdIp = document.createElement('td'); tdIp.textContent = it.ip;
+      const tdDomains = document.createElement('td'); tdDomains.textContent = (it.domains||[]).join(', ');
+      const tdCount = document.createElement('td'); tdCount.textContent = it.count;
+      const tdTs = document.createElement('td'); tdTs.textContent = it.last_ts ? new Date(it.last_ts*1000).toISOString() : '-';
+      tr.appendChild(tdIp); tr.appendChild(tdDomains); tr.appendChild(tdCount); tr.appendChild(tdTs);
+      tbody.appendChild(tr);
+    });
+  }catch(e){ console.log('refreshIPs error', e); }
+}
+
 setInterval(refreshResults, 5000);
-window.onload = function(){ showSection('settings'); loadCfg(); refreshResults(); };
+setInterval(refreshIPs, 5000);
+window.onload = function(){ showSection('settings'); loadCfg(); refreshResults(); refreshIPs(); };
 </script>
 </body>
 </html>
