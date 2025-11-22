@@ -1,0 +1,10 @@
+{
+  "domains": [
+    "sample.exe"
+  ],
+  "servers": [
+    "8.8.8.8",
+    "1.1.1.1"
+  ],
+  "interval": 1
+}
