@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DNS Monitor</title>
+<style>
+body{font-family: Arial, sans-serif;max-width:1000px;margin:20px;}
+nav{margin-bottom:12px;}
+nav button{margin-right:6px;padding:6px 10px;}
+.section{display:none;}
+.section.active{display:block;}
+label{display:block;margin:8px 0;}
+textarea,input[type=text], input[type=number]{width:100%;padding:6px;}
+button{padding:6px 10px;margin:4px 2px;}
+#log{background:#f5f5f5;padding:8px;height:120px;overflow:auto;}
+table{width:100%;border-collapse:collapse;margin-top:8px;}
+th,td{border:1px solid #ddd;padding:6px;text-align:left;}
+#historyBox{height:220px;overflow:auto;background:#fff;border:1px solid #ddd;padding:8px;}
+</style>
+</head>
+<body>
+<nav>
+  <button id="menuSettings">Settings</button>
+  <button id="menuStatus">Status</button>
+  <button id="menuQuery">Query</button>
+</nav>
+
+<div id="settings" class="section">
+  <h3>Settings</h3>
+  <label>Domains (one per line)
+    <textarea id="domains" rows="4" placeholder="example.com"></textarea>
+  </label>
+  <label>Servers (comma separated)
+    <input id="servers" type="text" />
+  </label>
+  <label>Interval (seconds)
+    <input id="interval" type="number" min="1" />
+  </label>
+  <button id="load">Load</button>
+  <button id="save">Save</button>
+  <button id="force">Force Resolve</button>
+  <pre id="log"></pre>
+</div>
+
+<div id="status" class="section">
+  <h3>Current Status</h3>
+  <table id="resultsTable">
+    <thead><tr><th>Domain</th><th>Server</th><th>IPs (last seen)</th><th>Last Seen</th><th>History</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <h4>Domain History</h4>
+  <div id="historyBox">Select a domain's "History" button to view events.</div>
+</div>
+
+<div id="query" class="section">
+  <h3>Query by IP</h3>
+  <label>IP to search
+    <input id="queryIp" type="text" placeholder="1.2.3.4" />
+  </label>
+  <button id="doQuery">Search</button>
+  <div id="queryResult"></div>
+</div>
+
+<script>
+function showSection(name){
+  ['settings','status','query'].forEach(id=>{
+    document.getElementById(id).classList.remove('active');
+  });
+  document.getElementById(name).classList.add('active');
+}
+document.getElementById('menuSettings').onclick = ()=> showSection('settings');
+document.getElementById('menuStatus').onclick = ()=> showSection('status');
+document.getElementById('menuQuery').onclick = ()=> showSection('query');
+
+function log(msg){ document.getElementById('log').textContent += msg + "\n"; }
+function parseDomainsFromTextarea() {
+  const raw = document.getElementById('domains').value || '';
+  return raw.replace(/\r/g,'').split(/[\n,]+/).map(s=>s.trim()).filter(Boolean);
+}
+
+async function loadCfg(){
+  try{
+    const r = await fetch('/config');
+    if(!r.ok){ log('Failed to load config'); return; }
+    const j = await r.json();
+    document.getElementById('domains').value = (j.domains||[]).join('\n');
+    document.getElementById('servers').value = (j.servers||[]).join(',');
+    document.getElementById('interval').value = j.interval || 60;
+    log('Loaded config');
+  }catch(e){ log('Error:'+e); }
+}
+document.getElementById('load').onclick = loadCfg;
+
+document.getElementById('save').onclick = async ()=>{
+  const payload = {
+    domains: parseDomainsFromTextarea(),
+    servers: document.getElementById('servers').value.split(',').map(s=>s.trim()).filter(Boolean),
+    interval: parseInt(document.getElementById('interval').value) || 60
+  };
+  try{
+    const r = await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const j = await r.json();
+    log('Saved: ' + JSON.stringify(j));
+  }catch(e){ log('Save error:'+e); }
+};
+
+document.getElementById('force').onclick = async ()=>{
+  const domains = parseDomainsFromTextarea();
+  try{
+    const r = await fetch('/resolve', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({domains: domains})});
+    const j = await r.json();
+    log('Force requested: '+JSON.stringify(j));
+    await refreshResults();
+  }catch(e){ log('Force error:'+e); }
+};
+
+async function refreshResults(){
+  try{
+    const r = await fetch('/results'); if(!r.ok) return;
+    const j = await r.json();
+    const tbody = document.querySelector('#resultsTable tbody');
+    tbody.innerHTML = '';
+    const results = j.results || {};
+    Object.keys(results).sort().forEach(d=>{
+      const srvMap = results[d];
+      Object.keys(srvMap).forEach(srv=>{
+        const info = srvMap[srv];
+        const tr = document.createElement('tr');
+        const tdDomain = document.createElement('td'); tdDomain.textContent = d;
+        const tdSrv = document.createElement('td'); tdSrv.textContent = srv;
+        const tdIps = document.createElement('td'); tdIps.textContent = (info.ips||[]).join(', ');
+        const tdTs = document.createElement('td'); tdTs.textContent = info.ts ? new Date(info.ts*1000).toISOString() : '-';
+        const tdHist = document.createElement('td'); 
+        const btn = document.createElement('button'); btn.textContent='History';
+        btn.onclick = ()=> loadHistory(d);
+        tdHist.appendChild(btn);
+        tr.appendChild(tdDomain); tr.appendChild(tdSrv); tr.appendChild(tdIps); tr.appendChild(tdTs); tr.appendChild(tdHist);
+        tbody.appendChild(tr);
+      });
+    });
+  }catch(e){ console.log('refresh error', e); }
+}
+
+async function loadHistory(domain){
+  try{
+    const r = await fetch('/history?domain='+encodeURIComponent(domain));
+    if(!r.ok) { log('history load failed'); return; }
+    const j = await r.json();
+    const el = document.getElementById('historyBox');
+    const arr = j.history || [];
+    if(arr.length === 0) {
+      el.textContent = 'No history for ' + domain;
+      return;
+    }
+    const lines = arr.map(h=>{
+      const t = new Date(h.ts*1000).toISOString();
+      if(h.new && h.old){
+        return `${t} [${h.server}] ${ (h.old.ips||[]).join(',') } -> ${ (h.new.ips||[]).join(',') }`;
+      } else if(h.ips){
+        return `${t} [${h.server}] ${ (h.ips||[]).join(',') }`;
+      } else {
+        return JSON.stringify(h);
+      }
+    });
+    el.textContent = 'History for ' + domain + '\n' + lines.join('\n');
+  }catch(e){ log('history error:'+e); }
+}
+
+document.getElementById('doQuery').onclick = async ()=>{
+  const ip = document.getElementById('queryIp').value.trim();
+  if(!ip){ alert('Enter IP'); return; }
+  try{
+    const r = await fetch('/ip?ip='+encodeURIComponent(ip));
+    if(!r.ok){ document.getElementById('queryResult').textContent = 'Query failed'; return; }
+    const j = await r.json();
+    const matches = j.matches || [];
+    if(matches.length === 0){
+      document.getElementById('queryResult').textContent = 'No matches for ' + ip;
+      return;
+    }
+    const out = matches.map(m=>{
+      const t = m.ts ? new Date(m.ts*1000).toISOString() : '-';
+      if(m.type === 'current'){
+        return `[CURRENT] ${t} ${m.domain}@${m.server} -> ${ (m.ips||[]).join(', ') }`;
+      } else {
+        if(m.new){
+          return `[HISTORY] ${t} ${m.domain}@${m.server} -> ${ (m.old.ips||[]).join(', ') } -> ${ (m.new.ips||[]).join(', ') }`;
+        } else if(m.ips){
+          return `[HISTORY] ${t} ${m.domain}@${m.server} -> ${ (m.ips||[]).join(', ') }`;
+        } else {
+          return JSON.stringify(m);
+        }
+      }
+    }).join('\n');
+    document.getElementById('queryResult').textContent = out;
+  }catch(e){ document.getElementById('queryResult').textContent = 'Error: '+e; }
+};
+
+setInterval(refreshResults, 5000);
+window.onload = function(){ showSection('settings'); loadCfg(); refreshResults(); };
+</script>
+</body>
+</html>
