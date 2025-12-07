@@ -136,15 +136,20 @@ async function loadCfg(){
     const r = await fetch('/config');
     if(!r.ok){ log('Failed to load config'); return; }
     const j = await r.json();
+    if(!j) { log('Invalid config response'); return; }
     document.querySelector('#domainTable tbody').innerHTML = '';
-    (j.domains||[]).forEach(d=>{
-      if(typeof d === 'string') addDomainRow({name:d, type:'A'});
-      else addDomainRow(d);
-    });
-    document.getElementById('servers').value = (j.servers||[]).join(',');
+    const domains = j.domains || [];
+    if(Array.isArray(domains)) {
+      domains.forEach(d=>{
+        if(typeof d === 'string') addDomainRow({name:d, type:'A'});
+        else if(typeof d === 'object') addDomainRow(d);
+      });
+    }
+    const servers = j.servers || [];
+    document.getElementById('servers').value = (Array.isArray(servers) ? servers : []).join(',');
     document.getElementById('interval').value = j.interval || 60;
     log('Loaded config');
-  }catch(e){ log('Error:'+e); }
+  }catch(e){ log('Config load error:'+e); }
 }
 document.getElementById('load').onclick = loadCfg;
 
@@ -173,15 +178,21 @@ document.getElementById('force').onclick = async ()=>{
 
 async function refreshResults(){
   try{
-    const r = await fetch('/results'); if(!r.ok) return;
+    const r = await fetch('/results'); 
+    if(!r.ok) {
+      console.error('refreshResults: HTTP error', r.status);
+      return;
+    }
     const j = await r.json();
     const tbody = document.querySelector('#resultsTable tbody');
     tbody.innerHTML = '';
     const results = j.results || {};
     Object.keys(results).sort().forEach(d=>{
       const srvMap = results[d];
+      if(typeof srvMap !== 'object') return;
       Object.keys(srvMap).forEach(srv=>{
         const info = srvMap[srv];
+        if(typeof info !== 'object') return;
         const tr = document.createElement('tr');
         const tdDomain = document.createElement('td'); tdDomain.textContent = d;
         const tdType = document.createElement('td'); tdType.textContent = info.type || 'A';
@@ -206,22 +217,34 @@ async function loadHistory(domain){
     if(!r.ok) { log('history load failed'); return; }
     const j = await r.json();
     const el = document.getElementById('historyBox');
-    const arr = j.history || [];
-    if(arr.length === 0) {
-      el.textContent = 'No history for ' + domain;
+    // j.history는 { meta: {...}, events: [...], current: {...} } 형식
+    const hist = j.history || {};
+    const events = hist.events || [];
+    const meta = hist.meta || {};
+    
+    if(!events || events.length === 0) {
+      el.textContent = 'No history for ' + domain + 
+        (meta.first_seen ? '\nFirst seen: ' + new Date(meta.first_seen*1000).toISOString() : '') +
+        (meta.last_changed ? '\nLast changed: ' + new Date(meta.last_changed*1000).toISOString() : '');
       return;
     }
-    const lines = arr.map(h=>{
+    
+    const lines = ['History for ' + domain];
+    if(meta.first_seen) lines.push('First seen: ' + new Date(meta.first_seen*1000).toISOString());
+    if(meta.last_changed) lines.push('Last changed: ' + new Date(meta.last_changed*1000).toISOString());
+    lines.push('---');
+    
+    events.forEach(h=>{
       const t = new Date(h.ts*1000).toISOString();
       if(h.new && h.old){
-        return `${t} [${h.server}] (${h.type}) ${ (h.old.values||[]).join(',') } -> ${ (h.new.values||[]).join(',') }`;
+        lines.push(`${t} [${h.server}] (${h.type}) ${ (h.old.values||[]).join(',') } -> ${ (h.new.values||[]).join(',') }`);
       } else if(h.values){
-        return `${t} [${h.server}] (${h.type}) ${ (h.values||[]).join(',') }`;
+        lines.push(`${t} [${h.server}] (${h.type}) ${ (h.values||[]).join(',') }`);
       } else {
-        return JSON.stringify(h);
+        lines.push(JSON.stringify(h));
       }
     });
-    el.textContent = 'History for ' + domain + '\n' + lines.join('\n');
+    el.textContent = lines.join('\n');
   }catch(e){ log('history error:'+e); }
 }
 
@@ -269,16 +292,24 @@ document.getElementById('doQuery').onclick = async ()=>{
 async function refreshIPs(){
   try{
     const r = await fetch('/ips');
-    if(!r.ok) return;
+    if(!r.ok) {
+      console.error('refreshIPs: HTTP error', r.status);
+      return;
+    }
     const j = await r.json();
     const tbody = document.querySelector('#ipsTable tbody');
     tbody.innerHTML = '';
     const arr = j.ips || [];
+    if(!Array.isArray(arr)) {
+      console.error('refreshIPs: ips is not an array', arr);
+      return;
+    }
     arr.forEach(it=>{
+      if(typeof it !== 'object') return;
       const tr = document.createElement('tr');
-      const tdIp = document.createElement('td'); tdIp.textContent = it.ip;
+      const tdIp = document.createElement('td'); tdIp.textContent = it.ip || '';
       const tdDomains = document.createElement('td'); tdDomains.textContent = (it.domains||[]).join(', ');
-      const tdCount = document.createElement('td'); tdCount.textContent = it.count;
+      const tdCount = document.createElement('td'); tdCount.textContent = it.count || 0;
       const tdTs = document.createElement('td'); tdTs.textContent = it.last_ts ? new Date(it.last_ts*1000).toISOString() : '-';
       tr.appendChild(tdIp); tr.appendChild(tdDomains); tr.appendChild(tdCount); tr.appendChild(tdTs);
       tbody.appendChild(tr);
