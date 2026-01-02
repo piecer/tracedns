@@ -4,6 +4,7 @@ TXT 레코드 디코딩 기능 모듈
 """
 import base64
 import struct
+import re
 
 
 # TXT 디코딩 방식 레지스트리
@@ -13,7 +14,7 @@ TXT_DECODE_METHODS = {}
 def txt_decode_register(name):
     """
     TXT 디코딩 방식을 등록하는 데코레이터입니다.
-    
+
     Args:
         name (str): 디코딩 방식의 이름
     """
@@ -91,7 +92,7 @@ def _key_u32_le(key: bytes):
 def _btea_decrypt_variant(buf: bytearray, k32):
     """
     변형 XXTEA 복호화 (스크립트 로직 반영)
-    
+
     Args:
         buf (bytearray): 복호화할 데이터 (in-place)
         k32 (list): 4개의 32비트 정수 키
@@ -133,11 +134,11 @@ def _b64decode_pad(s: str) -> bytes:
 def decode_txt_token(token: str, key: str = "bL8U5QfWAbQN6mPX") -> bytes:
     """
     토큰을 복호화합니다.
-    
+
     Args:
         token (str): base64 인코딩된 토큰
         key (str): 복호화 키 (기본값: "bL8U5QfWAbQN6mPX")
-    
+
     Returns:
         bytes: 복호화된 데이터
     """
@@ -158,12 +159,6 @@ def decode_txt_token(token: str, key: str = "bL8U5QfWAbQN6mPX") -> bytes:
 def try_parse_ipv4_ascii(b: bytes) -> str:
     """
     바이트를 ASCII IPv4 주소로 파싱합니다.
-    
-    Args:
-        b (bytes): 파싱할 데이터
-    
-    Returns:
-        str: IPv4 주소 문자열 또는 빈 문자열
     """
     try:
         s = b.decode("ascii")
@@ -181,14 +176,6 @@ def decode_txt_btea_variant(txt_values, key='bL8U5QfWAbQN6mPX'):
     제공하신 스크립트 로직을 반영한 디코더.
     - 각 토큰을 base64->(조건부)변형-XXTEA 복호화->NUL 제거
     - plaintext가 ascii IPv4면 그대로 추가
-    - 그렇지 않지만 4바이트 블록이면 BE/LE 후보 IP들을 추가(보조)
-    
-    Args:
-        txt_values (list): TXT 레코드 값 리스트
-        key (str): 복호화 키 (기본값: "bL8U5QfWAbQN6mPX")
-    
-    Returns:
-        list: 디코딩된 IP 주소 리스트
     """
     out = []
     seen = set()
@@ -204,24 +191,17 @@ def decode_txt_btea_variant(txt_values, key='bL8U5QfWAbQN6mPX'):
                 decoded = decode_txt_token(s, key=key)
             except Exception:
                 continue
-            # ASCII IPv4 직접 검사
+
             ip = try_parse_ipv4_ascii(decoded)
-            if ip:
-                # BE/LE 변환도 추가
-                parts = ip.split('.')
-                if len(parts) == 4:
-                    le_ip = f"{parts[2]}.{parts[3]}.{parts[0]}.{parts[1]}"
-                    if le_ip not in seen:
-                        seen.add(le_ip)
-                        out.append(le_ip)
+            if ip and ip not in seen:
+                seen.add(ip)
+                out.append(ip)
                 continue
 
-            # 마지막으로, decoded 텍스트에 마침표가 있고 숫자 조합이라면 시도해봄
             try:
                 txt = decoded.decode('ascii', errors='ignore')
                 parts_ip = txt.split('.')
                 if len(parts_ip) == 4 and all(p.isdigit() for p in parts_ip):
-                    # rotate? 스크립트에서는 회전하지 않으므로 그대로 사용
                     if txt not in seen:
                         seen.add(txt)
                         out.append(txt)
@@ -230,18 +210,114 @@ def decode_txt_btea_variant(txt_values, key='bL8U5QfWAbQN6mPX'):
     return sorted(out)
 
 
-def decode_txt_hidden_ips(txt_values, method='cafebabe_xor_base64'):
+# ---------------------------
+# NEW: fixed XOR key + Base64 + IP-string decoder
+# ---------------------------
+
+# 고정 XOR 키 (사용자 제공)
+_FIXED_XOR_KEY_HEX_DEFAULT = "aeafb3dffea956373beb72638c51cc"
+_IP_PREFIX_RE = re.compile(r"^(\d{1,3}(?:\.\d{1,3}){3})")
+
+def _is_valid_ip(ip: str) -> bool:
+    parts = ip.split(".")
+    if len(parts) != 4:
+        return False
+    for p in parts:
+        if not p.isdigit():
+            return False
+        v = int(p)
+        if v < 0 or v > 255:
+            return False
+    return True
+
+def _extract_ip_prefix(bs: bytes) -> str:
     """
-    지정된 방식으로 TXT 레코드를 디코딩하여 IP 주소를 추출합니다.
-    
+    복호 바이트에서 '앞부분'의 IPv4 prefix만 추출
+    (뒤에 부가 바이트가 붙는 케이스 대응)
+    """
+    s = bs.decode("ascii", errors="ignore")
+    m = _IP_PREFIX_RE.match(s)
+    if not m:
+        return ""
+    ip = m.group(1)
+    return ip if _is_valid_ip(ip) else ""
+
+def _xor_bytes(data: bytes, key: bytes) -> bytes:
+    if not key:
+        return b""
+    return bytes([b ^ key[i % len(key)] for i, b in enumerate(data)])
+
+def _split_txt_tokens(v: str):
+    """
+    입력 TXT 한 줄에서 토큰들을 분리.
+    - ';' 기반 세그먼트 우선 지원 (질문 케이스)
+    - 기존 '|' / ',' 구분도 호환
+    - 따옴표(") 제거
+    """
+    if not v:
+        return []
+    v = v.strip().strip('"')
+
+    # 우선 ; 로 최대한 분리
+    if ';' in v:
+        toks = [t.strip() for t in v.split(';') if t.strip()]
+        if toks:
+            return toks
+
+    # fallback: 기존 로직
+    return [p.strip() for p in v.replace(',', '|').split('|') if p.strip()]
+
+@txt_decode_register('xor_ipstring_base64_fixedkey')
+def decode_txt_xor_ipstring_base64_fixedkey(txt_values, key_hex=_FIXED_XOR_KEY_HEX_DEFAULT):
+    """
+    base64 decode된 바이너리에 대해 고정 XOR 키(key_hex)를 적용하여
+    ASCII IPv4 문자열(prefix)을 추출합니다.
+
     Args:
         txt_values (list): TXT 레코드 값 리스트
-        method (str): 디코딩 방식 이름 (기본값: 'cafebabe_xor_base64')
-    
+        key_hex (str): XOR 키(hex 문자열). 기본값은 사용자 제공 키.
+
+    Returns:
+        list: 디코딩된 IP 주소 리스트
+    """
+    try:
+        key = bytes.fromhex(key_hex)
+    except Exception:
+        return []
+
+    out = []
+    seen = set()
+
+    for v in txt_values or []:
+        for tok in _split_txt_tokens(v):
+            try:
+                cipher = _b64decode_pad(tok)
+            except Exception:
+                continue
+
+            dec = _xor_bytes(cipher, key)
+            ip = _extract_ip_prefix(dec)
+            if ip and ip not in seen:
+                seen.add(ip)
+                out.append(ip)
+
+    return sorted(out)
+
+
+def decode_txt_hidden_ips(txt_values, method='cafebabe_xor_base64', **kwargs):
+    """
+    지정된 방식으로 TXT 레코드를 디코딩하여 IP 주소를 추출합니다.
+
+    Args:
+        txt_values (list): TXT 레코드 값 리스트
+        method (str): 디코딩 방식 이름
+        **kwargs: 디코더별 추가 인자
+
     Returns:
         list: 디코딩된 IP 주소 리스트
     """
     fn = TXT_DECODE_METHODS.get(method)
     if not fn:
         return []
-    return fn(txt_values)
+    return fn(txt_values, **kwargs)
+

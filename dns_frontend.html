@@ -101,7 +101,7 @@ function addDomainRow(obj){
   const tdDecode = document.createElement('td');
   const selDecode = document.createElement('select');
   // 옵션은 백엔드와 동일하게 맞춰야 함
-  ['cafebabe_xor_base64','plain_base64','btea_variant'].forEach(t=>{
+  ['cafebabe_xor_base64','plain_base64','btea_variant','xor_ipstring_base64_fixedkey'].forEach(t=>{
     const o = document.createElement('option'); o.value=t; o.text=t; selDecode.appendChild(o);
   });
   if(obj && obj.txt_decode) selDecode.value = obj.txt_decode;
