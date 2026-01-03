@@ -12,7 +12,7 @@ import logging
 import os
 
 from dns_query import query_dns
-from txt_decoder import decode_txt_hidden_ips
+from txt_decoder import decode_txt_hidden_ips, register_custom_decoder
 from config_manager import read_config, normalize_domains, write_config
 from history_manager import load_history_files, persist_history_entry, ensure_history_dir
 from http_server import ThreadingHTTPServer, make_handler
@@ -72,6 +72,20 @@ def main():
         'servers': servers0,
         'interval': max(1, int(interval0))
     }
+
+    # restore custom decoders from file config (if any) and register at runtime
+    file_custom = file_cfg.get('custom_decoders', []) if isinstance(file_cfg, dict) else []
+    shared_config['custom_decoders'] = []
+    for entry in file_custom:
+        try:
+            name = entry.get('name') if isinstance(entry, dict) else None
+            steps = entry.get('steps') if isinstance(entry, dict) else None
+            if name and isinstance(steps, list):
+                ok = register_custom_decoder(name, steps)
+                if ok:
+                    shared_config['custom_decoders'].append({'name': name, 'steps': steps})
+        except Exception:
+            continue
 
     # history persistence dir
     if config_path:
@@ -135,6 +149,7 @@ def main():
         target_servers_override = force_req.get('servers') if force_req and 'servers' in force_req else None
 
         for dobj in target_domains:
+            time.sleep(1)
             name = dobj.get('name', '').strip()
             rtype = dobj.get('type', 'A').upper()
             txt_decode = dobj.get('txt_decode', 'cafebabe_xor_base64')
@@ -149,26 +164,33 @@ def main():
                 ts = int(time.time())
                 decoded = []
                 if rtype == 'TXT':
-                    decoded = decode_txt_hidden_ips(result_vals, method=txt_decode)
+                    # pass domain name to decoder so domain-specific rules can be applied
+                    decoded = decode_txt_hidden_ips(result_vals, method=txt_decode, domain=name)
                 prev = current_results.get(name, {}).get(srv)
                 # ensure history dict exists
                 history.setdefault(name, {'meta': {}, 'events': [], 'current': {}})
                 hist_obj = history[name]
                 if prev is None:
                     # initial population: record snapshot and meta.first_seen if missing
-                    current_results.setdefault(name, {})[srv] = {
+                    snap = {
                         'type': rtype,
                         'values': result_vals,
                         'decoded_ips': decoded,
                         'ts': ts
                     }
+                    if rtype == 'TXT':
+                        snap['txt_decode'] = txt_decode
+                    current_results.setdefault(name, {})[srv] = snap
                     # update history current snapshot
-                    hist_obj.setdefault('current', {})[srv] = {
+                    hist_snap = {
                         'type': rtype,
                         'values': result_vals,
                         'decoded_ips': decoded,
                         'ts': ts
                     }
+                    if rtype == 'TXT':
+                        hist_snap['txt_decode'] = txt_decode
+                    hist_obj.setdefault('current', {})[srv] = hist_snap
                     # set first_seen if missing
                     meta = hist_obj.setdefault('meta', {})
                     if not meta.get('first_seen'):
@@ -194,18 +216,16 @@ def main():
                         meta['last_changed'] = ts
                         if not meta.get('first_seen'):
                             meta['first_seen'] = ev['old'].get('ts', ts)
-                        hist_obj.setdefault('current', {})[srv] = {
+                        snap_update = {
                             'type': rtype,
                             'values': result_vals,
                             'decoded_ips': decoded,
                             'ts': ts
                         }
-                        current_results[name][srv] = {
-                            'type': rtype,
-                            'values': result_vals,
-                            'decoded_ips': decoded,
-                            'ts': ts
-                        }
+                        if rtype == 'TXT':
+                            snap_update['txt_decode'] = txt_decode
+                        hist_obj.setdefault('current', {})[srv] = snap_update
+                        current_results[name][srv] = snap_update
                         print(f"[NOTICE] {name} ({rtype}) @ {srv} changed: {prev.get('values')} -> {result_vals} decoded:{decoded}")
                         persist_history_entry(history_dir, name, hist_obj)
                     # else unchanged

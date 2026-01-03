@@ -19,6 +19,8 @@ th,td{border:1px solid #ddd;padding:6px;text-align:left;}
 #historyBox{height:220px;overflow:auto;background:#fff;border:1px solid #ddd;padding:8px;}
 .domain-table input{width:70%;}
 .domain-table select{width:25%;}
+/* allow long values to wrap and be copyable; show full via title tooltip */
+.wrap-cell{white-space:nowrap;overflow-x:auto;max-width:520px;display:block;}
 </style>
 </head>
 <body>
@@ -27,6 +29,7 @@ th,td{border:1px solid #ddd;padding:6px;text-align:left;}
   <button id="menuStatus">Status</button>
   <button id="menuQuery">Query</button>
   <button id="menuIPs">All IPs</button>
+  <button id="menuValidIPs">Valid IPs</button>
 </nav>
 
 <div id="settings" class="section">
@@ -45,15 +48,39 @@ th,td{border:1px solid #ddd;padding:6px;text-align:left;}
   <button id="load">Load</button>
   <button id="save">Save</button>
   <button id="force">Force Resolve</button>
+  <button id="verifyBtn">Verify</button>
+  <div id="verifyResult" style="background:#f8f8f8;padding:8px;max-height:240px;overflow:auto;margin-top:8px;font-family:monospace;"></div>
+  <h4>Custom Decoders</h4>
+  <label>Name
+    <input id="custom_name" type="text" placeholder="decoder_name" />
+  </label>
+  <label>Steps (JSON array)
+    <textarea id="custom_steps" rows="6" placeholder='[{"op":"regex","pattern":"(\\d{1,3}(?:\\.\\d{1,3}){3})","group":1}]'></textarea>
+  </label>
+  <label>Sample TXT (for preview)
+    <input id="custom_sample" type="text" placeholder='example sample txt' />
+  </label>
+  <button id="previewCustom">Preview</button>
+  <button id="registerCustom">Register</button>
+  <div id="customPreviewResult" style="background:#fff7e6;padding:8px;margin-top:6px;white-space:pre-wrap;font-family:monospace;"></div>
+  <h5>Registered Custom Decoders</h5>
+  <div id="customList" style="border:1px solid #eee;padding:8px;max-height:160px;overflow:auto;background:#fafafa"></div>
   <pre id="log"></pre>
 </div>
 
 <div id="status" class="section">
   <h3>Current Status</h3>
+  <button id="pauseRefreshBtn" style="margin-bottom:6px;">Pause Auto-Refresh</button>
   <table id="resultsTable">
-    <thead><tr><th>Domain</th><th>Type</th><th>Server</th><th>Values</th><th>Decoded IPs</th><th>Last Seen</th><th>History</th></tr></thead>
+    <thead><tr><th>Domain</th><th>Type</th><th>Server</th><th>Values</th><th>Decoded IPs</th><th>Decode Method</th><th>Last Seen</th><th>History</th></tr></thead>
     <tbody></tbody>
   </table>
+  <h4>Analyzer</h4>
+  <div>
+    <label>Analysis output:
+      <div id="analyzeResult" style="background:#f8f8f8;padding:8px;max-height:200px;overflow:auto;font-family:monospace;"></div>
+    </label>
+  </div>
   <h4>Domain History</h4>
   <div id="historyBox">Select a domain's "History" button to view events.</div>
 </div>
@@ -75,6 +102,18 @@ th,td{border:1px solid #ddd;padding:6px;text-align:left;}
   </table>
 </div>
 
+<div id="validips" class="section">
+  <h3>Valid IPs (currently syntactically valid)</h3>
+  <label>Recent seconds:
+    <input id="valid_since" type="number" min="0" value="3600" />
+    <button id="refreshValidBtn">Refresh</button>
+  </label>
+  <table id="validIpsTable">
+    <thead><tr><th>IP</th><th>Domains</th><th>Count</th><th>Last Seen</th><th>Valid</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+
 <script>
 function showSection(name){
   ['settings','status','query','ips'].forEach(id=>document.getElementById(id).classList.remove('active'));
@@ -84,8 +123,24 @@ document.getElementById('menuSettings').onclick = ()=> showSection('settings');
 document.getElementById('menuStatus').onclick = ()=> showSection('status');
 document.getElementById('menuQuery').onclick = ()=> showSection('query');
 document.getElementById('menuIPs').onclick = ()=> showSection('ips');
+document.getElementById('menuValidIPs').onclick = ()=> showSection('validips');
 
 function log(msg){ document.getElementById('log').textContent += msg + "\n"; }
+
+// 글로벌 디코더 캐시
+window.DECODERS = [];
+
+async function loadDecoders(){
+  try{
+    const r = await fetch('/decoders');
+    if(!r.ok) return;
+    const j = await r.json();
+    if(j){
+      window.DECODERS = Array.isArray(j.decoders) ? j.decoders : [];
+      window.CUSTOM_DECODERS = Array.isArray(j.custom) ? j.custom : [];
+    }
+  }catch(e){ /* ignore */ }
+}
 
 function addDomainRow(obj){
   const tbody = document.querySelector('#domainTable tbody');
@@ -95,17 +150,38 @@ function addDomainRow(obj){
   tdName.appendChild(inp);
   const tdType = document.createElement('td');
   const sel = document.createElement('select');
-  ['A','TXT'].forEach(t=>{ const o = document.createElement('option'); o.value=t; o.text=t; sel.appendChild(o); });
+  // 지원하는 레코드 타입 목록을 넓힘
+  ['A','TXT','AAAA','CNAME','MX','NS','SRV','CAA'].forEach(t=>{ const o = document.createElement('option'); o.value=t; o.text=t; sel.appendChild(o); });
   if(obj && obj.type) sel.value = obj.type.toUpperCase();
   tdType.appendChild(sel);
   const tdDecode = document.createElement('td');
   const selDecode = document.createElement('select');
-  // 옵션은 백엔드와 동일하게 맞춰야 함
-  ['cafebabe_xor_base64','plain_base64','btea_variant','xor_ipstring_base64_fixedkey'].forEach(t=>{
-    const o = document.createElement('option'); o.value=t; o.text=t; selDecode.appendChild(o);
-  });
+  // 디코더 목록은 백엔드에서 동적으로 불러옵니다. 아직 로드되지 않았으면 기본 목록 사용
+  const FALLBACK_DECODERS = ['cafebabe_xor_base64','plain_base64','btea_variant','xor_ipstring_base64_fixedkey','base64_xor_febabe','base56','safeb64_xor','c2_multiplex'];
+  const decs = (window.DECODERS && window.DECODERS.length) ? window.DECODERS : FALLBACK_DECODERS;
+  // include custom decoders names as well
+  const customNames = (window.CUSTOM_DECODERS || []).map(c=>c.name);
+  const finalDecs = (decs || []).concat(customNames.filter(n=>!(decs||[]).includes(n)));
+  finalDecs.forEach(t=>{ const o = document.createElement('option'); o.value=t; o.text=t; selDecode.appendChild(o); });
   if(obj && obj.txt_decode) selDecode.value = obj.txt_decode;
+  // 타입이 TXT가 아니면 디코더 선택 비활성화
+  if(!(obj && obj.type && obj.type.toUpperCase() === 'TXT')){
+    selDecode.disabled = true;
+  }
+
+  // 타입 변경 시에 TXT Decode 선택 활성/비활성 토글
+  sel.onchange = function(){
+    if(this.value && this.value.toUpperCase() === 'TXT'){
+      selDecode.disabled = false;
+    } else {
+      selDecode.disabled = true;
+      // 선택된 디코더 값 제거해서 저장 시 의도치 않은 값 유지 방지
+      selDecode.selectedIndex = 0;
+    }
+  };
   tdDecode.appendChild(selDecode);
+  // expose for potential external control
+  selDecode.dataset.decoderList = 'dynamic';
   const tdBtn = document.createElement('td');
   const del = document.createElement('button'); del.textContent='Delete'; del.onclick = ()=> { tr.remove(); };
   tdBtn.appendChild(del);
@@ -176,6 +252,63 @@ document.getElementById('force').onclick = async ()=>{
   }catch(e){ log('Force error:'+e); }
 };
 
+document.getElementById('verifyBtn').onclick = async ()=>{
+  const domains = collectDomainsFromUI();
+  const el = document.getElementById('verifyResult');
+  el.textContent = 'Running verify...';
+  try{
+    const r = await fetch('/verify', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({domains: domains})});
+    if(!r.ok){ el.textContent = 'Verify request failed: '+r.status; return; }
+    const j = await r.json();
+    renderVerifyResult(j);
+  }catch(e){ el.textContent = 'Verify error: '+e; }
+};
+
+function renderVerifyResult(j){
+  const el = document.getElementById('verifyResult');
+  el.innerHTML = '';
+  if(!j || j.error){ el.textContent = j && j.error ? 'Error: '+j.error : 'No result'; return; }
+  const res = j.results || {};
+  const doms = Object.keys(res).sort();
+  if(doms.length===0){ el.textContent = 'No domains verified'; return; }
+  doms.forEach(dom=>{
+    const block = document.createElement('div');
+    block.style.borderBottom='1px solid #eee'; block.style.padding='6px 0';
+    const h = document.createElement('div'); h.textContent = dom; h.style.fontWeight='700';
+    block.appendChild(h);
+    const data = res[dom];
+    if(data.error){ const e = document.createElement('div'); e.textContent = 'Error: '+data.error; block.appendChild(e); el.appendChild(block); return; }
+    const analysis = data.analysis || {};
+    const keys = Object.keys(analysis).sort((a,b)=> (analysis[b].score||0)-(analysis[a].score||0));
+    keys.forEach(k=>{
+      const info = analysis[k];
+      const row = document.createElement('div');
+      row.style.margin='6px 0';
+      const title = document.createElement('div'); title.textContent = `${k} — score=${info.score} raw=${info.raw_count}`;
+      title.style.fontWeight='600';
+      row.appendChild(title);
+      const ips = info.detailed_ips || [];
+      if(ips.length===0){ const none = document.createElement('div'); none.textContent = 'No decoded IPs'; row.appendChild(none); }
+      else{
+        const tbl = document.createElement('table'); tbl.style.width='100%'; const th = document.createElement('tr'); th.innerHTML='<th>IP</th><th>Valid</th><th>VT(malicious/suspicious)</th><th>VT summary</th>'; tbl.appendChild(th);
+        ips.forEach(it=>{
+          const tr = document.createElement('tr');
+          const tdIp = document.createElement('td'); tdIp.textContent = it.ip||'';
+          const tdV = document.createElement('td'); tdV.textContent = it.valid ? 'YES' : 'NO';
+          const tdVT = document.createElement('td');
+          const tdSum = document.createElement('td');
+          if(it.vt){ tdVT.textContent = `${it.vt.malicious||0}/${it.vt.suspicious||0}`; tdSum.textContent = `ASN:${it.vt.asn||''} ${it.vt.country||''}`; }
+          else { tdVT.textContent = '-'; tdSum.textContent = '-'; }
+          tr.appendChild(tdIp); tr.appendChild(tdV); tr.appendChild(tdVT); tr.appendChild(tdSum); tbl.appendChild(tr);
+        });
+        row.appendChild(tbl);
+      }
+      block.appendChild(row);
+    });
+    el.appendChild(block);
+  });
+}
+
 async function refreshResults(){
   try{
     const r = await fetch('/results'); 
@@ -185,28 +318,86 @@ async function refreshResults(){
     }
     const j = await r.json();
     const tbody = document.querySelector('#resultsTable tbody');
-    tbody.innerHTML = '';
     const results = j.results || {};
+    // build a map of existing rows keyed by domain||srv to preserve verify rows and avoid full re-render
+    const existing = {};
+    Array.from(tbody.querySelectorAll('tr')).forEach(r => {
+      if(r.classList && r.classList.contains('verify-row')) return;
+      const kd = r.dataset.domain || '';
+      const ks = r.dataset.server || '';
+      if(kd) existing[kd + '||' + ks] = r;
+    });
+
+    const newKeys = [];
     Object.keys(results).sort().forEach(d=>{
       const srvMap = results[d];
       if(typeof srvMap !== 'object') return;
       Object.keys(srvMap).forEach(srv=>{
         const info = srvMap[srv];
         if(typeof info !== 'object') return;
-        const tr = document.createElement('tr');
+        const key = d + '||' + srv;
+        newKeys.push(key);
+        let tr = existing[key];
+        const fullVals = (info.values||[]).join(' | ');
+        const fullDecoded = (info.decoded_ips||[]).join(', ');
+        if(tr){
+          // update existing row in-place
+          tr.dataset.domain = d; tr.dataset.server = srv;
+          tr.innerHTML = '';
+        } else {
+          tr = document.createElement('tr');
+          tr.dataset.domain = d; tr.dataset.server = srv;
+        }
         const tdDomain = document.createElement('td'); tdDomain.textContent = d;
         const tdType = document.createElement('td'); tdType.textContent = info.type || 'A';
         const tdSrv = document.createElement('td'); tdSrv.textContent = srv;
-        const tdVals = document.createElement('td'); tdVals.textContent = (info.values||[]).join(' | ');
-        const tdDecoded = document.createElement('td'); tdDecoded.textContent = (info.decoded_ips||[]).join(', ');
+        const tdVals = document.createElement('td'); tdVals.textContent = fullVals.length > 200 ? fullVals.slice(0,200) + '…' : fullVals; tdVals.title = fullVals; tdVals.className = 'wrap-cell';
+        const tdDecoded = document.createElement('td'); tdDecoded.textContent = fullDecoded.length > 200 ? fullDecoded.slice(0,200) + '…' : fullDecoded; tdDecoded.title = fullDecoded; tdDecoded.className = 'wrap-cell';
+        const tdMethod = document.createElement('td'); tdMethod.textContent = (info.type === 'TXT' && info.txt_decode) ? info.txt_decode : '-';
         const tdTs = document.createElement('td'); tdTs.textContent = info.ts ? new Date(info.ts*1000).toISOString() : '-';
         const tdHist = document.createElement('td');
-        const btn = document.createElement('button'); btn.textContent='History';
-        btn.onclick = ()=> loadHistory(d);
+        const btn = document.createElement('button'); btn.textContent='History'; btn.onclick = ()=> loadHistory(d);
         tdHist.appendChild(btn);
-        tr.appendChild(tdDomain); tr.appendChild(tdType); tr.appendChild(tdSrv); tr.appendChild(tdVals); tr.appendChild(tdDecoded); tr.appendChild(tdTs); tr.appendChild(tdHist);
-        tbody.appendChild(tr);
+        if(info.type === 'TXT'){
+          const abtn = document.createElement('button'); abtn.textContent = 'Analyze';
+          abtn.onclick = async ()=>{
+            const sample = (info.values||[]).join('|');
+            try{ const r = await fetch('/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domain:d,txt:sample})}); const j = await r.json(); renderAnalyzeResult(j);}catch(e){ document.getElementById('analyzeResult').textContent = 'Analyze error: '+e; }
+          };
+          tdHist.appendChild(abtn);
+          const vbtn = document.createElement('button'); vbtn.textContent = 'Verify';
+          vbtn.onclick = async ()=>{
+            const next = tr.nextElementSibling;
+            if(next && next.classList && next.classList.contains('verify-row') && next.dataset && next.dataset.domain===d){ next.remove(); return; }
+            const vtr = document.createElement('tr'); vtr.className = 'verify-row'; vtr.dataset.domain = d;
+            const vtd = document.createElement('td'); vtd.colSpan = 8; vtd.textContent = 'Verifying '+d+'...'; vtr.appendChild(vtd);
+            tr.parentNode.insertBefore(vtr, tr.nextSibling);
+            try{ const r = await fetch('/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domains:[d]})}); const j = await r.json(); vtd.innerHTML=''; if(j && j.results && j.results[d]){ const data = j.results[d]; if(data.error){ vtd.textContent = 'Error: '+data.error; } else { const analysis = data.analysis||{}; const keys = Object.keys(analysis).sort((a,b)=>(analysis[b].score||0)-(analysis[a].score||0)); keys.forEach(k=>{ const info = analysis[k]; const h = document.createElement('div'); h.style.fontWeight='600'; h.textContent = `${k} — score=${info.score} raw=${info.raw_count}`; vtd.appendChild(h); const ips = info.detailed_ips||[]; if(ips.length===0){ const none=document.createElement('div'); none.textContent='No decoded IPs'; vtd.appendChild(none);} else{ const tbl=document.createElement('table'); tbl.style.width='100%'; tbl.style.marginTop='6px'; const thr=document.createElement('tr'); thr.innerHTML='<th>IP</th><th>Valid</th><th>VT(malicious/suspicious)</th><th>Summary</th>'; tbl.appendChild(thr); ips.forEach(it=>{ const trr=document.createElement('tr'); const tdIp=document.createElement('td'); tdIp.textContent=it.ip||''; const tdV=document.createElement('td'); tdV.textContent=it.valid?'YES':'NO'; const tdVT=document.createElement('td'); const tdSum=document.createElement('td'); if(it.vt){ tdVT.textContent=`${it.vt.malicious||0}/${it.vt.suspicious||0}`; tdSum.textContent=`ASN:${it.vt.asn||''} ${it.vt.country||''}`; } else { tdVT.textContent='-'; tdSum.textContent='-'; } trr.appendChild(tdIp); trr.appendChild(tdV); trr.appendChild(tdVT); trr.appendChild(tdSum); tbl.appendChild(trr); }); vtd.appendChild(tbl);} }); } } else { vtd.textContent='No data returned'; } }catch(e){ vtd.textContent='Verify error: '+e; } };
+          tdHist.appendChild(vbtn);
+        }
+        tdHist.appendChild(btn);
+        tr.appendChild(tdDomain); tr.appendChild(tdType); tr.appendChild(tdSrv); tr.appendChild(tdVals); tr.appendChild(tdDecoded); tr.appendChild(tdMethod); tr.appendChild(tdTs); tr.appendChild(tdHist);
+
+        // insert or move row into tbody in desired order
+        const existingRow = tbody.querySelector(`tr[data-domain="${d}"][data-server="${srv}"]`);
+        if(existingRow){
+          // replace in-place
+          existingRow.parentNode.replaceChild(tr, existingRow);
+        } else {
+          tbody.appendChild(tr);
+        }
       });
+    });
+    // remove any stale rows (and their verify rows) not present in newKeys
+    Array.from(tbody.querySelectorAll('tr')).forEach(r=>{
+      if(r.classList && r.classList.contains('verify-row')) return;
+      const key = (r.dataset.domain||'') + '||' + (r.dataset.server||'');
+      if(!newKeys.includes(key)){
+        // remove associated verify row if any
+        const next = r.nextElementSibling;
+        if(next && next.classList && next.classList.contains('verify-row') && next.dataset && next.dataset.domain===r.dataset.domain){ next.remove(); }
+        r.remove();
+      }
     });
   }catch(e){ console.log('refresh error', e); }
 }
@@ -317,9 +508,165 @@ async function refreshIPs(){
   }catch(e){ console.log('refreshIPs error', e); }
 }
 
-setInterval(refreshResults, 5000);
-setInterval(refreshIPs, 5000);
-window.onload = function(){ showSection('settings'); loadCfg(); refreshResults(); refreshIPs(); };
+function renderAnalyzeResult(j){
+  const el = document.getElementById('analyzeResult');
+  el.innerHTML = '';
+  if(!j || j.error){ el.textContent = j && j.error ? 'Error: '+j.error : 'No result'; return; }
+  const analysis = j.analysis || {};
+  const keys = Object.keys(analysis);
+  if(keys.length === 0){ el.textContent = 'No matching decoders'; return; }
+  // find best
+  let best = null; let bestScore = -999;
+  keys.forEach(k=>{ const s = analysis[k].score || 0; if(s>bestScore){ bestScore=s; best=k; } });
+
+  const title = document.createElement('div'); title.textContent = `Recommendation: ${best} (score=${analysis[best].score})`; title.style.fontWeight='bold'; title.style.marginBottom='6px';
+  el.appendChild(title);
+
+  keys.sort((a,b)=> (analysis[b].score||0) - (analysis[a].score||0));
+  keys.forEach(k=>{
+    const info = analysis[k];
+    const box = document.createElement('div');
+    box.style.borderBottom='1px solid #eee'; box.style.padding='6px 0';
+    if(k===best) box.style.background='#fff7e6';
+    const h = document.createElement('div'); h.textContent = `${k} — score=${info.score} raw_count=${info.raw_count}`;
+    h.style.fontWeight = (k===best)?'700':'400';
+    const ips = document.createElement('div'); ips.textContent = 'ips: ' + (info.ips||[]).join(', ');
+    ips.style.marginTop='4px';
+    box.appendChild(h); box.appendChild(ips);
+    el.appendChild(box);
+  });
+}
+
+async function refreshValidIPs(){
+  try{
+    const r = await fetch('/ips');
+    if(!r.ok){ console.error('refreshValidIPs HTTP', r.status); return; }
+    const j = await r.json();
+    const tbody = document.querySelector('#validIpsTable tbody');
+    tbody.innerHTML = '';
+    const arr = j.ips || [];
+    if(!Array.isArray(arr)) return;
+    // display only syntactically valid IPs (backend also provides 'valid')
+    arr.filter(it => it && it.valid).forEach(it=>{
+      const tr = document.createElement('tr');
+      const tdIp = document.createElement('td'); tdIp.textContent = it.ip || '';
+      const tdDomains = document.createElement('td'); tdDomains.textContent = (it.domains||[]).join(', ');
+      const tdCount = document.createElement('td'); tdCount.textContent = it.count || 0;
+      const tdTs = document.createElement('td'); tdTs.textContent = it.last_ts ? new Date(it.last_ts*1000).toISOString() : '-';
+      const tdValid = document.createElement('td'); tdValid.textContent = it.valid ? 'YES' : 'NO';
+      tr.appendChild(tdIp); tr.appendChild(tdDomains); tr.appendChild(tdCount); tr.appendChild(tdTs); tr.appendChild(tdValid);
+      tbody.appendChild(tr);
+    });
+  }catch(e){ console.log('refreshValidIPs error', e); }
+}
+
+  // Auto-refresh control
+  let manualPause = false; // user toggled pause
+  let hoverPause = false;  // temporary pause while hovering over results
+
+  function isPaused(){ return manualPause || hoverPause; }
+
+  document.getElementById('pauseRefreshBtn').onclick = function(){
+    manualPause = !manualPause;
+    this.textContent = manualPause ? 'Resume Auto-Refresh' : 'Pause Auto-Refresh';
+    if(!manualPause){ refreshResults(); refreshIPs(); }
+  };
+
+  // pause when user hovers results table to allow inspection of long URLs
+  const resultsTable = document.getElementById('resultsTable');
+  resultsTable.addEventListener('mouseenter', ()=>{ hoverPause = true; });
+  resultsTable.addEventListener('mouseleave', ()=>{ hoverPause = false; });
+
+  // periodic refresh — skip work if paused to avoid wiping user's view
+  setInterval(()=>{ if(!isPaused()) refreshResults(); }, 5000);
+  setInterval(()=>{ if(!isPaused()) refreshIPs(); }, 5000);
+
+  window.onload = function(){ showSection('settings'); loadCfg(); refreshResults(); refreshIPs(); };
+// initialize dynamic decoders and valid IPs refresh hook
+window.addEventListener('load', ()=>{
+  loadDecoders().then(()=>{
+    // reload config so domain rows pick up decoders if possible
+    loadCfg();
+  });
+  document.getElementById('refreshValidBtn').onclick = ()=>{
+    const s = parseInt(document.getElementById('valid_since').value) || 0;
+    refreshValidIPs(s);
+  };
+  // initial load of valid ips
+  refreshValidIPs(parseInt(document.getElementById('valid_since').value) || 0);
+  // custom decoder UI handlers
+  function renderCustomList(){
+    const el = document.getElementById('customList'); el.innerHTML='';
+    const arr = window.CUSTOM_DECODERS || [];
+    if(!arr.length){ el.textContent = 'No custom decoders registered'; return; }
+    arr.forEach(c=>{
+      const row = document.createElement('div'); row.style.borderBottom='1px solid #eee'; row.style.padding='6px 0';
+      const title = document.createElement('div'); title.textContent = c.name; title.style.fontWeight='700'; row.appendChild(title);
+      const btnRow = document.createElement('div'); btnRow.style.marginTop='6px';
+      const edit = document.createElement('button'); edit.textContent='Edit'; edit.onclick = ()=>{
+        document.getElementById('custom_name').value = c.name; document.getElementById('custom_name').disabled = true;
+        document.getElementById('custom_steps').value = JSON.stringify(c.steps, null, 2);
+        document.getElementById('customPreviewResult').textContent = 'Editing '+c.name+' — change steps and click Update';
+      };
+      const del = document.createElement('button'); del.textContent='Delete'; del.onclick = async ()=>{
+        if(!confirm('Delete decoder '+c.name+' ?')) return;
+        try{
+          const r = await fetch('/decoders/custom',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:c.name})});
+          const j = await r.json();
+          if(j && j.status === 'ok'){ document.getElementById('customPreviewResult').textContent = 'Deleted '+c.name; await loadDecoders(); renderCustomList(); loadCfg(); }
+          else { document.getElementById('customPreviewResult').textContent = 'Delete failed: '+JSON.stringify(j); }
+        }catch(e){ document.getElementById('customPreviewResult').textContent = 'Delete error: '+e; }
+      };
+      const upd = document.createElement('button'); upd.textContent='Update'; upd.onclick = async ()=>{
+        const stepsRaw = document.getElementById('custom_steps').value.trim(); let steps;
+        try{ steps = JSON.parse(stepsRaw); }catch(e){ alert('Invalid JSON: '+e); return; }
+        try{
+          const r = await fetch('/decoders/custom',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:c.name,steps:steps})});
+          const j = await r.json();
+          if(j && j.status === 'ok'){ document.getElementById('customPreviewResult').textContent = 'Updated '+c.name; await loadDecoders(); renderCustomList(); loadCfg(); document.getElementById('custom_name').disabled = false; }
+          else { document.getElementById('customPreviewResult').textContent = 'Update failed: '+JSON.stringify(j); }
+        }catch(e){ document.getElementById('customPreviewResult').textContent = 'Update error: '+e; }
+      };
+      btnRow.appendChild(edit); btnRow.appendChild(upd); btnRow.appendChild(del); row.appendChild(btnRow);
+      el.appendChild(row);
+    });
+  }
+
+  document.getElementById('previewCustom').onclick = async ()=>{
+    const stepsRaw = document.getElementById('custom_steps').value.trim();
+    const sample = document.getElementById('custom_sample').value;
+    let steps;
+    try{ steps = JSON.parse(stepsRaw); }catch(e){ document.getElementById('customPreviewResult').textContent = 'Invalid JSON: '+e; return; }
+    try{
+      const r = await fetch('/decoders/custom/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({steps: steps, sample: sample})});
+      const j = await r.json();
+      document.getElementById('customPreviewResult').textContent = JSON.stringify(j, null, 2);
+    }catch(e){ document.getElementById('customPreviewResult').textContent = 'Preview error: '+e; }
+  };
+
+  document.getElementById('registerCustom').onclick = async ()=>{
+    const name = document.getElementById('custom_name').value.trim();
+    const stepsRaw = document.getElementById('custom_steps').value.trim();
+    if(!name){ alert('Provide a name'); return; }
+    let steps;
+    try{ steps = JSON.parse(stepsRaw); }catch(e){ alert('Invalid JSON steps: '+e); return; }
+    try{
+      const r = await fetch('/decoders/custom',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name: name, steps: steps})});
+      const j = await r.json();
+      if(j && j.status === 'ok'){
+        document.getElementById('customPreviewResult').textContent = 'Registered: '+name;
+        // reload decoders and UI
+        await loadDecoders();
+        renderCustomList();
+        loadCfg();
+      } else {
+        document.getElementById('customPreviewResult').textContent = 'Register failed: '+JSON.stringify(j);
+      }
+    }catch(e){ document.getElementById('customPreviewResult').textContent = 'Register error: '+e; }
+  };
+  // render custom list initially
+  renderCustomList();
+});
 </script>
 </body>
 </html>
