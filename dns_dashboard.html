@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>TraceDNS Dashboard</title>
+  <style>
+    body{font-family: Arial, Helvetica, sans-serif; margin:20px}
+    h1{font-size:1.4em}
+    table{border-collapse:collapse;width:100%}
+    th,td{border:1px solid #ddd;padding:8px}
+    th{background:#f2f2f2}
+    .small{font-size:0.9em;color:#666}
+    .vt-bad{background:#fee}
+  </style>
+</head>
+<body>
+  <h1>TraceDNS — Global Dashboard</h1>
+  <p class="small">Default dashboard. Page last updated at <span id="last">-</span>.</p>
+
+  <div>
+    <button id="refresh">Refresh</button>
+    <a href="/dns_frontend.html">Domain settings</a>
+    &nbsp;|&nbsp;
+    <a href="/settings.html">Settings</a>
+  </div>
+
+  <h2>Summary</h2>
+  <div id="summary">Loading...</div>
+
+  <h2>Unique IP 목록 (VT 정보 포함)</h2>
+  <table id="ips">
+    <thead><tr><th>IP</th><th>Count</th><th>Last seen</th><th>Domains</th><th>VT</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <h2>Settings</h2>
+  <div id="settings">
+    <p class="small">Alert template settings (Teams, MISP). Please test integrations manually.</p>
+    <label>Teams Webhook URL<br/><input id="teams_webhook" style="width:100%" placeholder="https://..."/></label><br/>
+    <label>MISP URL<br/><input id="misp_url" style="width:100%" placeholder="https://misp.example"/></label><br/>
+    <label>MISP API Key<br/><input id="misp_key" style="width:100%" placeholder="API key"/></label><br/>
+    <label>Push Event ID (MISP)<br/><input id="push_event_id" style="width:100%" placeholder="12345"/></label><br/>
+    <label>VirusTotal API Key<br/><input id="vt_api_key" style="width:100%" placeholder="VT API key"/></label><br/>
+    <div style="margin-top:6px">
+      <button id="load_settings">Load</button>
+      <button id="save_settings">Save</button>
+      <span id="settings_status" class="small"></span>
+    </div>
+  </div>
+
+  <script>
+    async function load(){
+      document.getElementById('last').textContent = new Date().toLocaleString();
+      const resp = await fetch('/ips?include_vt=1');
+      const data = await resp.json();
+      const ips = data.ips || [];
+      document.getElementById('summary').textContent = `Unique IPs: ${ips.length}`;
+      const tbody = document.querySelector('#ips tbody');
+      tbody.innerHTML = '';
+      for(const r of ips){
+        const tr = document.createElement('tr');
+        if(r.vt && (r.vt.malicious || r.vt.suspicious)) tr.className='vt-bad';
+        const last = r.last_ts ? new Date(r.last_ts*1000).toLocaleString() : '';
+        const domains = (r.domains||[]).join(', ');
+        const vtcell = r.vt ? `<div>malicious:${r.vt.malicious||0} / suspicious:${r.vt.suspicious||0} / harmless:${r.vt.harmless||0}</div>` : '<div class="small">(no VT)</div>';
+        tr.innerHTML = `<td><a href="/ip?ip=${encodeURIComponent(r.ip)}">${r.ip}</a></td><td>${r.count}</td><td>${last}</td><td>${domains}</td><td>${vtcell}</td>`;
+        tbody.appendChild(tr);
+      }
+    }
+
+    document.getElementById('refresh').addEventListener('click', ()=>load());
+    load();
+    // load settings into form
+    async function loadSettings(){
+      try{
+        const r = await fetch('/settings');
+        const j = await r.json();
+        const alerts = (j.settings && j.settings.alerts) ? j.settings.alerts : (j.settings || {}).alerts || {};
+        document.getElementById('teams_webhook').value = alerts.teams_webhook || '';
+        document.getElementById('misp_url').value = alerts.misp_url || '';
+        document.getElementById('misp_key').value = alerts.api_key || '';
+        document.getElementById('push_event_id').value = alerts.push_event_id || '';
+        document.getElementById('vt_api_key').value = alerts.vt_api_key || '';
+      }catch(e){
+        // ignore
+      }
+    }
+    document.getElementById('load_settings').addEventListener('click', ()=>loadSettings());
+    document.getElementById('save_settings').addEventListener('click', async ()=>{
+      const alerts = {
+        teams_webhook: document.getElementById('teams_webhook').value.trim(),
+        misp_url: document.getElementById('misp_url').value.trim(),
+        api_key: document.getElementById('misp_key').value.trim(),
+        push_event_id: document.getElementById('push_event_id').value.trim(),
+        vt_api_key: document.getElementById('vt_api_key').value.trim()
+      };
+      try{
+        const r = await fetch('/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({alerts})});
+        const j = await r.json();
+        if(j && j.status=='ok'){
+          document.getElementById('settings_status').textContent = 'Saved.';
+        } else {
+          document.getElementById('settings_status').textContent = 'Save failed';
+        }
+      }catch(e){
+        document.getElementById('settings_status').textContent = 'Save failed';
+      }
+      setTimeout(()=>{document.getElementById('settings_status').textContent='';},3000);
+    });
+    // auto-load settings once
+    loadSettings();
+    // auto-refresh every 60s
+    setInterval(load, 60000);
+  </script>
+</body>
+</html>

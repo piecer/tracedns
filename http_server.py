@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-HTTP 서버 및 웹 UI 모듈
+HTTP server and web UI module.
+Provides a lightweight HTTP API and static frontend serving used by the DNS monitor.
 """
 import os
 import json
@@ -11,6 +12,7 @@ from urllib.parse import urlparse, parse_qs
 
 from config_manager import normalize_domains, write_config, read_config
 import time
+import mimetypes
 from txt_decoder import TXT_DECODE_METHODS, analyze_domain_decoding
 try:
     from vt_lookup import get_ip_report
@@ -27,39 +29,44 @@ def load_frontend_html():
     Returns:
         str: HTML 콘텐츠
     """
-    path = os.path.join(os.path.dirname(__file__), "dns_frontend.html")
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            return f.read()
-    except Exception:
-        return "<html><body>Frontend missing</body></html>"
+    # Prefer a dashboard file if present, otherwise fall back to the main frontend.
+    base = os.path.dirname(__file__)
+    dashboard_path = os.path.join(base, "dns_dashboard.html")
+    frontend_path = os.path.join(base, "dns_frontend.html")
+    for p in (dashboard_path, frontend_path):
+        try:
+            with open(p, 'r', encoding='utf-8') as f:
+                return f.read()
+        except Exception:
+            continue
+    return "<html><body>Frontend missing</body></html>"
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
-    """스레드 기반 HTTP 서버"""
+    """Threaded HTTP server (each request handled in its own thread)."""
     daemon_threads = True
 
 
 def make_handler(shared_config, config_lock, config_path, history_dir, current_results, history):
     """
-    HTTP 요청 핸들러 클래스를 생성합니다.
-    
+    Create a configured HTTP request handler class bound to shared runtime state.
+
     Args:
-        shared_config (dict): 공유 설정 딕셔너리
-        config_lock (threading.Lock): 설정 액세스 락
-        config_path (str): 설정 파일 경로
-        history_dir (str): 히스토리 디렉토리 경로
-        current_results (dict): 현재 조회 결과
-        history (dict): 히스토리 객체
-    
+        shared_config (dict): shared configuration dictionary
+        config_lock (threading.Lock): lock protecting shared_config
+        config_path (str): path to JSON config file for persistence
+        history_dir (str): path to history directory
+        current_results (dict): in-memory current DNS query results
+        history (dict): in-memory history object
+
     Returns:
-        class: HTTP 요청 핸들러 클래스
+        class: a BaseHTTPRequestHandler subclass configured with closures
     """
     frontend_html = load_frontend_html()
 
     class ConfigHandler(BaseHTTPRequestHandler):
         def _send_json(self, obj, code=200):
-            """JSON 응답을 전송합니다."""
+            """Send a JSON response with proper UTF-8 headers."""
             b = json.dumps(obj, ensure_ascii=False).encode('utf-8')
             self.send_response(code)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -75,6 +82,9 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                     'servers': list(shared_config.get('servers', [])),
                     'interval': shared_config.get('interval')
                 }
+                # include alert settings if present
+                if 'alerts' in shared_config:
+                    cfg['alerts'] = shared_config.get('alerts')
             self._send_json(cfg)
 
         def _handle_results(self):
@@ -104,6 +114,69 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                 self._send_json({'decoders': names, 'custom': custom})
             except Exception as e:
                 self._send_json({'error': str(e)}, 500)
+
+        def _handle_settings_get(self):
+            try:
+                # prefer in-memory shared_config alerts, fallback to config file
+                with config_lock:
+                    alerts = shared_config.get('alerts', None)
+                if alerts is None and config_path:
+                    cfg = read_config(config_path) or {}
+                    alerts = cfg.get('alerts', {})
+                self._send_json({'settings': {'alerts': alerts or {}}})
+            except Exception as e:
+                self._send_json({'error': str(e)}, 500)
+
+        def _handle_settings_post(self):
+            # update alerts settings and persist to config_path
+            length = int(self.headers.get('Content-Length', '0'))
+            body = self.rfile.read(length) if length > 0 else b''
+            try:
+                data = json.loads(body.decode('utf-8')) if body else {}
+            except Exception:
+                return self._send_json({'error': 'invalid json'}, 400)
+
+            alerts = data.get('alerts')
+            if alerts is None or not isinstance(alerts, dict):
+                return self._send_json({'error': 'alerts object required'}, 400)
+
+            # Validate VirusTotal API key if provided (basic checks)
+            try:
+                import re as _re
+                vt = alerts.get('vt_api_key')
+                if vt is not None and str(vt).strip() != '':
+                    vts = str(vt).strip()
+                    # simple validation: no whitespace and reasonable length
+                    if _re.search(r"\s", vts) or len(vts) < 20 or len(vts) > 128:
+                        return self._send_json({'error': 'invalid vt_api_key (bad format or length)'}, 400)
+                    # allow common VT formats (hex or base64-like); prefer hex64 but not required
+                    if not (_re.fullmatch(r'[A-Fa-f0-9]{64}', vts) or _re.fullmatch(r'[A-Za-z0-9\-_=]+', vts)):
+                        return self._send_json({'error': 'invalid vt_api_key (unexpected characters)'}, 400)
+                    # store back cleaned value
+                    alerts['vt_api_key'] = vts
+            except Exception:
+                return self._send_json({'error': 'vt_api_key validation error'}, 400)
+
+            with config_lock:
+                shared_config['alerts'] = alerts
+                # persist into config_path preserving other top-level keys
+                if config_path:
+                    try:
+                        cfg = read_config(config_path) or {}
+                        cfg['alerts'] = alerts
+                        # keep existing domains/servers/interval/custom_decoders if present
+                        if 'domains' not in cfg:
+                            cfg['domains'] = shared_config.get('domains', [])
+                        if 'servers' not in cfg:
+                            cfg['servers'] = shared_config.get('servers', [])
+                        if 'interval' not in cfg:
+                            cfg['interval'] = shared_config.get('interval')
+                        if 'custom_decoders' not in cfg:
+                            cfg['custom_decoders'] = shared_config.get('custom_decoders', [])
+                        write_config(config_path, cfg)
+                    except Exception:
+                        pass
+            return self._send_json({'status': 'ok', 'alerts': alerts})
 
         def _gather_ip_map(self):
             ip_map = {}
@@ -283,7 +356,7 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
             return self._send_json({'ip': ip, 'matches': matches})
 
         def do_GET(self):
-            """GET 요청 처리 (간단한 라우팅)"""
+            """Handle GET requests (simple routing)."""
             parsed = urlparse(self.path)
             qs = parse_qs(parsed.query)
 
@@ -293,6 +366,8 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                 return self._handle_results()
             if parsed.path == '/decoders':
                 return self._handle_decoders()
+            if parsed.path == '/settings':
+                return self._handle_settings_get()
             if parsed.path == '/decoders/custom':
                 # simple GET support to list allowed ops
                 try:
@@ -317,11 +392,34 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                 self.wfile.write(b)
                 return
 
+            # Attempt to serve static files from this package directory (allow direct access
+            # to dns_frontend.html, dns_dashboard.html, settings.html, etc.)
+            try:
+                base = os.path.dirname(__file__)
+                # strip leading slash
+                rel = parsed.path.lstrip('/')
+                fs_path = os.path.join(base, rel)
+                if os.path.isfile(fs_path):
+                    ctype, _ = mimetypes.guess_type(fs_path)
+                    if not ctype:
+                        ctype = 'application/octet-stream'
+                    with open(fs_path, 'rb') as fh:
+                        data = fh.read()
+                    self.send_response(200)
+                    self.send_header('Content-Type', ctype + ('; charset=utf-8' if ctype.startswith('text/') else ''))
+                    self.send_header('Content-Length', str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
+            except Exception:
+                # fall through to 404
+                pass
+
             self.send_response(404)
             self.end_headers()
 
         def do_POST(self):
-            """POST 요청 처리"""
+            """Handle POST requests (simple routing)."""
             parsed = urlparse(self.path)
             
             if parsed.path == '/config':
@@ -363,6 +461,9 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                         'interval': shared_config.get('interval')
                     }
                 return self._send_json(resp)
+
+            if parsed.path == '/settings':
+                return self._handle_settings_post()
 
             if parsed.path == '/resolve':
                 length = int(self.headers.get('Content-Length', '0'))

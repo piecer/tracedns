@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ko">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -34,6 +34,10 @@ th,td{border:1px solid #ddd;padding:6px;text-align:left;}
 
 <div id="settings" class="section">
   <h3>Settings</h3>
+  <div style="margin-bottom:8px">
+    <button id="settingsTabDomains">Domain settings</button>
+    <button id="settingsTabCustom">Custom decoders</button>
+  </div>
   <table class="domain-table" id="domainTable">
     <thead><tr><th>Domain</th><th>Type</th><th>TXT Decode</th><th></th></tr></thead>
     <tbody></tbody>
@@ -51,20 +55,35 @@ th,td{border:1px solid #ddd;padding:6px;text-align:left;}
   <button id="verifyBtn">Verify</button>
   <div id="verifyResult" style="background:#f8f8f8;padding:8px;max-height:240px;overflow:auto;margin-top:8px;font-family:monospace;"></div>
   <h4>Custom Decoders</h4>
-  <label>Name
-    <input id="custom_name" type="text" placeholder="decoder_name" />
-  </label>
-  <label>Steps (JSON array)
-    <textarea id="custom_steps" rows="6" placeholder='[{"op":"regex","pattern":"(\\d{1,3}(?:\\.\\d{1,3}){3})","group":1}]'></textarea>
-  </label>
-  <label>Sample TXT (for preview)
-    <input id="custom_sample" type="text" placeholder='example sample txt' />
-  </label>
-  <button id="previewCustom">Preview</button>
-  <button id="registerCustom">Register</button>
-  <div id="customPreviewResult" style="background:#fff7e6;padding:8px;margin-top:6px;white-space:pre-wrap;font-family:monospace;"></div>
-  <h5>Registered Custom Decoders</h5>
-  <div id="customList" style="border:1px solid #eee;padding:8px;max-height:160px;overflow:auto;background:#fafafa"></div>
+  <div id="customSection" style="display:none">
+    <p style="background:#f0f8ff;padding:8px;border:1px solid #e0eef8">Usage guide: New custom decoders are defined as a safe array of steps. Example steps:
+      <ul>
+        <li><b>regex</b>: extract a group from text using a regular expression. Example: <code>{"op":"regex","pattern":"(\\d{1,3}(?:\\.\\d{1,3}){3})","group":1}</code></li>
+        <li><b>base64</b>/<b>urlsafe_b64</b>: Base64 decode</li>
+        <li><b>xor_hex</b>: XOR with a hex key (example: <code>{"op":"xor_hex","key":"cafebabe"}</code>)</li>
+        <li><b>ascii</b>: convert bytes to ASCII string</li>
+      </ul>
+      List steps in execution order. First use <em>Preview</em> on a sample TXT, and when the output matches your expectation, click <em>Register</em> to add it to the system.
+    </p>
+
+    <label>Name
+      <input id="custom_name" type="text" placeholder="decoder_name" />
+    </label>
+    <label>Steps (JSON array)
+      <textarea id="custom_steps" rows="6" placeholder='[{"op":"regex","pattern":"(\\d{1,3}(?:\\.\\d{1,3}){3})","group":1}]'></textarea>
+    </label>
+    <label>Sample TXT (for preview)
+      <input id="custom_sample" type="text" placeholder='example sample txt' />
+    </label>
+    <div style="margin-top:6px">
+      <button id="previewCustom">Preview</button>
+      <button id="registerCustom">Register</button>
+      <button id="clearCustom">Clear</button>
+    </div>
+    <div id="customPreviewResult" style="background:#fff7e6;padding:8px;margin-top:6px;white-space:pre-wrap;font-family:monospace;"></div>
+    <h5 style="margin-top:10px">Registered Custom Decoders</h5>
+    <div id="customList" style="border:1px solid #eee;padding:8px;max-height:220px;overflow:auto;background:#fafafa"></div>
+  </div>
   <pre id="log"></pre>
 </div>
 
@@ -127,7 +146,7 @@ document.getElementById('menuValidIPs').onclick = ()=> showSection('validips');
 
 function log(msg){ document.getElementById('log').textContent += msg + "\n"; }
 
-// 글로벌 디코더 캐시
+// Global decoder cache
 window.DECODERS = [];
 
 async function loadDecoders(){
@@ -150,13 +169,13 @@ function addDomainRow(obj){
   tdName.appendChild(inp);
   const tdType = document.createElement('td');
   const sel = document.createElement('select');
-  // 지원하는 레코드 타입 목록을 넓힘
+  // Expand supported record type list
   ['A','TXT','AAAA','CNAME','MX','NS','SRV','CAA'].forEach(t=>{ const o = document.createElement('option'); o.value=t; o.text=t; sel.appendChild(o); });
   if(obj && obj.type) sel.value = obj.type.toUpperCase();
   tdType.appendChild(sel);
   const tdDecode = document.createElement('td');
   const selDecode = document.createElement('select');
-  // 디코더 목록은 백엔드에서 동적으로 불러옵니다. 아직 로드되지 않았으면 기본 목록 사용
+  // Decoder list is loaded dynamically from the backend; use fallback if not loaded yet
   const FALLBACK_DECODERS = ['cafebabe_xor_base64','plain_base64','btea_variant','xor_ipstring_base64_fixedkey','base64_xor_febabe','base56','safeb64_xor','c2_multiplex'];
   const decs = (window.DECODERS && window.DECODERS.length) ? window.DECODERS : FALLBACK_DECODERS;
   // include custom decoders names as well
@@ -164,12 +183,12 @@ function addDomainRow(obj){
   const finalDecs = (decs || []).concat(customNames.filter(n=>!(decs||[]).includes(n)));
   finalDecs.forEach(t=>{ const o = document.createElement('option'); o.value=t; o.text=t; selDecode.appendChild(o); });
   if(obj && obj.txt_decode) selDecode.value = obj.txt_decode;
-  // 타입이 TXT가 아니면 디코더 선택 비활성화
+  // If type is not TXT, disable decoder selection
   if(!(obj && obj.type && obj.type.toUpperCase() === 'TXT')){
     selDecode.disabled = true;
   }
 
-  // 타입 변경 시에 TXT Decode 선택 활성/비활성 토글
+  // Toggle TXT decoder selection enabled/disabled when type changes
   sel.onchange = function(){
     if(this.value && this.value.toUpperCase() === 'TXT'){
       selDecode.disabled = false;
@@ -190,6 +209,19 @@ function addDomainRow(obj){
 }
 
 document.getElementById('addDomain').onclick = ()=> addDomainRow();
+
+// Settings tab switching (domains vs custom decoders)
+function showSettingsTab(tab){
+  const dom = document.getElementById('domainTable');
+  const custom = document.getElementById('customSection');
+  if(tab === 'custom'){
+    dom.style.display = 'none'; custom.style.display = 'block';
+  } else {
+    dom.style.display = ''; custom.style.display = 'none';
+  }
+}
+document.getElementById('settingsTabDomains').onclick = ()=> showSettingsTab('domains');
+document.getElementById('settingsTabCustom').onclick = ()=> showSettingsTab('custom');
 
 function collectDomainsFromUI(){
   const rows = document.querySelectorAll('#domainTable tbody tr');
@@ -408,7 +440,7 @@ async function loadHistory(domain){
     if(!r.ok) { log('history load failed'); return; }
     const j = await r.json();
     const el = document.getElementById('historyBox');
-    // j.history는 { meta: {...}, events: [...], current: {...} } 형식
+    // j.history is in the format { meta: {...}, events: [...], current: {...} }
     const hist = j.history || {};
     const events = hist.events || [];
     const meta = hist.meta || {};
@@ -581,7 +613,7 @@ async function refreshValidIPs(){
   setInterval(()=>{ if(!isPaused()) refreshResults(); }, 5000);
   setInterval(()=>{ if(!isPaused()) refreshIPs(); }, 5000);
 
-  window.onload = function(){ showSection('settings'); loadCfg(); refreshResults(); refreshIPs(); };
+  window.onload = function(){ showSection('settings'); showSettingsTab('domains'); loadCfg(); refreshResults(); refreshIPs(); };
 // initialize dynamic decoders and valid IPs refresh hook
 window.addEventListener('load', ()=>{
   loadDecoders().then(()=>{
@@ -663,6 +695,13 @@ window.addEventListener('load', ()=>{
         document.getElementById('customPreviewResult').textContent = 'Register failed: '+JSON.stringify(j);
       }
     }catch(e){ document.getElementById('customPreviewResult').textContent = 'Register error: '+e; }
+  };
+  document.getElementById('clearCustom').onclick = ()=>{
+    document.getElementById('custom_name').value='';
+    document.getElementById('custom_steps').value='';
+    document.getElementById('custom_sample').value='';
+    document.getElementById('custom_name').disabled = false;
+    document.getElementById('customPreviewResult').textContent='';
   };
   // render custom list initially
   renderCustomList();

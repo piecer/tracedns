@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-DNS 모니터 메인 애플리케이션
-여러 도메인을 여러 DNS 서버에서 모니터링하고 웹 UI를 통해 결과를 확인합니다.
+DNS monitor main application.
+Monitors multiple domains across multiple DNS servers and exposes results via a web UI.
 """
 import time
 import argparse
@@ -16,16 +16,17 @@ from txt_decoder import decode_txt_hidden_ips, register_custom_decoder
 from config_manager import read_config, normalize_domains, write_config
 from history_manager import load_history_files, persist_history_entry, ensure_history_dir
 from http_server import ThreadingHTTPServer, make_handler
+from alerts import init_from_config as alerts_init, alert_new_ips
 
 
 def main():
-    """메인 함수: DNS 모니터링을 시작합니다."""
-    parser = argparse.ArgumentParser(description="DNS 모니터 (여러 도메인, 웹 UI)")
-    parser.add_argument("-d", "--domains", default="", help="확인할 도메인들 (쉼표 또는 줄바꿈 구분)")
-    parser.add_argument("-s", "--servers", default="8.8.8.8,1.1.1.1", help="검사할 DNS 서버 리스트(쉼표 구분)")
-    parser.add_argument("-i", "--interval", type=int, default=60, help="체크 간격(초)")
-    parser.add_argument("-c", "--config", default="dns_config.json", help="설정 파일(JSON) 경로")
-    parser.add_argument("--http-port", type=int, default=8000, help="웹 UI 포트")
+    """Main entry: start the DNS monitoring loop and HTTP UI."""
+    parser = argparse.ArgumentParser(description="DNS monitor (multiple domains, web UI)")
+    parser.add_argument("-d", "--domains", default="", help="Domains to monitor (comma or newline separated)")
+    parser.add_argument("-s", "--servers", default="8.8.8.8,1.1.1.1", help="Comma-separated list of DNS servers to query")
+    parser.add_argument("-i", "--interval", type=int, default=60, help="Check interval in seconds")
+    parser.add_argument("-c", "--config", default="dns_config.json", help="Path to JSON config file")
+    parser.add_argument("--http-port", type=int, default=8000, help="HTTP UI port")
     args = parser.parse_args()
 
     cli_specified = {
@@ -86,6 +87,23 @@ def main():
                     shared_config['custom_decoders'].append({'name': name, 'steps': steps})
         except Exception:
             continue
+
+    # restore alert settings from file config (if any)
+    try:
+        alerts_cfg = file_cfg.get('alerts') if isinstance(file_cfg, dict) else None
+        if alerts_cfg:
+            shared_config['alerts'] = alerts_cfg
+    except Exception:
+        shared_config['alerts'] = {}
+
+    # initialize alerting (Teams + MISP) from config.ini (best-effort)
+    try:
+        alerts_init('config.ini')
+    except Exception:
+        try:
+            alerts_init()
+        except Exception:
+            pass
 
     # history persistence dir
     if config_path:
@@ -228,6 +246,21 @@ def main():
                         current_results[name][srv] = snap_update
                         print(f"[NOTICE] {name} ({rtype}) @ {srv} changed: {prev.get('values')} -> {result_vals} decoded:{decoded}")
                         persist_history_entry(history_dir, name, hist_obj)
+                        # If this was a TXT record change, check for newly added decoded IPs
+                        try:
+                            if rtype == 'TXT':
+                                old_decoded = set(prev.get('decoded_ips') or [])
+                                new_decoded = set(decoded or [])
+                                added = list(new_decoded - old_decoded)
+                                if added:
+                                    # prepare tuples (ip, domain) and send alerts
+                                    tuples = [(ip, name) for ip in added]
+                                    try:
+                                        alert_new_ips(tuples)
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
                     # else unchanged
 
         # sleep ticks

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-설정 파일 관리 모듈
+Configuration file management utilities.
+Provides simple read/write helpers and domain normalization.
 """
 import json
 import logging
@@ -8,14 +9,14 @@ import logging
 
 def read_config(path):
     """
-    config JSON 파일을 읽어 dict 반환합니다.
-    파일 경로가 비어있거나 읽기 실패 시 빈 dict 반환합니다.
-    
+    Read a JSON config file and return as a dict.
+    Returns an empty dict on missing path or read error.
+
     Args:
-        path (str): 설정 파일 경로
-    
+        path (str): path to the config file
+
     Returns:
-        dict: 설정 파일 내용 또는 빈 딕셔너리
+        dict: parsed config or empty dict
     """
     if not path:
         return {}
@@ -29,12 +30,12 @@ def read_config(path):
 
 def write_config(path, cfg):
     """
-    cfg(dict)를 지정된 경로에 JSON으로 저장합니다.
-    실패 시 경고 로깅합니다.
-    
+    Write cfg (a dict) to the specified path as JSON.
+    Logs a warning on failure.
+
     Args:
-        path (str): 저장할 파일 경로
-        cfg (dict): 저장할 설정 내용
+        path (str): destination file path
+        cfg (dict): configuration to write
     """
     if not path:
         return
@@ -47,16 +48,17 @@ def write_config(path, cfg):
 
 def normalize_domains(value):
     """
-    도메인 값을 정규화된 형식으로 변환합니다.
-    반환: list of dicts: [{ 'name': 'example.com', 'type': 'A', 'txt_decode': 'cafebabe_xor_base64' }, ...]
-    입력 허용:
-      - dict에 txt_decode 필드가 있으면 그대로 반영
-    
+    Normalize domain input into a list of dicts.
+
+    Returns a list like: [{ 'name': 'example.com', 'type': 'A', 'txt_decode': 'cafebabe_xor_base64' }, ...]
+    Accepts strings, lists, or dicts. If an item is a dict and contains
+    a `txt_decode` field, it is preserved.
+
     Args:
-        value: 도메인 정보 (문자열, 리스트, 또는 딕셔너리)
-    
+        value: domain information (string, list, or dict)
+
     Returns:
-        list: 정규화된 도메인 정보 리스트
+        list: normalized domain dictionaries
     """
     if not value:
         return []

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>TraceDNS Settings</title>
+  <style>body{font-family:Arial,Helvetica,sans-serif;margin:20px}label{display:block;margin:6px 0}input{padding:6px}</style>
+</head>
+<body>
+  <nav><a href="/">Dashboard</a> | <a href="/dns_frontend.html">Original UI</a></nav>
+  <h1>Settings</h1>
+  <p class="small">Alert template settings (Teams, MISP). Actual alert delivery requires separate testing.</p>
+  <label>Teams Webhook URL<br/><input id="teams_webhook" style="width:100%" placeholder="https://..."/></label>
+  <label>MISP URL<br/><input id="misp_url" style="width:100%" placeholder="https://misp.example"/></label>
+  <label>MISP API Key<br/><input id="misp_key" style="width:100%" placeholder="API key"/></label>
+  <label>Push Event ID (MISP)<br/><input id="push_event_id" style="width:100%" placeholder="12345"/></label>
+  <label>VirusTotal API Key<br/><input id="vt_api_key" style="width:100%" placeholder="VT API key"/></label>
+  <div style="margin-top:6px">
+    <button id="load_settings">Load</button>
+    <button id="save_settings">Save</button>
+    <span id="settings_status" class="small"></span>
+  </div>
+
+  <script>
+    async function loadSettings(){
+      try{
+        const r = await fetch('/settings');
+        const j = await r.json();
+        const alerts = (j.settings && j.settings.alerts) ? j.settings.alerts : (j.settings || {}).alerts || {};
+        document.getElementById('teams_webhook').value = alerts.teams_webhook || '';
+        document.getElementById('misp_url').value = alerts.misp_url || '';
+        document.getElementById('misp_key').value = alerts.api_key || '';
+        document.getElementById('push_event_id').value = alerts.push_event_id || '';
+        document.getElementById('vt_api_key').value = alerts.vt_api_key || '';
+      }catch(e){console.log(e)}
+    }
+    document.getElementById('load_settings').addEventListener('click', ()=>loadSettings());
+    document.getElementById('save_settings').addEventListener('click', async ()=>{
+      const alerts = {
+        teams_webhook: document.getElementById('teams_webhook').value.trim(),
+        misp_url: document.getElementById('misp_url').value.trim(),
+        api_key: document.getElementById('misp_key').value.trim(),
+        push_event_id: document.getElementById('push_event_id').value.trim(),
+        vt_api_key: document.getElementById('vt_api_key').value.trim()
+      };
+      try{
+        const r = await fetch('/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({alerts})});
+        const j = await r.json();
+        if(j && j.status=='ok'){
+          document.getElementById('settings_status').textContent = 'Saved.';
+        } else {
+          document.getElementById('settings_status').textContent = 'Save failed';
+        }
+      }catch(e){
+        document.getElementById('settings_status').textContent = 'Save failed';
+      }
+      setTimeout(()=>{document.getElementById('settings_status').textContent='';},3000);
+    });
+    loadSettings();
+  </script>
+</body>
+</html>
