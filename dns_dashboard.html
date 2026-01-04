@@ -27,11 +27,37 @@
   <h2>Summary</h2>
   <div id="summary">Loading...</div>
 
-  <h2>Unique IP 목록 (VT 정보 포함)</h2>
+  <h2>Unique IPs (VT info included)</h2>
   <table id="ips">
-    <thead><tr><th>IP</th><th>Count</th><th>Last seen</th><th>Domains</th><th>VT</th></tr></thead>
+    <thead><tr>
+      <th data-key="ip">IP</th>
+      <th data-key="count">Count</th>
+      <th data-key="last_ts">Last seen</th>
+      <th data-key="domains">Domains</th>
+      <th data-key="vt">VT</th>
+    </tr></thead>
     <tbody></tbody>
   </table>
+
+  <h2>Domains</h2>
+  <div id="domains_section">
+    <p class="small">List of configured domains and quick actions (remove non-resolving domains).</p>
+    <div style="margin-bottom:8px">
+      <label><input id="filter_nonresolving" type="checkbox"/> Show only non-resolving</label>
+      &nbsp;&nbsp;
+      <label>Sort: <select id="domains_sort">
+        <option value="resolving_desc">Resolving first</option>
+        <option value="last_ts_desc">Last seen (newest)</option>
+        <option value="last_ts_asc">Last seen (oldest)</option>
+        <option value="name_asc">Name A→Z</option>
+        <option value="name_desc">Name Z→A</option>
+      </select></label>
+    </div>
+    <table id="domains_table">
+      <thead><tr><th data-key="name">Domain</th><th data-key="type">Type</th><th data-key="resolving">Resolving</th><th data-key="last_ts">Last seen</th><th>Actions</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
 
   <h2>Settings</h2>
   <div id="settings">
@@ -51,10 +77,38 @@
   <script>
     async function load(){
       document.getElementById('last').textContent = new Date().toLocaleString();
-      const resp = await fetch('/ips?include_vt=1');
-      const data = await resp.json();
-      const ips = data.ips || [];
-      document.getElementById('summary').textContent = `Unique IPs: ${ips.length}`;
+      try{
+        const resp = await fetch('/ips?include_vt=1');
+        if(!resp.ok){
+          document.getElementById('summary').textContent = 'Load failed (server error)';
+          return;
+        }
+        const data = await resp.json();
+        let ips = data.ips || [];
+        document.getElementById('summary').textContent = `Unique IPs: ${ips.length}`;
+        // Default: sort by newest (last_ts) descending
+        ips.sort((a,b)=> (b.last_ts||0) - (a.last_ts||0));
+        const tbody = document.querySelector('#ips tbody');
+        tbody.innerHTML = '';
+        for(const r of ips){
+            const tr = document.createElement('tr');
+            if(r.vt && (r.vt.malicious || r.vt.suspicious)) tr.className='vt-bad';
+            const last = r.last_ts ? new Date(r.last_ts*1000).toLocaleString() : '';
+            const domains = (r.domains||[]).join(', ');
+            const vtcell = r.vt ? `<div>malicious:${r.vt.malicious||0} / suspicious:${r.vt.suspicious||0} / harmless:${r.vt.harmless||0}</div>` : '<div class="small">(no VT)</div>';
+            tr.innerHTML = `<td><a href="/ip?ip=${encodeURIComponent(r.ip)}">${r.ip}</a></td><td>${r.count}</td><td>${last}</td><td>${domains}</td><td>${vtcell}</td>`;
+            tbody.appendChild(tr);
+        }
+      }catch(e){
+        console.error('Failed to load /ips', e);
+        document.getElementById('summary').textContent = 'Load failed (network error)';
+        return;
+      }
+    }
+
+    // Sorting logic for table headers
+    let currentSort = {key:'last_ts',dir:-1}; // -1 = desc, 1 = asc
+    function renderSorted(ips){
       const tbody = document.querySelector('#ips tbody');
       tbody.innerHTML = '';
       for(const r of ips){
@@ -67,6 +121,132 @@
         tbody.appendChild(tr);
       }
     }
+
+    function doSort(ips, key, dir){
+      const copy = ips.slice();
+      copy.sort((a,b)=>{
+        const aval = (key==='domains') ? (a.domains||[]).join(', ') : (key==='vt' ? (a.vt && (a.vt.malicious||0)) : (a[key]===undefined? -Infinity : a[key]));
+        const bval = (key==='domains') ? (b.domains||[]).join(', ') : (key==='vt' ? (b.vt && (b.vt.malicious||0)) : (b[key]===undefined? -Infinity : b[key]));
+        if(typeof aval === 'string' || typeof bval === 'string'){
+          return dir * String(aval).localeCompare(String(bval));
+        }
+        return dir * ( (aval||0) - (bval||0) );
+      });
+      return copy;
+    }
+
+    // Attach header click handlers for sorting (script is at page bottom so DOM is available)
+    const headers = document.querySelectorAll('#ips thead th');
+    headers.forEach(h=>{
+      h.style.cursor = 'pointer';
+      h.addEventListener('click', async ()=>{
+        const key = h.getAttribute('data-key');
+        if(currentSort.key===key) currentSort.dir *= -1; else { currentSort.key=key; currentSort.dir=-1; }
+        // reload data and apply sort
+        try{
+          const resp = await fetch('/ips?include_vt=1');
+          if(!resp.ok){
+            document.getElementById('summary').textContent = 'Load failed (server error)';
+            return;
+          }
+          const data = await resp.json();
+          let ips2 = data.ips || [];
+          ips2 = doSort(ips2, currentSort.key, currentSort.dir);
+          renderSorted(ips2);
+        }catch(e){
+          console.error('Failed to load /ips for sorting', e);
+          document.getElementById('summary').textContent = 'Load failed (network error)';
+        }
+      });
+    });
+
+    // Domains management
+    // domains cache and rendering helpers
+    let domainsCache = [];
+    function renderDomains(){
+      const tbody = document.querySelector('#domains_table tbody');
+      tbody.innerHTML = '';
+      const onlyNon = document.getElementById('filter_nonresolving').checked;
+      let list = domainsCache.slice();
+      // apply filter
+      if(onlyNon) list = list.filter(x=> !x.resolving);
+      // apply sort
+      const sortVal = document.getElementById('domains_sort').value;
+      if(sortVal === 'resolving_desc'){
+        list.sort((a,b)=> (Number(b.resolving) - Number(a.resolving)) || ((b.last_ts||0)-(a.last_ts||0)));
+      } else if(sortVal === 'last_ts_desc'){
+        list.sort((a,b)=> (b.last_ts||0)-(a.last_ts||0));
+      } else if(sortVal === 'last_ts_asc'){
+        list.sort((a,b)=> (a.last_ts||0)-(b.last_ts||0));
+      } else if(sortVal === 'name_asc'){
+        list.sort((a,b)=> String(a.name).localeCompare(String(b.name)));
+      } else if(sortVal === 'name_desc'){
+        list.sort((a,b)=> String(b.name).localeCompare(String(a.name)));
+      }
+      for(const d of list){
+        const tr = document.createElement('tr');
+        const last = d.last_ts ? new Date(d.last_ts*1000).toLocaleString() : '';
+        const resolving = d.resolving ? '<strong style="color:green">Yes</strong>' : '<span style="color:#999">No</span>';
+        tr.innerHTML = `<td>${d.name}</td><td>${d.type||'A'}</td><td>${resolving}</td><td>${last}</td><td><button data-domain="${d.name}" class="check-domain">Check Now</button> <button data-domain="${d.name}" class="remove-domain">Remove</button></td>`;
+        tbody.appendChild(tr);
+      }
+      // attach handlers
+      document.querySelectorAll('.remove-domain').forEach(btn=>{
+        btn.addEventListener('click', async ()=>{
+          const dom = btn.getAttribute('data-domain');
+          if(!confirm(`Remove domain '${dom}' from configuration?`)) return;
+          try{
+            // fetch current domains list via /domains and POST updated config
+            const cur = await fetch('/domains');
+            const cj = await cur.json();
+            const curList = (cj.domains||[]).map(x=>x.name);
+            const newList = curList.filter(x=> x !== dom);
+            const r = await fetch('/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({domains: newList})});
+            const jr = await r.json();
+            if(r.ok && jr.status=='ok'){
+              await loadDomains(); load();
+            } else {
+              alert('Failed to remove domain');
+            }
+          }catch(e){
+            console.error('remove domain failed', e);
+            alert('Failed to remove domain');
+          }
+        });
+      });
+      document.querySelectorAll('.check-domain').forEach(btn=>{
+        btn.addEventListener('click', async ()=>{
+          const dom = btn.getAttribute('data-domain');
+          btn.disabled = true; btn.textContent = 'Checking...';
+          try{
+            const r = await fetch('/resolve', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({domain: dom})});
+            if(r.ok){
+              // small delay to allow monitor to run the check
+              setTimeout(async ()=>{ await loadDomains(); await load(); btn.disabled=false; btn.textContent='Check Now'; }, 1500);
+            } else {
+              btn.disabled=false; btn.textContent='Check Now';
+              alert('Resolve request failed');
+            }
+          }catch(e){
+            console.error('check now failed', e);
+            btn.disabled=false; btn.textContent='Check Now';
+            alert('Resolve request failed');
+          }
+        });
+      });
+    }
+
+    async function loadDomains(){
+      try{
+        const resp = await fetch('/domains');
+        if(!resp.ok){ console.warn('Failed to load /domains'); return; }
+        const data = await resp.json();
+        domainsCache = data.domains || [];
+        renderDomains();
+      }catch(e){ console.error('Failed to load domains', e); }
+    }
+    // load domains on start
+    loadDomains();
 
     document.getElementById('refresh').addEventListener('click', ()=>load());
     load();

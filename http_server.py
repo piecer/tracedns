@@ -227,6 +227,71 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                                 ent['last_ts'] = max(ent['last_ts'], ts)
             return ip_map
 
+        def _handle_domains(self):
+            """Return configured domains with a lightweight resolving status and last-seen info.
+
+            Uses `current_results` and `history` to determine whether a domain is currently resolving.
+            """
+            try:
+                domains = []
+                # shared_config stores domains as list (name or dict)
+                cfg_domains = shared_config.get('domains', []) or []
+                seen_map = {}
+                # determine last_ts per domain from current_results
+                for d, m in current_results.items():
+                    maxts = 0
+                    servers = []
+                    samples = []
+                    for srv, info in m.items():
+                        servers.append(srv)
+                        ts = info.get('ts', 0) or 0
+                        maxts = max(maxts, ts)
+                        if info.get('type') == 'A':
+                            samples.extend(info.get('values', []) or [])
+                        elif info.get('type') == 'TXT':
+                            samples.extend(info.get('decoded_ips', []) or [])
+                    seen_map[d] = {'last_ts': maxts, 'servers': servers, 'samples': samples}
+
+                # also check history meta last_changed/first_seen
+                for d, hist_obj in history.items():
+                    try:
+                        meta = hist_obj.get('meta', {}) if isinstance(hist_obj, dict) else {}
+                        last_changed = meta.get('last_changed') or meta.get('first_seen') or 0
+                        entry = seen_map.setdefault(d, {'last_ts': 0, 'servers': [], 'samples': []})
+                        entry['last_ts'] = max(entry.get('last_ts', 0), int(last_changed or 0))
+                    except Exception:
+                        continue
+
+                for d in cfg_domains:
+                    name = d.get('name') if isinstance(d, dict) else d
+                    name = name or ''
+                    info = seen_map.get(name, {'last_ts': 0, 'servers': [], 'samples': []})
+                    # resolving if there is a non-empty sample or last_ts present
+                    resolving = False
+                    if info.get('samples'):
+                        resolving = True
+                    elif info.get('last_ts', 0) and info.get('last_ts', 0) > 0:
+                        resolving = True
+                    domains.append({
+                        'name': name,
+                        'type': (d.get('type') if isinstance(d, dict) else 'A'),
+                        'resolving': bool(resolving),
+                        'last_ts': info.get('last_ts', 0),
+                        'servers': info.get('servers', []),
+                        'samples': info.get('samples', [])
+                    })
+
+                # also include any domains present in current_results but not in config (likely ephemeral)
+                for d, v in seen_map.items():
+                    if d and not any(x['name'] == d for x in domains):
+                        domains.append({'name': d, 'type': 'A', 'resolving': bool(v.get('samples') or v.get('last_ts')), 'last_ts': v.get('last_ts', 0), 'servers': v.get('servers', []), 'samples': v.get('samples', [])})
+
+                # sort domains by resolving (resolving first) then newest last_ts
+                domains.sort(key=lambda x: (not x.get('resolving', False), -(x.get('last_ts') or 0)))
+                self._send_json({'domains': domains})
+            except Exception as e:
+                self._send_json({'error': str(e)}, 500)
+
         def _handle_ips(self, qs):
             try:
                 ip_map = self._gather_ip_map()
@@ -383,6 +448,8 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                 return self._handle_ip_query(ip)
             if parsed.path == '/ips':
                 return self._handle_ips(qs)
+            if parsed.path == '/domains':
+                return self._handle_domains()
             if parsed.path == '/':
                 b = frontend_html.encode('utf-8')
                 self.send_response(200)
