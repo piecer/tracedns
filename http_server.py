@@ -154,6 +154,12 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                         return self._send_json({'error': 'invalid vt_api_key (unexpected characters)'}, 400)
                     # store back cleaned value
                     alerts['vt_api_key'] = vts
+                    # Apply VT API key to vt_lookup module
+                    try:
+                        from vt_lookup import set_api_key
+                        set_api_key(vts)
+                    except Exception:
+                        pass
             except Exception:
                 return self._send_json({'error': 'vt_api_key validation error'}, 400)
 
@@ -174,8 +180,11 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                         if 'custom_decoders' not in cfg:
                             cfg['custom_decoders'] = shared_config.get('custom_decoders', [])
                         write_config(config_path, cfg)
-                    except Exception:
-                        pass
+                        import sys
+                        print(f"[DEBUG] Settings saved to {config_path}: {alerts}", file=sys.stderr)
+                    except Exception as e:
+                        import sys
+                        print(f"[ERROR] Failed to save settings to {config_path}: {e}", file=sys.stderr)
             return self._send_json({'status': 'ok', 'alerts': alerts})
 
         def _gather_ip_map(self):
@@ -498,8 +507,22 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                     return self._send_json({'error': 'invalid json'}, 400)
 
                 with config_lock:
+                    # Handle domains update: preserve existing txt_decode settings
                     if 'domains' in data:
-                        shared_config['domains'] = normalize_domains(data['domains'])
+                        new_domains_raw = data['domains']
+                        # Get current domains for reference (to preserve txt_decode)
+                        current_domains = shared_config.get('domains', [])
+                        current_map = {d['name']: d for d in current_domains if isinstance(d, dict)}
+                        
+                        # Normalize new domains but preserve txt_decode from current
+                        new_domains_normalized = normalize_domains(new_domains_raw)
+                        for d in new_domains_normalized:
+                            if d['name'] in current_map and 'txt_decode' in current_map[d['name']]:
+                                d['txt_decode'] = current_map[d['name']]['txt_decode']
+                        
+                        shared_config['domains'] = new_domains_normalized
+                        print(f"[DEBUG] /config POST: Updated domains to {[d['name'] for d in new_domains_normalized]}")
+                    
                     if 'servers' in data:
                         sv = data['servers']
                         if isinstance(sv, list):
@@ -517,15 +540,21 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                         to_write = {
                             'domains': shared_config.get('domains', []),
                             'servers': shared_config.get('servers', []),
-                            'interval': shared_config.get('interval')
+                            'interval': shared_config.get('interval'),
+                            'alerts': shared_config.get('alerts', {})
                         }
-                        write_config(config_path, to_write)
+                        try:
+                            write_config(config_path, to_write)
+                            print(f"[DEBUG] /config POST: Saved config to {config_path}")
+                        except Exception as e:
+                            print(f"[ERROR] /config POST: Failed to save config: {e}")
 
                     resp = {
                         'status': 'ok',
                         'domains': shared_config.get('domains'),
                         'servers': shared_config.get('servers'),
-                        'interval': shared_config.get('interval')
+                        'interval': shared_config.get('interval'),
+                        'alerts': shared_config.get('alerts', {})
                     }
                 return self._send_json(resp)
 

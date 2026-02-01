@@ -436,6 +436,185 @@ def extract_ip_safeb64(encoded_str: str) -> str:
         return ""
 
 
+# ---------------------------
+# XOR Key Extension Decoder
+# ---------------------------
+
+def _extend_xor_key(known_key: Union[bytes, list], enc_list: list, ip_list: list) -> bytes:
+    """
+    데이터셋을 이용하여 알려진 XOR 키를 확장합니다.
+    
+    Args:
+        known_key (bytes or list): 알려진 키의 초기 부분 (예: 12바이트)
+        enc_list (list): base64 인코딩된 데이터 리스트
+        ip_list (list): 평문 IP 주소 리스트
+    
+    Returns:
+        bytes: 확장된 전체 키
+    """
+    from collections import Counter
+    
+    # 키를 리스트로 변환
+    if isinstance(known_key, bytes):
+        known_key = list(known_key)
+    else:
+        known_key = list(known_key)
+    
+    # 확장 후보 저장소 (최대 64바이트까지 지원)
+    extended_key_candidates = [Counter() for _ in range(64)]
+    
+    matched_count = 0
+    
+    for enc in enc_list:
+        try:
+            enc_bytes = base64.b64decode(enc)
+            
+            # 알려진 키로 접두사 디코딩
+            decoded_prefix = []
+            for i in range(min(len(enc_bytes), len(known_key))):
+                decoded_prefix.append(chr(enc_bytes[i] ^ known_key[i]))
+            
+            prefix_str = "".join(decoded_prefix)
+            
+            # 이 접두사로 시작하는 IP 찾기
+            matched_ip = None
+            for ip in ip_list:
+                if ip.startswith(prefix_str):
+                    matched_ip = ip
+                    break
+            
+            if matched_ip:
+                matched_count += 1
+                
+                # 뒷부분 키 역산 (Key = Encrypted XOR Plain)
+                start_idx = len(known_key)
+                
+                if len(enc_bytes) > start_idx and len(matched_ip) > start_idx:
+                    for i in range(start_idx, min(len(enc_bytes), len(matched_ip), 64)):
+                        new_key_byte = enc_bytes[i] ^ ord(matched_ip[i])
+                        extended_key_candidates[i].update([new_key_byte])
+        
+        except Exception:
+            pass
+    
+    # 최종 키 구성
+    final_full_key = list(known_key)
+    
+    for i in range(len(known_key), 64):
+        if extended_key_candidates[i]:
+            best_key, count = extended_key_candidates[i].most_common(1)[0]
+            final_full_key.append(best_key)
+        else:
+            break
+    
+    return bytes(final_full_key)
+
+
+@txt_decode_register('xor_keyextend')
+def decode_txt_xor_keyextend(txt_values, known_key=None, enc_dataset=None, ip_dataset=None, domain=None, **kwargs):
+    """
+    데이터셋을 이용하여 키를 확장하고 XOR 디코딩을 수행합니다.
+    Multi-record 처리를 지원합니다 (세미콜론 분리 포함).
+    
+    Args:
+        txt_values (list): TXT 레코드 값 리스트 (여러 개 가능)
+        known_key (bytes or str): 알려진 키 (hex 문자열 또는 바이트). 기본값: 15바이트 키
+        enc_dataset (list): 암호화된 텍스트 리스트 (키 확장용)
+        ip_dataset (list): 평문 IP 주소 리스트 (키 확장용)
+        domain (str): 도메인 (로깅용)
+    
+    Returns:
+        list: 디코딩된 IP 주소 리스트 (중복 제거, 정렬됨)
+    """
+    # 기본 알려진 키 설정 (15바이트 = 30hex chars)
+    if known_key is None:
+        known_key = bytes.fromhex("2ad28f0c67f549252d1ec04cdff628")
+    elif isinstance(known_key, str):
+        try:
+            # hex 문자열을 바이트로 변환
+            known_key = bytes.fromhex(known_key)
+        except Exception:
+            # hex 변환 실패시 기본값 사용
+            known_key = bytes.fromhex("2ad28f0c67f549252d1ec04cdff628")
+    elif isinstance(known_key, list):
+        known_key = bytes(known_key)
+    
+    # 데이터셋이 제공된 경우 키 확장
+    full_key = known_key
+    if enc_dataset and ip_dataset:
+        try:
+            full_key = _extend_xor_key(known_key, enc_dataset, ip_dataset)
+        except Exception:
+            full_key = known_key
+    
+    out = []
+    seen = set()
+    
+    for v in txt_values or []:
+        if not v:
+            continue
+        
+        # Multi-record 처리: 세미콜론(;)으로 분리된 세그먼트 지원
+        # 세미콜론이 있으면 우선 처리, 없으면 기존 방식 사용
+        if ';' in str(v):
+            # 세미콜론 기준 분리 (사용자 스크립트와 동일)
+            segments = str(v).split(';')
+            parts = [p.strip() for segment in segments for p in segment.replace(',', '|').split('|') if p.strip()]
+        else:
+            # 기존 방식: 쉼표와 파이프로 분리
+            parts = [p.strip() for p in str(v).replace(',', '|').split('|') if p.strip()]
+        
+        for part in parts:
+            try:
+                # 공백 제거 및 따옴표 제거
+                clean_part = part.strip().replace('"', '')
+                if not clean_part:
+                    continue
+                
+                # Base64 Padding 보정 (사용자 스크립트와 동일한 방식)
+                missing_padding = len(clean_part) % 4
+                if missing_padding:
+                    padded_part = clean_part + ('=' * (4 - missing_padding))
+                else:
+                    padded_part = clean_part
+                
+                # Base64 디코딩
+                try:
+                    cipher = base64.b64decode(padded_part, validate=False)
+                except Exception:
+                    continue
+                
+                # XOR 복호화 (반복 XOR 지원)
+                dec = _xor_bytes(cipher, full_key)
+                
+                # ASCII 디코딩 (null terminator 제거)
+                plaintext = dec.decode('ascii', errors='ignore').rstrip('\x00')
+                
+                # IP 주소 추출 방식 1: 정규식 (IPv4 패턴)
+                ip = _extract_ip_prefix(plaintext.encode('ascii'))
+                if ip and ip not in seen:
+                    seen.add(ip)
+                    out.append(ip)
+                else:
+                    # IP 주소 추출 방식 2: 숫자와 점만 추출 (사용자 스크립트 방식)
+                    ip_fallback = ""
+                    for char in plaintext:
+                        if char in "0123456789.":
+                            ip_fallback += char
+                        else:
+                            break
+                    
+                    # 유효한 IPv4 형식 확인
+                    if ip_fallback and re.match(r"^(\d{1,3}\.){3}\d{1,3}$", ip_fallback) and ip_fallback not in seen:
+                        seen.add(ip_fallback)
+                        out.append(ip_fallback)
+                
+            except Exception:
+                continue
+    
+    return sorted(out)
+
+
 def is_base64(s: str):
     try:
         decoded = base64.b64decode(s + '=' * (-len(s) % 4)).decode('utf-8').rstrip('\x00')

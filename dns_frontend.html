@@ -5,66 +5,242 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>DNS Monitor</title>
 <style>
-body{font-family: Arial, sans-serif;max-width:1000px;margin:20px;}
-nav{margin-bottom:12px;}
-nav button{margin-right:6px;padding:6px 10px;}
-.section{display:none;}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{
+  font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background:linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
+  min-height:100vh;
+  padding:20px;
+  color:#333;
+}
+.container{max-width:1200px;margin:0 auto;background:#fff;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,0.3);overflow:hidden;}
+header{background:linear-gradient(135deg, #3498db 0%, #2980b9 100%);color:#fff;padding:30px;text-align:center;}
+header h1{font-size:2.5em;font-weight:700;margin-bottom:8px;}
+header p{font-size:0.95em;opacity:0.9;}
+nav{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  padding:20px;
+  background:#f8f9fa;
+  border-bottom:2px solid #e9ecef;
+  justify-content:center;
+}
+nav button{
+  padding:12px 24px;
+  border:2px solid #3498db;
+  background:#fff;
+  color:#3498db;
+  border-radius:8px;
+  cursor:pointer;
+  font-weight:600;
+  transition:all 0.3s ease;
+  font-size:0.95em;
+}
+nav button:hover{background:#3498db;color:#fff;transform:translateY(-2px);box-shadow:0 4px 12px rgba(52,152,219,0.4);}
+.section{display:none;padding:30px;animation:fadeIn 0.3s ease;}
 .section.active{display:block;}
-label{display:block;margin:8px 0;}
-textarea,input[type=text], input[type=number]{width:100%;padding:6px;}
-button{padding:6px 10px;margin:4px 2px;}
-#log{background:#f5f5f5;padding:8px;height:120px;overflow:auto;}
-table{width:100%;border-collapse:collapse;margin-top:8px;}
-th,td{border:1px solid #ddd;padding:6px;text-align:left;}
-#historyBox{height:220px;overflow:auto;background:#fff;border:1px solid #ddd;padding:8px;}
+@keyframes fadeIn{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}
+.section h3{font-size:1.8em;margin-bottom:20px;color:#3498db;border-bottom:3px solid #3498db;padding-bottom:10px;}
+.section h4{font-size:1.3em;margin:20px 0 15px;color:#2980b9;}
+label{display:block;margin:15px 0 8px;font-weight:600;color:#555;}
+textarea,input[type=text],input[type=number]{
+  width:100%;
+  padding:12px;
+  margin-bottom:12px;
+  border:2px solid #e9ecef;
+  border-radius:8px;
+  font-size:0.95em;
+  transition:border-color 0.3s ease;
+  font-family:inherit;
+}
+textarea:focus,input[type=text]:focus,input[type=number]:focus{outline:none;border-color:#3498db;box-shadow:0 0 0 3px rgba(52,152,219,0.1);}
+button{
+  padding:12px 24px;
+  margin:8px 8px 8px 0;
+  border:none;
+  border-radius:8px;
+  background:linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+  color:#fff;
+  font-weight:600;
+  cursor:pointer;
+  transition:all 0.3s ease;
+  font-size:0.95em;
+}
+button:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(52,152,219,0.4);}
+button:active{transform:translateY(0);}
+#log{
+  background:#1e1e1e;
+  color:#00ff00;
+  padding:15px;
+  height:150px;
+  overflow:auto;
+  border-radius:8px;
+  font-family:'Courier New', monospace;
+  font-size:0.85em;
+  line-height:1.5;
+  margin-top:15px;
+  border:2px solid #e9ecef;
+}
+table{
+  width:100%;
+  border-collapse:collapse;
+  margin-top:15px;
+  border-radius:8px;
+  box-shadow:0 4px 12px rgba(0,0,0,0.1);
+}
+#resultsTable{
+  display:block;
+  overflow-x:auto;
+}
+th{
+  background:linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+  color:#fff;
+  padding:15px;
+  text-align:left;
+  font-weight:600;
+  border:none;
+}
+td{
+  padding:10px 12px;
+  border-bottom:1px solid #e9ecef;
+  max-width:200px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+th{
+  background:linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+  color:#fff;
+  padding:15px;
+  text-align:left;
+  font-weight:600;
+  border:none;
+  white-space:nowrap;
+}
+tr:last-child td{border-bottom:none;}
+tr:hover{background:#f8f9fa;}
+td:last-child{
+  display:flex;
+  gap:4px;
+  flex-wrap:wrap;
+  align-items:center;
+  max-width:none;
+  padding:10px 6px;
+  min-width:280px;
+}
+td:last-child button{
+  padding:5px 8px;
+  font-size:0.75em;
+  white-space:nowrap;
+  flex-shrink:0;
+}
+tr:hover td:last-child{
+  background:#f8f9fa;
+}
+td:last-child button{
+  padding:6px 10px;
+  font-size:0.80em;
+  white-space:nowrap;
+  flex-shrink:0;
+  border:1px solid #3498db;
+  background:#fff;
+  color:#2c3e50;
+  border-radius:4px;
+  cursor:pointer;
+  transition:all 0.2s;
+}
+td:last-child button:hover{
+  background:#3498db;
+  color:#fff;
+}
+#historyBox{
+  height:220px;
+  overflow:auto;
+  background:#f8f9fa;
+  border:2px solid #e9ecef;
+  padding:15px;
+  border-radius:8px;
+  font-family:'Courier New', monospace;
+  font-size:0.85em;
+  line-height:1.6;
+}
 .domain-table input{width:70%;}
-.domain-table select{width:25%;}
-/* allow long values to wrap and be copyable; show full via title tooltip */
-.wrap-cell{white-space:nowrap;overflow-x:auto;max-width:520px;display:block;}
+.domain-table select{width:25%;padding:8px;border:2px solid #e9ecef;border-radius:6px;}
+.wrap-cell{
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  max-width:200px;
+  display:block;
+}
+.info-box{
+  background:linear-gradient(135deg, #f0f4ff 0%, #f8f1ff 100%);
+  border-left:4px solid #667eea;
+  padding:15px;
+  border-radius:8px;
+  margin:15px 0;
+  font-size:0.95em;
+  line-height:1.6;
+}
+.info-box code{background:#fff;padding:2px 6px;border-radius:4px;font-family:'Courier New', monospace;color:#d63031;}
+.success{color:#27ae60;font-weight:600;}
+.error{color:#e74c3c;font-weight:600;}
+.tab-buttons{display:flex;gap:8px;margin-bottom:15px;}
+.tab-buttons button{margin:0;}
+.tab-buttons button.active{background:linear-gradient(135deg, #667eea 0%, #764ba2 100%);}
 </style>
 </head>
 <body>
+<div class="container">
+<header><h1>🔍 DNS Monitor</h1><p>Advanced DNS record tracking and TXT decoding</p></header>
 <nav>
-  <button id="menuSettings">Settings</button>
-  <button id="menuStatus">Status</button>
-  <button id="menuQuery">Query</button>
-  <button id="menuIPs">All IPs</button>
-  <button id="menuValidIPs">Valid IPs</button>
+  <button id="menuSettings">⚙️ Settings</button>
+  <button id="menuStatus">📊 Status</button>
+  <button id="menuQuery">🔎 Query</button>
+  <button id="menuIPs">📍 All IPs</button>
+  <button id="menuValidIPs">✅ Valid IPs</button>
 </nav>
 
 <div id="settings" class="section">
-  <h3>Settings</h3>
-  <div style="margin-bottom:8px">
-    <button id="settingsTabDomains">Domain settings</button>
+  <h3>⚙️ Settings</h3>
+  <div class="tab-buttons">
+    <button id="settingsTabDomains" class="active">Domain settings</button>
     <button id="settingsTabCustom">Custom decoders</button>
   </div>
   <table class="domain-table" id="domainTable">
     <thead><tr><th>Domain</th><th>Type</th><th>TXT Decode</th><th></th></tr></thead>
     <tbody></tbody>
   </table>
-  <button id="addDomain">Add Domain</button>
+  <button id="addDomain">+ Add Domain</button>
+  
   <label>Servers (comma separated)
-    <input id="servers" type="text" />
+    <input id="servers" type="text" placeholder="8.8.8.8, 1.1.1.1" />
   </label>
   <label>Interval (seconds)
-    <input id="interval" type="number" min="1" />
+    <input id="interval" type="number" min="1" value="60" />
   </label>
-  <button id="load">Load</button>
-  <button id="save">Save</button>
-  <button id="force">Force Resolve</button>
-  <button id="verifyBtn">Verify</button>
-  <div id="verifyResult" style="background:#f8f8f8;padding:8px;max-height:240px;overflow:auto;margin-top:8px;font-family:monospace;"></div>
+  
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin:20px 0;">
+    <button id="load">📥 Load</button>
+    <button id="save">💾 Save</button>
+    <button id="force">⚡ Force Resolve</button>
+    <button id="verifyBtn">🔬 Verify</button>
+  </div>
+  
+  <div id="verifyResult" style="background:#f8f9fa;padding:15px;max-height:240px;overflow:auto;margin-top:15px;font-family:monospace;border-radius:8px;border:2px solid #e9ecef;"></div>
+  
   <h4>Custom Decoders</h4>
   <div id="customSection" style="display:none">
-    <p style="background:#f0f8ff;padding:8px;border:1px solid #e0eef8">Usage guide: New custom decoders are defined as a safe array of steps. Example steps:
-      <ul>
-        <li><b>regex</b>: extract a group from text using a regular expression. Example: <code>{"op":"regex","pattern":"(\\d{1,3}(?:\\.\\d{1,3}){3})","group":1}</code></li>
+    <div class="info-box">
+      <strong>📚 Usage Guide:</strong> New custom decoders are defined as a safe array of steps.
+      <ul style="margin:10px 0 0 20px;">
+        <li><b>regex</b>: Extract group from text: <code>{"op":"regex","pattern":"(\\d{1,3}(?:\\.\\d{1,3}){3})","group":1}</code></li>
         <li><b>base64</b>/<b>urlsafe_b64</b>: Base64 decode</li>
-        <li><b>xor_hex</b>: XOR with a hex key (example: <code>{"op":"xor_hex","key":"cafebabe"}</code>)</li>
-        <li><b>ascii</b>: convert bytes to ASCII string</li>
+        <li><b>xor_hex</b>: XOR with key: <code>{"op":"xor_hex","key":"cafebabe"}</code></li>
+        <li><b>ascii</b>: Convert bytes to ASCII</li>
       </ul>
-      List steps in execution order. First use <em>Preview</em> on a sample TXT, and when the output matches your expectation, click <em>Register</em> to add it to the system.
-    </p>
+    </div>
 
     <label>Name
       <input id="custom_name" type="text" placeholder="decoder_name" />
@@ -75,29 +251,33 @@ th,td{border:1px solid #ddd;padding:6px;text-align:left;}
     <label>Sample TXT (for preview)
       <input id="custom_sample" type="text" placeholder='example sample txt' />
     </label>
-    <div style="margin-top:6px">
-      <button id="previewCustom">Preview</button>
-      <button id="registerCustom">Register</button>
-      <button id="clearCustom">Clear</button>
+    <div style="display:flex;gap:10px;margin:15px 0;">
+      <button id="previewCustom">👁️ Preview</button>
+      <button id="registerCustom">✔️ Register</button>
+      <button id="clearCustom">🗑️ Clear</button>
     </div>
-    <div id="customPreviewResult" style="background:#fff7e6;padding:8px;margin-top:6px;white-space:pre-wrap;font-family:monospace;"></div>
-    <h5 style="margin-top:10px">Registered Custom Decoders</h5>
-    <div id="customList" style="border:1px solid #eee;padding:8px;max-height:220px;overflow:auto;background:#fafafa"></div>
+    <div id="customPreviewResult" style="background:#fff7e6;padding:15px;margin-top:15px;white-space:pre-wrap;font-family:monospace;border-radius:8px;border:2px solid #ffeaa7;"></div>
+    <h5 style="margin-top:15px;color:#764ba2;">Registered Custom Decoders</h5>
+    <div id="customList" style="border:2px solid #e9ecef;padding:15px;max-height:220px;overflow:auto;background:#f8f9fa;border-radius:8px;"></div>
   </div>
   <pre id="log"></pre>
 </div>
 
 <div id="status" class="section">
-  <h3>Current Status</h3>
-  <button id="pauseRefreshBtn" style="margin-bottom:6px;">Pause Auto-Refresh</button>
+  <h3>📊 Current Status</h3>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:15px;">
+    <button id="pauseRefreshBtn">⏸️ Pause Auto-Refresh</button>
+    <button id="statusVerifyBtn">🔬 Verify Domains</button>
+  </div>
+  <div id="statusVerifyResult" style="background:#f8f9fa;padding:15px;max-height:240px;overflow:auto;margin-bottom:15px;font-family:monospace;border-radius:8px;border:2px solid #e9ecef;display:none;"></div>
   <table id="resultsTable">
-    <thead><tr><th>Domain</th><th>Type</th><th>Server</th><th>Values</th><th>Decoded IPs</th><th>Decode Method</th><th>Last Seen</th><th>History</th></tr></thead>
+    <thead><tr><th>Domain</th><th>Type</th><th>Server</th><th>Values</th><th>Decoded IPs</th><th>Method</th><th>Last Seen</th><th>Actions</th></tr></thead>
     <tbody></tbody>
   </table>
   <h4>Analyzer</h4>
   <div>
     <label>Analysis output:
-      <div id="analyzeResult" style="background:#f8f8f8;padding:8px;max-height:200px;overflow:auto;font-family:monospace;"></div>
+      <div id="analyzeResult" style="background:#f8f9fa;padding:15px;max-height:200px;overflow:auto;font-family:monospace;border-radius:8px;border:2px solid #e9ecef;"></div>
     </label>
   </div>
   <h4>Domain History</h4>
@@ -105,16 +285,16 @@ th,td{border:1px solid #ddd;padding:6px;text-align:left;}
 </div>
 
 <div id="query" class="section">
-  <h3>Query</h3>
+  <h3>🔎 Query</h3>
   <label>Search value (IP or TXT fragment)
     <input id="queryValue" type="text" placeholder="1.2.3.4 or example-txt" />
   </label>
-  <button id="doQuery">Search</button>
+  <button id="doQuery">🔍 Search</button>
   <div id="queryResult"></div>
 </div>
 
 <div id="ips" class="section">
-  <h3>All IPs</h3>
+  <h3>📍 All IPs</h3>
   <table id="ipsTable">
     <thead><tr><th>IP</th><th>Domains</th><th>Count</th><th>Last Seen</th></tr></thead>
     <tbody></tbody>
@@ -122,20 +302,21 @@ th,td{border:1px solid #ddd;padding:6px;text-align:left;}
 </div>
 
 <div id="validips" class="section">
-  <h3>Valid IPs (currently syntactically valid)</h3>
+  <h3>✅ Valid IPs (syntactically valid)</h3>
   <label>Recent seconds:
     <input id="valid_since" type="number" min="0" value="3600" />
-    <button id="refreshValidBtn">Refresh</button>
+    <button id="refreshValidBtn">🔄 Refresh</button>
   </label>
   <table id="validIpsTable">
     <thead><tr><th>IP</th><th>Domains</th><th>Count</th><th>Last Seen</th><th>Valid</th></tr></thead>
     <tbody></tbody>
   </table>
 </div>
+</div>
 
 <script>
 function showSection(name){
-  ['settings','status','query','ips'].forEach(id=>document.getElementById(id).classList.remove('active'));
+  ['settings','status','query','ips','validips'].forEach(id=>document.getElementById(id).classList.remove('active'));
   document.getElementById(name).classList.add('active');
 }
 document.getElementById('menuSettings').onclick = ()=> showSection('settings');
@@ -202,7 +383,25 @@ function addDomainRow(obj){
   // expose for potential external control
   selDecode.dataset.decoderList = 'dynamic';
   const tdBtn = document.createElement('td');
-  const del = document.createElement('button'); del.textContent='Delete'; del.onclick = ()=> { tr.remove(); };
+  const del = document.createElement('button'); 
+  del.textContent='🗑️ Remove'; 
+  del.title = 'Remove this domain';
+  del.onclick = async ()=> { 
+    tr.remove();
+    // 자동으로 저장
+    const payload = {
+      domains: collectDomainsFromUI(),
+      servers: document.getElementById('servers').value.split(',').map(s=>s.trim()).filter(Boolean),
+      interval: parseInt(document.getElementById('interval').value) || 60
+    };
+    try{
+      const r = await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      const j = await r.json();
+      log('Removed domain and saved');
+    }catch(e){ 
+      log('Remove error:'+e); 
+    }
+  };
   tdBtn.appendChild(del);
   tr.appendChild(tdName); tr.appendChild(tdType); tr.appendChild(tdDecode); tr.appendChild(tdBtn);
   tbody.appendChild(tr);
@@ -292,12 +491,33 @@ document.getElementById('verifyBtn').onclick = async ()=>{
     const r = await fetch('/verify', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({domains: domains})});
     if(!r.ok){ el.textContent = 'Verify request failed: '+r.status; return; }
     const j = await r.json();
-    renderVerifyResult(j);
+    renderVerifyResult(j, 'verifyResult');
   }catch(e){ el.textContent = 'Verify error: '+e; }
 };
 
-function renderVerifyResult(j){
-  const el = document.getElementById('verifyResult');
+document.getElementById('statusVerifyBtn').onclick = async ()=>{
+  const allDomains = [];
+  const table = document.getElementById('resultsTable');
+  if(table && table.rows){
+    for(let i=1; i<table.rows.length; i++){
+      const domain = table.rows[i].cells[0].textContent.trim();
+      if(domain && !allDomains.includes(domain)) allDomains.push(domain);
+    }
+  }
+  if(allDomains.length===0){ log('No domains in status table to verify'); return; }
+  const el = document.getElementById('statusVerifyResult');
+  el.style.display='block';
+  el.textContent = 'Running verify for '+allDomains.length+' domains...';
+  try{
+    const r = await fetch('/verify', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({domains: allDomains})});
+    if(!r.ok){ el.textContent = 'Verify request failed: '+r.status; return; }
+    const j = await r.json();
+    renderVerifyResult(j, 'statusVerifyResult');
+  }catch(e){ el.textContent = 'Verify error: '+e; }
+};
+
+function renderVerifyResult(j, elementId){
+  const el = document.getElementById(elementId);
   el.innerHTML = '';
   if(!j || j.error){ el.textContent = j && j.error ? 'Error: '+j.error : 'No result'; return; }
   const res = j.results || {};
@@ -351,6 +571,7 @@ async function refreshResults(){
     const j = await r.json();
     const tbody = document.querySelector('#resultsTable tbody');
     const results = j.results || {};
+    console.log('[DEBUG] refreshResults: results count =', Object.keys(results).length, 'results =', results);
     // build a map of existing rows keyed by domain||srv to preserve verify rows and avoid full re-render
     const existing = {};
     Array.from(tbody.querySelectorAll('tr')).forEach(r => {
@@ -387,28 +608,138 @@ async function refreshResults(){
         const tdDecoded = document.createElement('td'); tdDecoded.textContent = fullDecoded.length > 200 ? fullDecoded.slice(0,200) + '…' : fullDecoded; tdDecoded.title = fullDecoded; tdDecoded.className = 'wrap-cell';
         const tdMethod = document.createElement('td'); tdMethod.textContent = (info.type === 'TXT' && info.txt_decode) ? info.txt_decode : '-';
         const tdTs = document.createElement('td'); tdTs.textContent = info.ts ? new Date(info.ts*1000).toISOString() : '-';
-        const tdHist = document.createElement('td');
-        const btn = document.createElement('button'); btn.textContent='History'; btn.onclick = ()=> loadHistory(d);
-        tdHist.appendChild(btn);
+        const tdActions = document.createElement('td');
+        console.log('[DEBUG] Creating actions for domain:', d, 'type:', info.type);
+        
+        // History 버튼 (모든 레코드)
+        const histBtn = document.createElement('button'); 
+        histBtn.textContent = '📜 History'; 
+        histBtn.title = 'View history for this domain';
+        histBtn.style.padding = '6px 10px';
+        histBtn.style.fontSize = '0.80em';
+        histBtn.style.whiteSpace = 'nowrap';
+        histBtn.style.marginRight = '2px';
+        histBtn.style.flexShrink = '0';
+        histBtn.onclick = ()=> loadHistory(d);
+        tdActions.appendChild(histBtn);
+        console.log('[DEBUG] History button added');
+        
+        // TXT 레코드인 경우만 Analyze와 Verify 버튼 추가
         if(info.type === 'TXT'){
-          const abtn = document.createElement('button'); abtn.textContent = 'Analyze';
-          abtn.onclick = async ()=>{
+          console.log('[DEBUG] TXT record detected for domain:', d);
+          // Analyze 버튼
+          const analyzeBtn = document.createElement('button'); 
+          analyzeBtn.textContent = '🔍 Analyze';
+          analyzeBtn.title = 'Analyze TXT decoding methods';
+          analyzeBtn.style.padding = '6px 10px';
+          analyzeBtn.style.fontSize = '0.80em';
+          analyzeBtn.style.whiteSpace = 'nowrap';
+          analyzeBtn.style.marginRight = '2px';
+          analyzeBtn.style.flexShrink = '0';
+          analyzeBtn.onclick = async ()=>{
             const sample = (info.values||[]).join('|');
-            try{ const r = await fetch('/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domain:d,txt:sample})}); const j = await r.json(); renderAnalyzeResult(j);}catch(e){ document.getElementById('analyzeResult').textContent = 'Analyze error: '+e; }
+            try{ 
+              const r = await fetch('/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domain:d,txt:sample})}); 
+              const j = await r.json(); 
+              renderAnalyzeResult(j);
+            }catch(e){ 
+              document.getElementById('analyzeResult').textContent = 'Analyze error: '+e; 
+            }
           };
-          tdHist.appendChild(abtn);
-          const vbtn = document.createElement('button'); vbtn.textContent = 'Verify';
-          vbtn.onclick = async ()=>{
+          tdActions.appendChild(analyzeBtn);
+          console.log('[DEBUG] Analyze button added');
+          
+          // Verify 버튼
+          const verifyBtn = document.createElement('button'); 
+          verifyBtn.textContent = '✅ Verify';
+          verifyBtn.title = 'Verify this domain\'s TXT records';
+          verifyBtn.style.padding = '6px 10px';
+          verifyBtn.style.fontSize = '0.80em';
+          verifyBtn.style.whiteSpace = 'nowrap';
+          verifyBtn.style.marginRight = '2px';
+          verifyBtn.style.flexShrink = '0';
+          verifyBtn.onclick = async ()=>{
             const next = tr.nextElementSibling;
-            if(next && next.classList && next.classList.contains('verify-row') && next.dataset && next.dataset.domain===d){ next.remove(); return; }
-            const vtr = document.createElement('tr'); vtr.className = 'verify-row'; vtr.dataset.domain = d;
-            const vtd = document.createElement('td'); vtd.colSpan = 8; vtd.textContent = 'Verifying '+d+'...'; vtr.appendChild(vtd);
+            if(next && next.classList && next.classList.contains('verify-row') && next.dataset && next.dataset.domain===d){ 
+              next.remove(); 
+              return; 
+            }
+            const vtr = document.createElement('tr'); 
+            vtr.className = 'verify-row'; 
+            vtr.dataset.domain = d;
+            const vtd = document.createElement('td'); 
+            vtd.colSpan = 9;
+            vtd.textContent = 'Verifying '+d+'...'; 
+            vtr.appendChild(vtd);
             tr.parentNode.insertBefore(vtr, tr.nextSibling);
-            try{ const r = await fetch('/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domains:[d]})}); const j = await r.json(); vtd.innerHTML=''; if(j && j.results && j.results[d]){ const data = j.results[d]; if(data.error){ vtd.textContent = 'Error: '+data.error; } else { const analysis = data.analysis||{}; const keys = Object.keys(analysis).sort((a,b)=>(analysis[b].score||0)-(analysis[a].score||0)); keys.forEach(k=>{ const info = analysis[k]; const h = document.createElement('div'); h.style.fontWeight='600'; h.textContent = `${k} — score=${info.score} raw=${info.raw_count}`; vtd.appendChild(h); const ips = info.detailed_ips||[]; if(ips.length===0){ const none=document.createElement('div'); none.textContent='No decoded IPs'; vtd.appendChild(none);} else{ const tbl=document.createElement('table'); tbl.style.width='100%'; tbl.style.marginTop='6px'; const thr=document.createElement('tr'); thr.innerHTML='<th>IP</th><th>Valid</th><th>VT(malicious/suspicious)</th><th>Summary</th>'; tbl.appendChild(thr); ips.forEach(it=>{ const trr=document.createElement('tr'); const tdIp=document.createElement('td'); tdIp.textContent=it.ip||''; const tdV=document.createElement('td'); tdV.textContent=it.valid?'YES':'NO'; const tdVT=document.createElement('td'); const tdSum=document.createElement('td'); if(it.vt){ tdVT.textContent=`${it.vt.malicious||0}/${it.vt.suspicious||0}`; tdSum.textContent=`ASN:${it.vt.asn||''} ${it.vt.country||''}`; } else { tdVT.textContent='-'; tdSum.textContent='-'; } trr.appendChild(tdIp); trr.appendChild(tdV); trr.appendChild(tdVT); trr.appendChild(tdSum); tbl.appendChild(trr); }); vtd.appendChild(tbl);} }); } } else { vtd.textContent='No data returned'; } }catch(e){ vtd.textContent='Verify error: '+e; } };
-          tdHist.appendChild(vbtn);
+            try{ 
+              const r = await fetch('/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domains:[d]})}); 
+              const j = await r.json(); 
+              vtd.innerHTML=''; 
+              if(j && j.results && j.results[d]){ 
+                const data = j.results[d]; 
+                if(data.error){ 
+                  vtd.textContent = 'Error: '+data.error; 
+                } else { 
+                  const analysis = data.analysis||{}; 
+                  const keys = Object.keys(analysis).sort((a,b)=>(analysis[b].score||0)-(analysis[a].score||0)); 
+                  keys.forEach(k=>{ 
+                    const info = analysis[k]; 
+                    const h = document.createElement('div'); 
+                    h.style.fontWeight='600'; 
+                    h.style.marginTop='10px';
+                    h.textContent = `${k} — score=${info.score} raw=${info.raw_count}`; 
+                    vtd.appendChild(h); 
+                    const ips = info.detailed_ips||[]; 
+                    if(ips.length===0){ 
+                      const none=document.createElement('div'); 
+                      none.textContent='No decoded IPs'; 
+                      vtd.appendChild(none);
+                    } else{ 
+                      const tbl=document.createElement('table'); 
+                      tbl.style.width='100%'; 
+                      tbl.style.marginTop='6px'; 
+                      const thr=document.createElement('tr'); 
+                      thr.innerHTML='<th>IP</th><th>Valid</th><th>VT(malicious/suspicious)</th><th>Summary</th>'; 
+                      tbl.appendChild(thr); 
+                      ips.forEach(it=>{ 
+                        const trr=document.createElement('tr'); 
+                        const tdIp=document.createElement('td'); 
+                        tdIp.textContent=it.ip||''; 
+                        const tdV=document.createElement('td'); 
+                        tdV.textContent=it.valid?'YES':'NO'; 
+                        const tdVT=document.createElement('td'); 
+                        const tdSum=document.createElement('td'); 
+                        if(it.vt){ 
+                          tdVT.textContent=`${it.vt.malicious||0}/${it.vt.suspicious||0}`; 
+                          tdSum.textContent=`ASN:${it.vt.asn||''} ${it.vt.country||''}`; 
+                        } else { 
+                          tdVT.textContent='-'; 
+                          tdSum.textContent='-'; 
+                        } 
+                        trr.appendChild(tdIp); 
+                        trr.appendChild(tdV); 
+                        trr.appendChild(tdVT); 
+                        trr.appendChild(tdSum); 
+                        tbl.appendChild(trr); 
+                      }); 
+                      vtd.appendChild(tbl);
+                    } 
+                  }); 
+                } 
+              } else { 
+                vtd.textContent='No data returned'; 
+              } 
+            }catch(e){ 
+              vtd.textContent='Verify error: '+e; 
+            } 
+          };
+          tdActions.appendChild(verifyBtn);
+          console.log('[DEBUG] Verify button added');
         }
-        tdHist.appendChild(btn);
-        tr.appendChild(tdDomain); tr.appendChild(tdType); tr.appendChild(tdSrv); tr.appendChild(tdVals); tr.appendChild(tdDecoded); tr.appendChild(tdMethod); tr.appendChild(tdTs); tr.appendChild(tdHist);
+        console.log('[DEBUG] Final tdActions children count:', tdActions.children.length);
+        
+        tr.appendChild(tdDomain); tr.appendChild(tdType); tr.appendChild(tdSrv); tr.appendChild(tdVals); tr.appendChild(tdDecoded); tr.appendChild(tdMethod); tr.appendChild(tdTs); tr.appendChild(tdActions);
 
         // insert or move row into tbody in desired order
         const existingRow = tbody.querySelector(`tr[data-domain="${d}"][data-server="${srv}"]`);
@@ -613,13 +944,37 @@ async function refreshValidIPs(){
   setInterval(()=>{ if(!isPaused()) refreshResults(); }, 5000);
   setInterval(()=>{ if(!isPaused()) refreshIPs(); }, 5000);
 
-  window.onload = function(){ showSection('settings'); showSettingsTab('domains'); loadCfg(); refreshResults(); refreshIPs(); };
 // initialize dynamic decoders and valid IPs refresh hook
 window.addEventListener('load', ()=>{
+  console.log('[DEBUG] Page load event triggered');
+  
+  // Initialize sections
+  try {
+    showSection('settings');
+    console.log('[DEBUG] Settings section shown');
+  } catch(e) {
+    console.error('[ERROR] Failed to show settings section:', e);
+  }
+  
+  try {
+    showSettingsTab('domains');
+    console.log('[DEBUG] Settings tab changed to domains');
+  } catch(e) {
+    console.error('[ERROR] Failed to show settings tab:', e);
+  }
+  
   loadDecoders().then(()=>{
     // reload config so domain rows pick up decoders if possible
     loadCfg();
   });
+  
+  try {
+    refreshResults();
+    refreshIPs();
+  } catch(e) {
+    console.error('[ERROR] Failed to refresh:', e);
+  }
+  
   document.getElementById('refreshValidBtn').onclick = ()=>{
     const s = parseInt(document.getElementById('valid_since').value) || 0;
     refreshValidIPs(s);

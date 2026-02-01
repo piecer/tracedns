@@ -2,23 +2,116 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>TraceDNS Settings</title>
-  <style>body{font-family:Arial,Helvetica,sans-serif;margin:20px}label{display:block;margin:6px 0}input{padding:6px}</style>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box;}
+    body{
+      font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background:linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
+      min-height:100vh;
+      padding:20px;
+      color:#333;
+    }
+    .container{max-width:800px;margin:0 auto;background:#fff;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,0.3);overflow:hidden;}
+    header{background:linear-gradient(135deg, #3498db 0%, #2980b9 100%);color:#fff;padding:30px;text-align:center;}
+    header h1{font-size:2.2em;font-weight:700;margin-bottom:8px;}
+    nav{padding:15px 20px;background:#f8f9fa;border-bottom:2px solid #e9ecef;}
+    nav a{
+      color:#3498db;
+      text-decoration:none;
+      font-weight:600;
+      margin-right:20px;
+      transition:color 0.3s ease;
+    }
+    nav a:hover{color:#2980b9;}
+    .content{padding:30px;}
+    h1{font-size:1.8em;color:#3498db;margin-bottom:15px;border-bottom:3px solid #3498db;padding-bottom:10px;}
+    p.small{font-size:0.9em;color:#999;margin-bottom:20px;}
+    label{
+      display:block;
+      margin:15px 0 8px;
+      font-weight:600;
+      color:#555;
+    }
+    input{
+      width:100%;
+      padding:12px;
+      margin-bottom:15px;
+      border:2px solid #e9ecef;
+      border-radius:8px;
+      font-size:0.95em;
+      transition:border-color 0.3s ease;
+      font-family:inherit;
+    }
+    input:focus{outline:none;border-color:#3498db;box-shadow:0 0 0 3px rgba(52,152,219,0.1);}
+    .button-group{
+      display:flex;
+      gap:10px;
+      margin-top:20px;
+      flex-wrap:wrap;
+    }
+    button{
+      padding:12px 24px;
+      border:none;
+      border-radius:8px;
+      background:linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+      color:#fff;
+      font-weight:600;
+      cursor:pointer;
+      transition:all 0.3s ease;
+      font-size:0.95em;
+    }
+    button:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(52,152,219,0.4);}
+    button:active{transform:translateY(0);}
+    #settings_status{
+      line-height:40px;
+      padding:0 15px;
+      font-weight:600;
+      border-radius:6px;
+    }
+    .success{color:#4caf50;background:#e8f5e9;}
+    .error{color:#f44336;background:#ffebee;}
+  </style>
 </head>
 <body>
-  <nav><a href="/">Dashboard</a> | <a href="/dns_frontend.html">Original UI</a></nav>
-  <h1>Settings</h1>
-  <p class="small">Alert template settings (Teams, MISP). Actual alert delivery requires separate testing.</p>
-  <label>Teams Webhook URL<br/><input id="teams_webhook" style="width:100%" placeholder="https://..."/></label>
-  <label>MISP URL<br/><input id="misp_url" style="width:100%" placeholder="https://misp.example"/></label>
-  <label>MISP API Key<br/><input id="misp_key" style="width:100%" placeholder="API key"/></label>
-  <label>Push Event ID (MISP)<br/><input id="push_event_id" style="width:100%" placeholder="12345"/></label>
-  <label>VirusTotal API Key<br/><input id="vt_api_key" style="width:100%" placeholder="VT API key"/></label>
-  <div style="margin-top:6px">
-    <button id="load_settings">Load</button>
-    <button id="save_settings">Save</button>
-    <span id="settings_status" class="small"></span>
+<div class="container">
+<header><h1>⚙️ TraceDNS Settings</h1></header>
+<nav>
+  <a href="/">📊 Dashboard</a>
+  <a href="/dns_frontend.html">🔍 Domain Settings</a>
+</nav>
+<div class="content">
+  <h1>Configuration</h1>
+  <p class="small">Configure alert integrations and external service credentials.</p>
+  
+  <label>Teams Webhook URL<br/>
+    <input id="teams_webhook" placeholder="https://outlook.webhook.office.com/webhookb2/..." />
+  </label>
+  
+  <label>MISP URL<br/>
+    <input id="misp_url" placeholder="https://misp.example.com" />
+  </label>
+  
+  <label>MISP API Key<br/>
+    <input id="misp_key" type="password" placeholder="Your MISP API key" />
+  </label>
+  
+  <label>Push Event ID (MISP)<br/>
+    <input id="push_event_id" placeholder="12345" />
+  </label>
+  
+  <label>VirusTotal API Key<br/>
+    <input id="vt_api_key" type="password" placeholder="Your VirusTotal API key" />
+  </label>
+  
+  <div class="button-group">
+    <button id="load_settings">📥 Load Settings</button>
+    <button id="save_settings">💾 Save Settings</button>
+    <span id="settings_status"></span>
   </div>
+</div>
+</div>
 
   <script>
     async function loadSettings(){

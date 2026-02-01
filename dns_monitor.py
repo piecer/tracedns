@@ -93,6 +93,14 @@ def main():
         alerts_cfg = file_cfg.get('alerts') if isinstance(file_cfg, dict) else None
         if alerts_cfg:
             shared_config['alerts'] = alerts_cfg
+            # Apply VT API key to vt_lookup module
+            try:
+                vt_key = alerts_cfg.get('vt_api_key')
+                if vt_key:
+                    from vt_lookup import set_api_key
+                    set_api_key(vt_key)
+            except Exception:
+                pass
     except Exception:
         shared_config['alerts'] = {}
 
