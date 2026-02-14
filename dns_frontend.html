@@ -118,7 +118,27 @@ nav button{
   cursor:pointer;
   transition:.2s ease;
 }
+nav a.nav-link{
+  display:inline-flex;
+  align-items:center;
+  border:1px solid #c5dde6;
+  background:#fff;
+  color:#16566c;
+  border-radius:999px;
+  padding:10px 16px;
+  font-size:.88rem;
+  font-weight:700;
+  letter-spacing:.01em;
+  text-decoration:none;
+  transition:.2s ease;
+}
 nav button:hover{
+  border-color:#1a9ea6;
+  color:#fff;
+  background:linear-gradient(135deg, #148b88 0%, #0ea5a4 100%);
+  transform:translateY(-1px);
+}
+nav a.nav-link:hover{
   border-color:#1a9ea6;
   color:#fff;
   background:linear-gradient(135deg, #148b88 0%, #0ea5a4 100%);
@@ -372,6 +392,47 @@ tbody tr:hover{background:#f0f8fb;}
   background:#fff7ea;
   color:#9a5800;
 }
+.settings-status{
+  display:inline-flex;
+  align-items:center;
+  min-height:32px;
+  border-radius:999px;
+  padding:0 10px;
+  font-size:.8rem;
+  font-weight:700;
+  border:1px solid transparent;
+}
+.settings-status.ok{
+  color:var(--ok);
+  background:rgba(31,154,97,0.08);
+  border-color:rgba(31,154,97,0.35);
+}
+.settings-status.err{
+  color:var(--danger);
+  background:rgba(196,61,43,0.08);
+  border-color:rgba(196,61,43,0.35);
+}
+.vt-badge{
+  display:inline-flex;
+  align-items:center;
+  border-radius:999px;
+  padding:2px 8px;
+  font-size:.74rem;
+  font-weight:700;
+  border:1px solid #d4e3eb;
+  background:#f7fbfe;
+  color:#315061;
+}
+.vt-badge.high{
+  color:#9d2417;
+  border-color:#efb7b0;
+  background:#fff0ee;
+}
+.vt-badge.mid{
+  color:#8a5900;
+  border-color:#f2d59b;
+  background:#fff8e9;
+}
 @media (max-width:960px){
   nav{gap:8px;}
   nav button{padding:9px 13px;font-size:.82rem;}
@@ -400,8 +461,8 @@ tbody tr:hover{background:#f0f8fb;}
   </div>
 </header>
 <nav>
-  <button id="menuSettings" class="active">Settings</button>
-  <button id="menuStatus">Status</button>
+  <button id="menuSettings">Settings</button>
+  <button id="menuStatus" class="active">Status</button>
   <button id="menuQuery">Query</button>
   <button id="menuIPs">All IPs</button>
   <button id="menuValidIPs">Valid IPs</button>
@@ -434,30 +495,33 @@ tbody tr:hover{background:#f0f8fb;}
   <div class="tab-buttons">
     <button id="settingsTabDomains" class="active">Domain settings</button>
     <button id="settingsTabCustom">Custom decoders</button>
+    <button id="settingsTabAlerts">Alert integrations</button>
   </div>
-  <table class="domain-table" id="domainTable">
-    <thead><tr><th>Domain</th><th>Type</th><th>TXT Decode</th><th>A Decode</th><th>A XOR Key</th><th></th></tr></thead>
-    <tbody></tbody>
-  </table>
-  <button id="addDomain">+ Add Domain</button>
-  
-  <label>Servers (comma separated)
-    <input id="servers" type="text" placeholder="8.8.8.8, 1.1.1.1" />
-  </label>
-  <label>Interval (seconds)
-    <input id="interval" type="number" min="1" value="60" />
-  </label>
-  
-  <div style="display:flex;gap:10px;flex-wrap:wrap;margin:20px 0;">
-    <button id="load">📥 Load</button>
-    <button id="save">💾 Save</button>
-    <button id="force">⚡ Force Resolve</button>
-    <button id="verifyBtn">🔬 Verify</button>
+  <div id="domainSettingsSection">
+    <table class="domain-table" id="domainTable">
+      <thead><tr><th>Domain</th><th>Type</th><th>TXT Decode</th><th>A Decode</th><th>A XOR Key</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <button id="addDomain">+ Add Domain</button>
+    
+    <label>Servers (comma separated)
+      <input id="servers" type="text" placeholder="8.8.8.8, 1.1.1.1" />
+    </label>
+    <label>Interval (seconds)
+      <input id="interval" type="number" min="1" value="60" />
+    </label>
+    
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin:20px 0;">
+      <button id="load">📥 Load</button>
+      <button id="save">💾 Save</button>
+      <button id="force">⚡ Force Resolve</button>
+      <button id="verifyBtn">🔬 Verify</button>
+    </div>
+    
+    <div id="verifyResult" style="background:#f8f9fa;padding:15px;max-height:240px;overflow:auto;margin-top:15px;font-family:monospace;border-radius:8px;border:2px solid #e9ecef;"></div>
   </div>
-  
-  <div id="verifyResult" style="background:#f8f9fa;padding:15px;max-height:240px;overflow:auto;margin-top:15px;font-family:monospace;border-radius:8px;border:2px solid #e9ecef;"></div>
-  
-  <h4>Custom Decoders</h4>
+
+  <h4 id="customSectionTitle">Custom Decoders</h4>
   <div id="customSection" style="display:none">
     <div class="info-box">
       <strong>📚 Usage Guide:</strong> New custom decoders are defined as a safe array of steps.
@@ -465,6 +529,7 @@ tbody tr:hover{background:#f0f8fb;}
         <li><b>regex</b>: Extract group from text: <code>{"op":"regex","pattern":"(\\d{1,3}(?:\\.\\d{1,3}){3})","group":1}</code></li>
         <li><b>base64</b>/<b>urlsafe_b64</b>: Base64 decode</li>
         <li><b>xor_hex</b>: XOR with key: <code>{"op":"xor_hex","key":"cafebabe"}</code></li>
+        <li><b>xor32_ipv4</b> (A Type): IPv4 XOR32: <code>{"op":"xor32_ipv4","key":"E7708E59"}</code></li>
         <li><b>ascii</b>: Convert bytes to ASCII</li>
       </ul>
     </div>
@@ -472,10 +537,16 @@ tbody tr:hover{background:#f0f8fb;}
     <label>Name
       <input id="custom_name" type="text" placeholder="decoder_name" />
     </label>
+    <label>Decoder Type
+      <select id="custom_decoder_type">
+        <option value="TXT">TXT</option>
+        <option value="A">A</option>
+      </select>
+    </label>
     <label>Steps (JSON array)
       <textarea id="custom_steps" rows="6" placeholder='[{"op":"regex","pattern":"(\\d{1,3}(?:\\.\\d{1,3}){3})","group":1}]'></textarea>
     </label>
-    <label>Sample TXT (for preview)
+    <label id="custom_sample_label">Sample TXT (for preview)
       <input id="custom_sample" type="text" placeholder='example sample txt' />
     </label>
     <div style="display:flex;gap:10px;margin:15px 0;">
@@ -486,6 +557,29 @@ tbody tr:hover{background:#f0f8fb;}
     <div id="customPreviewResult" style="background:#fff7e6;padding:15px;margin-top:15px;white-space:pre-wrap;font-family:monospace;border-radius:8px;border:2px solid #ffeaa7;"></div>
     <h5 style="margin-top:15px;color:#1b5970;">Registered Custom Decoders</h5>
     <div id="customList" style="border:2px solid #e9ecef;padding:15px;max-height:220px;overflow:auto;background:#f8f9fa;border-radius:8px;"></div>
+  </div>
+  <div id="alertsSection" style="display:none">
+    <p style="color:#5b6a77;margin-bottom:12px;">Configure Teams/MISP/VirusTotal integration directly from the main console.</p>
+    <label for="teams_webhook_front">Teams Webhook URL
+      <input id="teams_webhook_front" type="text" placeholder="https://outlook.webhook.office.com/webhookb2/..." />
+    </label>
+    <label for="misp_url_front">MISP URL
+      <input id="misp_url_front" type="text" placeholder="https://misp.example.com" />
+    </label>
+    <label for="misp_key_front">MISP API Key
+      <input id="misp_key_front" type="password" placeholder="Your MISP API key" />
+    </label>
+    <label for="push_event_id_front">Push Event ID (MISP)
+      <input id="push_event_id_front" type="text" placeholder="12345" />
+    </label>
+    <label for="vt_api_key_front">VirusTotal API Key
+      <input id="vt_api_key_front" type="password" placeholder="Your VirusTotal API key" />
+    </label>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center;">
+      <button id="loadAlertSettingsBtn">Load Alert Settings</button>
+      <button id="saveAlertSettingsBtn">Save Alert Settings</button>
+      <span id="alertSettingsStatus" class="settings-status"></span>
+    </div>
   </div>
   <pre id="log"></pre>
 </div>
@@ -523,8 +617,15 @@ tbody tr:hover{background:#f0f8fb;}
 
 <div id="ips" class="section">
   <h3>📍 All IPs</h3>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+    <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
+      <input id="ips_include_vt" type="checkbox" checked style="width:auto;margin:0;" />
+      Include VT score
+    </label>
+    <span style="font-size:.78rem;color:#5b6a77;">Uses cached VT results when available.</span>
+  </div>
   <table id="ipsTable">
-    <thead><tr><th>IP</th><th>Domains</th><th>Count</th><th>Last Seen</th></tr></thead>
+    <thead><tr><th>IP</th><th>Domains</th><th>Count</th><th>Last Seen</th><th>VT Score (M/S)</th><th>VT Context</th></tr></thead>
     <tbody></tbody>
   </table>
 </div>
@@ -594,9 +695,67 @@ function touchOverviewTs(){
   updateOverviewPanel();
 }
 
+function setAlertSettingsStatus(message, kind){
+  const el = document.getElementById('alertSettingsStatus');
+  if(!el) return;
+  el.textContent = message || '';
+  el.classList.remove('ok', 'err');
+  if(kind === 'ok') el.classList.add('ok');
+  if(kind === 'err') el.classList.add('err');
+  if(message){
+    setTimeout(()=>{
+      el.textContent = '';
+      el.classList.remove('ok', 'err');
+    }, 2800);
+  }
+}
+
+async function loadAlertSettings(){
+  try{
+    const r = await fetch('/settings');
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const j = await r.json();
+    const alerts = (j.settings && j.settings.alerts) ? j.settings.alerts : (j.settings || {}).alerts || {};
+    document.getElementById('teams_webhook_front').value = alerts.teams_webhook || '';
+    document.getElementById('misp_url_front').value = alerts.misp_url || '';
+    document.getElementById('misp_key_front').value = alerts.api_key || '';
+    document.getElementById('push_event_id_front').value = alerts.push_event_id || '';
+    document.getElementById('vt_api_key_front').value = alerts.vt_api_key || '';
+    setAlertSettingsStatus('Loaded', 'ok');
+  }catch(e){
+    setAlertSettingsStatus('Load failed', 'err');
+  }
+}
+
+async function saveAlertSettings(){
+  const alerts = {
+    teams_webhook: document.getElementById('teams_webhook_front').value.trim(),
+    misp_url: document.getElementById('misp_url_front').value.trim(),
+    api_key: document.getElementById('misp_key_front').value.trim(),
+    push_event_id: document.getElementById('push_event_id_front').value.trim(),
+    vt_api_key: document.getElementById('vt_api_key_front').value.trim()
+  };
+  try{
+    const r = await fetch('/settings', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({alerts})
+    });
+    const j = await r.json();
+    if(!(r.ok && j && j.status === 'ok')){
+      throw new Error((j && j.error) ? j.error : 'save failed');
+    }
+    setAlertSettingsStatus('Saved', 'ok');
+  }catch(e){
+    setAlertSettingsStatus('Save failed', 'err');
+  }
+}
+
 // Global decoder cache
 window.DECODERS = [];
 window.A_DECODERS = [];
+window.CUSTOM_DECODERS = [];
+window.CUSTOM_A_DECODERS = [];
 
 async function loadDecoders(){
   try{
@@ -606,6 +765,11 @@ async function loadDecoders(){
     if(j){
       window.DECODERS = Array.isArray(j.decoders) ? j.decoders : [];
       window.CUSTOM_DECODERS = Array.isArray(j.custom) ? j.custom : [];
+      window.CUSTOM_A_DECODERS = Array.isArray(j.custom_a) ? j.custom_a : [];
+      if ((!window.CUSTOM_DECODERS.length && !window.CUSTOM_A_DECODERS.length) && Array.isArray(j.custom_all)) {
+        window.CUSTOM_DECODERS = j.custom_all.filter(x => String((x && x.decoder_type) || 'TXT').toUpperCase() === 'TXT');
+        window.CUSTOM_A_DECODERS = j.custom_all.filter(x => String((x && x.decoder_type) || '').toUpperCase() === 'A');
+      }
       window.A_DECODERS = Array.isArray(j.a_decoders) ? j.a_decoders : [];
     }
   }catch(e){ /* ignore */ }
@@ -638,7 +802,9 @@ function addDomainRow(obj){
   const FALLBACK_DECODERS = ['cafebabe_xor_base64','plain_base64','btea_variant','xor_ipstring_base64_fixedkey','base64_xor_febabe','base56','safeb64_xor','c2_multiplex'];
   const decs = (window.DECODERS && window.DECODERS.length) ? window.DECODERS : FALLBACK_DECODERS;
   // include custom decoders names as well
-  const customNames = (window.CUSTOM_DECODERS || []).map(c=>c.name);
+  const customNames = (window.CUSTOM_DECODERS || [])
+    .filter(c => String((c && c.decoder_type) || 'TXT').toUpperCase() === 'TXT')
+    .map(c=>c.name);
   const finalDecs = (decs || []).concat(customNames.filter(n=>!(decs||[]).includes(n)));
   if(obj && obj.txt_decode && !finalDecs.includes(obj.txt_decode)){
     finalDecs.push(obj.txt_decode);
@@ -719,22 +885,47 @@ document.getElementById('addDomain').onclick = ()=> addDomainRow();
 
 // Settings tab switching (domains vs custom decoders)
 function showSettingsTab(tab){
-  const dom = document.getElementById('domainTable');
+  const dom = document.getElementById('domainSettingsSection');
   const custom = document.getElementById('customSection');
+  const alerts = document.getElementById('alertsSection');
+  const customTitle = document.getElementById('customSectionTitle');
   const btnDomains = document.getElementById('settingsTabDomains');
   const btnCustom = document.getElementById('settingsTabCustom');
+  const btnAlerts = document.getElementById('settingsTabAlerts');
   if(tab === 'custom'){
     dom.style.display = 'none'; custom.style.display = 'block';
+    alerts.style.display = 'none';
+    customTitle.style.display = '';
     btnDomains.classList.remove('active');
     btnCustom.classList.add('active');
-  } else {
-    dom.style.display = ''; custom.style.display = 'none';
+    btnAlerts.classList.remove('active');
+    // Ensure latest custom decoder list is visible when entering the tab.
+    if (typeof window.refreshCustomDecoders === 'function') {
+      window.refreshCustomDecoders();
+    }
+  } else if(tab === 'alerts'){
+    dom.style.display = 'none';
+    custom.style.display = 'none';
+    alerts.style.display = 'block';
+    customTitle.style.display = 'none';
+    btnDomains.classList.remove('active');
     btnCustom.classList.remove('active');
+    btnAlerts.classList.add('active');
+  } else {
+    dom.style.display = '';
+    custom.style.display = 'none';
+    alerts.style.display = 'none';
+    customTitle.style.display = '';
+    btnCustom.classList.remove('active');
+    btnAlerts.classList.remove('active');
     btnDomains.classList.add('active');
   }
 }
 document.getElementById('settingsTabDomains').onclick = ()=> showSettingsTab('domains');
 document.getElementById('settingsTabCustom').onclick = ()=> showSettingsTab('custom');
+document.getElementById('settingsTabAlerts').onclick = ()=> showSettingsTab('alerts');
+document.getElementById('loadAlertSettingsBtn').onclick = ()=> loadAlertSettings();
+document.getElementById('saveAlertSettingsBtn').onclick = ()=> saveAlertSettings();
 
 function collectDomainsFromUI(){
   const rows = document.querySelectorAll('#domainTable tbody tr');
@@ -1175,7 +1366,8 @@ document.getElementById('doQuery').onclick = async ()=>{
 
 async function refreshIPs(){
   try{
-    const r = await fetch('/ips');
+    const includeVT = !!(document.getElementById('ips_include_vt') && document.getElementById('ips_include_vt').checked);
+    const r = await fetch('/ips' + (includeVT ? '?include_vt=1' : ''));
     if(!r.ok) {
       console.error('refreshIPs: HTTP error', r.status);
       return;
@@ -1198,7 +1390,24 @@ async function refreshIPs(){
       const tdDomains = document.createElement('td'); tdDomains.textContent = (it.domains||[]).join(', ');
       const tdCount = document.createElement('td'); tdCount.textContent = it.count || 0;
       const tdTs = document.createElement('td'); tdTs.textContent = it.last_ts ? new Date(it.last_ts*1000).toISOString() : '-';
-      tr.appendChild(tdIp); tr.appendChild(tdDomains); tr.appendChild(tdCount); tr.appendChild(tdTs);
+      const tdVtScore = document.createElement('td');
+      const tdVtCtx = document.createElement('td');
+      const vt = it.vt || null;
+      if(vt){
+        const m = Number(vt.malicious || 0);
+        const s = Number(vt.suspicious || 0);
+        const badge = document.createElement('span');
+        badge.className = 'vt-badge';
+        if(m > 0) badge.classList.add('high');
+        else if(s > 0) badge.classList.add('mid');
+        badge.textContent = `${m}/${s}`;
+        tdVtScore.appendChild(badge);
+        tdVtCtx.textContent = `ASN:${vt.asn || '-'} ${vt.country || '-'}`;
+      } else {
+        tdVtScore.textContent = includeVT ? '-' : 'off';
+        tdVtCtx.textContent = includeVT ? '-' : 'VT disabled';
+      }
+      tr.appendChild(tdIp); tr.appendChild(tdDomains); tr.appendChild(tdCount); tr.appendChild(tdTs); tr.appendChild(tdVtScore); tr.appendChild(tdVtCtx);
       tbody.appendChild(tr);
     });
     touchOverviewTs();
@@ -1302,24 +1511,22 @@ async function refreshValidIPs(){
 window.addEventListener('load', ()=>{
   updateRefreshStateBadge();
   updateOverviewPanel();
+  const openAlertsSettings = (window.location.hash || '').toLowerCase() === '#settings-alerts';
   
   // Initialize sections
   try {
-    showSection('settings');
+    showSection(openAlertsSettings ? 'settings' : 'status');
   } catch(e) {
     console.error('Failed to show settings section:', e);
   }
   
   try {
-    showSettingsTab('domains');
+    showSettingsTab(openAlertsSettings ? 'alerts' : 'domains');
   } catch(e) {
     console.error('Failed to show settings tab:', e);
   }
   
-  loadDecoders().then(()=>{
-    // reload config so domain rows pick up decoders if possible
-    loadCfg();
-  });
+  loadAlertSettings();
   
   try {
     refreshResults();
@@ -1332,28 +1539,59 @@ window.addEventListener('load', ()=>{
     const s = parseInt(document.getElementById('valid_since').value) || 0;
     refreshValidIPs(s);
   };
+  const includeVtEl = document.getElementById('ips_include_vt');
+  if(includeVtEl){
+    includeVtEl.addEventListener('change', ()=>{ refreshIPs(); });
+  }
   // initial load of valid ips
   refreshValidIPs(parseInt(document.getElementById('valid_since').value) || 0);
   // custom decoder UI handlers
+  function getCustomDecoderType(){
+    return String((document.getElementById('custom_decoder_type') || {}).value || 'TXT').toUpperCase();
+  }
+  function refreshCustomSampleLabel(){
+    const typ = getCustomDecoderType();
+    const label = document.getElementById('custom_sample_label');
+    const sample = document.getElementById('custom_sample');
+    if(!label || !sample) return;
+    if(typ === 'A'){
+      label.firstChild.textContent = 'Sample A value (for preview) ';
+      sample.placeholder = '104.132.5.177';
+    } else {
+      label.firstChild.textContent = 'Sample TXT (for preview) ';
+      sample.placeholder = 'example sample txt';
+    }
+  }
+  const customTypeEl = document.getElementById('custom_decoder_type');
+  if(customTypeEl){
+    customTypeEl.addEventListener('change', refreshCustomSampleLabel);
+  }
+  refreshCustomSampleLabel();
+
   function renderCustomList(){
     const el = document.getElementById('customList'); el.innerHTML='';
-    const arr = window.CUSTOM_DECODERS || [];
+    const txtArr = (window.CUSTOM_DECODERS || []).map(c=>({...(c||{}), decoder_type: 'TXT'}));
+    const aArr = (window.CUSTOM_A_DECODERS || []).map(c=>({...(c||{}), decoder_type: 'A'}));
+    const arr = txtArr.concat(aArr);
     if(!arr.length){ el.textContent = 'No custom decoders registered'; return; }
     arr.forEach(c=>{
       const row = document.createElement('div'); row.style.borderBottom='1px solid #eee'; row.style.padding='6px 0';
-      const title = document.createElement('div'); title.textContent = c.name; title.style.fontWeight='700'; row.appendChild(title);
+      const dtype = String(c.decoder_type || 'TXT').toUpperCase();
+      const title = document.createElement('div'); title.textContent = `${c.name} [${dtype}]`; title.style.fontWeight='700'; row.appendChild(title);
       const btnRow = document.createElement('div'); btnRow.style.marginTop='6px';
       const edit = document.createElement('button'); edit.textContent='Edit'; edit.onclick = ()=>{
         document.getElementById('custom_name').value = c.name; document.getElementById('custom_name').disabled = true;
+        document.getElementById('custom_decoder_type').value = dtype;
+        refreshCustomSampleLabel();
         document.getElementById('custom_steps').value = JSON.stringify(c.steps, null, 2);
-        document.getElementById('customPreviewResult').textContent = 'Editing '+c.name+' — change steps and click Update';
+        document.getElementById('customPreviewResult').textContent = `Editing ${c.name} [${dtype}] — change steps and click Update`;
       };
       const del = document.createElement('button'); del.textContent='Delete'; del.onclick = async ()=>{
-        if(!confirm('Delete decoder '+c.name+' ?')) return;
+        if(!confirm(`Delete decoder ${c.name} [${dtype}] ?`)) return;
         try{
-          const r = await fetch('/decoders/custom',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:c.name})});
+          const r = await fetch('/decoders/custom',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:c.name, decoder_type:dtype})});
           const j = await r.json();
-          if(j && j.status === 'ok'){ document.getElementById('customPreviewResult').textContent = 'Deleted '+c.name; await loadDecoders(); renderCustomList(); loadCfg(); }
+          if(j && j.status === 'ok'){ document.getElementById('customPreviewResult').textContent = `Deleted ${c.name} [${dtype}]`; await loadDecoders(); renderCustomList(); loadCfg(); }
           else { document.getElementById('customPreviewResult').textContent = 'Delete failed: '+JSON.stringify(j); }
         }catch(e){ document.getElementById('customPreviewResult').textContent = 'Delete error: '+e; }
       };
@@ -1361,9 +1599,9 @@ window.addEventListener('load', ()=>{
         const stepsRaw = document.getElementById('custom_steps').value.trim(); let steps;
         try{ steps = JSON.parse(stepsRaw); }catch(e){ alert('Invalid JSON: '+e); return; }
         try{
-          const r = await fetch('/decoders/custom',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:c.name,steps:steps})});
+          const r = await fetch('/decoders/custom',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:c.name,steps:steps, decoder_type:dtype})});
           const j = await r.json();
-          if(j && j.status === 'ok'){ document.getElementById('customPreviewResult').textContent = 'Updated '+c.name; await loadDecoders(); renderCustomList(); loadCfg(); document.getElementById('custom_name').disabled = false; }
+          if(j && j.status === 'ok'){ document.getElementById('customPreviewResult').textContent = `Updated ${c.name} [${dtype}]`; await loadDecoders(); renderCustomList(); loadCfg(); document.getElementById('custom_name').disabled = false; }
           else { document.getElementById('customPreviewResult').textContent = 'Update failed: '+JSON.stringify(j); }
         }catch(e){ document.getElementById('customPreviewResult').textContent = 'Update error: '+e; }
       };
@@ -1371,14 +1609,24 @@ window.addEventListener('load', ()=>{
       el.appendChild(row);
     });
   }
+  async function refreshCustomDecoders(){
+    try{
+      await loadDecoders();
+    }catch(e){
+      // ignore and render whatever cache exists
+    }
+    renderCustomList();
+  }
+  window.refreshCustomDecoders = refreshCustomDecoders;
 
   document.getElementById('previewCustom').onclick = async ()=>{
     const stepsRaw = document.getElementById('custom_steps').value.trim();
     const sample = document.getElementById('custom_sample').value;
+    const decoderType = getCustomDecoderType();
     let steps;
     try{ steps = JSON.parse(stepsRaw); }catch(e){ document.getElementById('customPreviewResult').textContent = 'Invalid JSON: '+e; return; }
     try{
-      const r = await fetch('/decoders/custom/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({steps: steps, sample: sample})});
+      const r = await fetch('/decoders/custom/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({steps: steps, sample: sample, decoder_type: decoderType})});
       const j = await r.json();
       document.getElementById('customPreviewResult').textContent = JSON.stringify(j, null, 2);
     }catch(e){ document.getElementById('customPreviewResult').textContent = 'Preview error: '+e; }
@@ -1386,15 +1634,16 @@ window.addEventListener('load', ()=>{
 
   document.getElementById('registerCustom').onclick = async ()=>{
     const name = document.getElementById('custom_name').value.trim();
+    const decoderType = getCustomDecoderType();
     const stepsRaw = document.getElementById('custom_steps').value.trim();
     if(!name){ alert('Provide a name'); return; }
     let steps;
     try{ steps = JSON.parse(stepsRaw); }catch(e){ alert('Invalid JSON steps: '+e); return; }
     try{
-      const r = await fetch('/decoders/custom',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name: name, steps: steps})});
+      const r = await fetch('/decoders/custom',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name: name, steps: steps, decoder_type: decoderType})});
       const j = await r.json();
       if(j && j.status === 'ok'){
-        document.getElementById('customPreviewResult').textContent = 'Registered: '+name;
+        document.getElementById('customPreviewResult').textContent = `Registered: ${name} [${decoderType}]`;
         // reload decoders and UI
         await loadDecoders();
         renderCustomList();
@@ -1406,13 +1655,15 @@ window.addEventListener('load', ()=>{
   };
   document.getElementById('clearCustom').onclick = ()=>{
     document.getElementById('custom_name').value='';
+    document.getElementById('custom_decoder_type').value='TXT';
     document.getElementById('custom_steps').value='';
     document.getElementById('custom_sample').value='';
     document.getElementById('custom_name').disabled = false;
     document.getElementById('customPreviewResult').textContent='';
+    refreshCustomSampleLabel();
   };
-  // render custom list initially
-  renderCustomList();
+  // initialize decoder cache, custom list, and domain rows in correct order
+  refreshCustomDecoders().then(()=> loadCfg());
 });
 </script>
 </body>

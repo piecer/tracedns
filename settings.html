@@ -2,319 +2,34 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>TraceDNS Settings</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta http-equiv="refresh" content="0; url=/dns_frontend.html#settings-alerts" />
+  <title>TraceDNS Settings Moved</title>
   <style>
-    :root{
-      --font-ui:"Avenir Next", "Manrope", "Trebuchet MS", "Segoe UI", sans-serif;
-      --bg-1:#eef5f9;
-      --bg-2:#e8f4ef;
-      --ink:#13212e;
-      --muted:#5b6a77;
-      --line:#d7e4eb;
-      --accent:#0f766e;
-      --accent-2:#0ea5a4;
-      --warn:#f59e0b;
-      --danger:#c43d2b;
-      --ok:#1f9a61;
-      --shadow-xl:0 28px 70px rgba(12, 33, 46, 0.18);
-      --shadow-sm:0 8px 18px rgba(19, 33, 46, 0.08);
-    }
-    *{margin:0;padding:0;box-sizing:border-box;}
     body{
-      font-family:var(--font-ui);
-      color:var(--ink);
+      margin:0;
       min-height:100vh;
-      padding:clamp(12px, 2.2vw, 24px);
-      background:
-        radial-gradient(1200px 500px at 18% -6%, rgba(14,165,164,0.14), transparent 60%),
-        radial-gradient(1000px 420px at 92% 2%, rgba(245,158,11,0.12), transparent 55%),
-        linear-gradient(165deg, var(--bg-1) 0%, var(--bg-2) 46%, #f3f9f6 100%);
-    }
-    .container{
-      max-width:980px;
-      margin:0 auto;
-      background:linear-gradient(180deg, #ffffff 0%, #fbfeff 100%);
-      border:1px solid rgba(255,255,255,0.7);
-      border-radius:18px;
-      box-shadow:var(--shadow-xl);
-      overflow:hidden;
-    }
-    header{
-      color:#fff;
-      padding:30px clamp(18px, 3vw, 30px) 24px;
-      background:linear-gradient(118deg, #0f766e 0%, #0ea5a4 48%, #22b08d 100%);
-      border-bottom:1px solid rgba(255,255,255,0.2);
-    }
-    .header-kicker{
-      font-size:.78rem;
-      letter-spacing:.12em;
-      text-transform:uppercase;
-      font-weight:700;
-      opacity:.88;
-      margin-bottom:8px;
-    }
-    header h1{
-      font-size:clamp(1.5rem, 3vw, 2rem);
-      line-height:1.15;
-      margin-bottom:7px;
-    }
-    header p{
-      font-size:.94rem;
-      line-height:1.5;
-      opacity:.95;
-      max-width:720px;
-    }
-    .topnav{
-      display:flex;
-      flex-wrap:wrap;
-      gap:10px;
-      padding:14px clamp(14px, 2vw, 26px);
-      border-bottom:1px solid var(--line);
-      background:linear-gradient(180deg, #f9fcfd 0%, #f4f9fc 100%);
-    }
-    .topnav a{
-      text-decoration:none;
-      border:1px solid #c5dde6;
-      background:#fff;
-      color:#16566c;
-      border-radius:999px;
-      padding:9px 14px;
-      font-size:.84rem;
-      font-weight:700;
-      letter-spacing:.01em;
-      transition:.2s ease;
-    }
-    .topnav a:hover{
-      border-color:#1a9ea6;
-      color:#fff;
-      background:linear-gradient(135deg, #148b88 0%, #0ea5a4 100%);
-      transform:translateY(-1px);
-    }
-    .content{
-      padding:24px clamp(14px, 2.2vw, 30px) 30px;
-    }
-    .section-title{
-      font-size:1.2rem;
-      color:#0e5c77;
-      margin-bottom:6px;
-      font-weight:800;
-    }
-    .section-desc{
-      color:var(--muted);
-      font-size:.9rem;
-      margin-bottom:16px;
-      line-height:1.5;
-    }
-    .form-grid{
       display:grid;
-      grid-template-columns:1fr 1fr;
-      gap:12px;
-      margin-bottom:14px;
+      place-items:center;
+      font-family:"Avenir Next","Segoe UI",sans-serif;
+      color:#143245;
+      background:linear-gradient(165deg, #eef5f9 0%, #e8f4ef 46%, #f3f9f6 100%);
     }
-    .field.full{grid-column:1 / -1;}
-    .field label{
-      display:block;
-      font-size:.82rem;
-      font-weight:800;
-      color:#334c5e;
-      margin-bottom:6px;
-    }
-    .field input{
-      width:100%;
-      padding:11px 12px;
-      border:1px solid #cddde6;
-      border-radius:10px;
-      font-size:.92rem;
-      font-family:var(--font-ui);
-      color:var(--ink);
-      background:#fff;
-      transition:border-color .18s ease, box-shadow .18s ease;
-    }
-    .field input:focus{
-      outline:none;
-      border-color:#0ea5a4;
-      box-shadow:0 0 0 3px rgba(14,165,164,0.15);
-    }
-    .toolbar{
-      display:flex;
-      align-items:center;
-      flex-wrap:wrap;
-      gap:8px;
-    }
-    button{
-      padding:10px 14px;
-      border:1px solid #0f766e;
-      border-radius:10px;
-      background:linear-gradient(135deg, #0f766e 0%, #0ea5a4 100%);
-      color:#fff;
+    a{
+      color:#0f766e;
       font-weight:700;
-      font-size:.87rem;
-      letter-spacing:.01em;
-      cursor:pointer;
-      transition:.2s ease;
-    }
-    button:hover{
-      transform:translateY(-1px);
-      box-shadow:0 8px 14px rgba(15,118,110,0.24);
-    }
-    .btn-soft{
-      border-color:#c5dde6;
-      color:#134560;
+      text-decoration:none;
+      border:1px solid #b9d8d4;
       background:#fff;
-      box-shadow:none;
-    }
-    .btn-soft:hover{
-      border-color:#0ea5a4;
-      color:#fff;
-      background:linear-gradient(135deg, #0f766e 0%, #0ea5a4 100%);
-    }
-    #settings_status{
-      display:inline-flex;
-      align-items:center;
-      min-height:36px;
       border-radius:999px;
-      padding:0 12px;
-      font-size:.82rem;
-      font-weight:700;
-      border:1px solid transparent;
-    }
-    #settings_status.success{
-      color:var(--ok);
-      background:rgba(31,154,97,0.08);
-      border-color:rgba(31,154,97,0.35);
-    }
-    #settings_status.error{
-      color:var(--danger);
-      background:rgba(196,61,43,0.08);
-      border-color:rgba(196,61,43,0.35);
-    }
-    .tip-box{
-      margin-top:12px;
-      border:1px solid var(--line);
-      border-left:4px solid var(--warn);
-      border-radius:10px;
-      background:#fffaf0;
-      padding:11px 12px;
-      font-size:.82rem;
-      color:#6b4b00;
-      line-height:1.5;
-      box-shadow:var(--shadow-sm);
-    }
-    @media (max-width:860px){
-      .form-grid{grid-template-columns:1fr;}
-      .field.full{grid-column:auto;}
+      padding:10px 14px;
     }
   </style>
 </head>
 <body>
-<div class="container">
-  <header>
-    <div class="header-kicker">TraceDNS Console</div>
-    <h1>Alert Integration Settings</h1>
-    <p>Configure external integrations used by monitoring and IOC synchronization workflows.</p>
-  </header>
-
-  <nav class="topnav">
-    <a href="/">Main Console</a>
-    <a href="/dns_frontend.html">Domain Monitor</a>
-  </nav>
-
-  <div class="content">
-    <h2 class="section-title">Configuration</h2>
-    <p class="section-desc">Teams, MISP, and VirusTotal keys are persisted in `dns_config.json` under the `alerts` section.</p>
-
-    <div class="form-grid">
-      <div class="field full">
-        <label for="teams_webhook">Teams Webhook URL</label>
-        <input id="teams_webhook" placeholder="https://outlook.webhook.office.com/webhookb2/..." />
-      </div>
-      <div class="field">
-        <label for="misp_url">MISP URL</label>
-        <input id="misp_url" placeholder="https://misp.example.com" />
-      </div>
-      <div class="field">
-        <label for="push_event_id">Push Event ID (MISP)</label>
-        <input id="push_event_id" placeholder="12345" />
-      </div>
-      <div class="field">
-        <label for="misp_key">MISP API Key</label>
-        <input id="misp_key" type="password" placeholder="Your MISP API key" />
-      </div>
-      <div class="field">
-        <label for="vt_api_key">VirusTotal API Key</label>
-        <input id="vt_api_key" type="password" placeholder="Your VirusTotal API key" />
-      </div>
-    </div>
-
-    <div class="toolbar">
-      <button id="load_settings" class="btn-soft">Load Settings</button>
-      <button id="save_settings">Save Settings</button>
-      <span id="settings_status"></span>
-    </div>
-
-    <div class="tip-box">
-      For security, avoid using production keys on shared environments and rotate keys if exposed.
-    </div>
-  </div>
-</div>
-
-<script>
-  function setStatus(message, kind){
-    const el = document.getElementById('settings_status');
-    el.textContent = message || '';
-    el.classList.remove('success', 'error');
-    if(kind === 'success' || kind === 'error'){
-      el.classList.add(kind);
-    }
-  }
-
-  async function loadSettings(){
-    try{
-      const r = await fetch('/settings');
-      const j = await r.json();
-      const alerts = (j.settings && j.settings.alerts) ? j.settings.alerts : (j.settings || {}).alerts || {};
-      document.getElementById('teams_webhook').value = alerts.teams_webhook || '';
-      document.getElementById('misp_url').value = alerts.misp_url || '';
-      document.getElementById('misp_key').value = alerts.api_key || '';
-      document.getElementById('push_event_id').value = alerts.push_event_id || '';
-      document.getElementById('vt_api_key').value = alerts.vt_api_key || '';
-      setStatus('Loaded', 'success');
-    }catch(e){
-      setStatus('Load failed', 'error');
-    }
-    setTimeout(()=>setStatus('', null), 2600);
-  }
-
-  document.getElementById('load_settings').addEventListener('click', loadSettings);
-
-  document.getElementById('save_settings').addEventListener('click', async ()=>{
-    const alerts = {
-      teams_webhook: document.getElementById('teams_webhook').value.trim(),
-      misp_url: document.getElementById('misp_url').value.trim(),
-      api_key: document.getElementById('misp_key').value.trim(),
-      push_event_id: document.getElementById('push_event_id').value.trim(),
-      vt_api_key: document.getElementById('vt_api_key').value.trim()
-    };
-    try{
-      const r = await fetch('/settings', {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({alerts})
-      });
-      const j = await r.json();
-      if(j && j.status === 'ok'){
-        setStatus('Saved', 'success');
-      } else {
-        setStatus(j && j.error ? `Save failed: ${j.error}` : 'Save failed', 'error');
-      }
-    }catch(e){
-      setStatus('Save failed', 'error');
-    }
-    setTimeout(()=>setStatus('', null), 3000);
-  });
-
-  loadSettings();
-</script>
+  <a href="/dns_frontend.html#settings-alerts">Open merged settings in main console</a>
+  <script>
+    window.location.replace('/dns_frontend.html#settings-alerts');
+  </script>
 </body>
 </html>

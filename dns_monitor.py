@@ -53,6 +53,46 @@ def _collect_active_ip_map(current_results, allowed_domains=None):
     return out
 
 
+def _mark_query_failure(fail_counts, key, threshold=3):
+    """Increment failure count for a key and return the new count."""
+    try:
+        count = int(fail_counts.get(key, 0)) + 1
+    except Exception:
+        count = 1
+    fail_counts[key] = count
+    return count
+
+
+def _clear_query_failure(fail_counts, key):
+    """Reset failure count for a key after a successful query."""
+    fail_counts.pop(key, None)
+
+
+def _drop_snapshot_for_failed_target(current_results, history, name, srv, ts=None):
+    """Drop current snapshot for a domain/server pair.
+
+    Returns True when something was removed.
+    """
+    removed = False
+    if name in current_results and isinstance(current_results.get(name), dict):
+        if srv in current_results[name]:
+            current_results[name].pop(srv, None)
+            removed = True
+
+    hist_obj = history.setdefault(name, {'meta': {}, 'events': [], 'current': {}})
+    current_map = hist_obj.setdefault('current', {})
+    if isinstance(current_map, dict) and srv in current_map:
+        current_map.pop(srv, None)
+        removed = True
+
+    if removed and ts:
+        try:
+            hist_obj.setdefault('meta', {})['last_changed'] = int(ts)
+        except Exception:
+            pass
+    return removed
+
+
 def main():
     """Main entry: start the DNS monitoring loop and HTTP UI."""
     parser = argparse.ArgumentParser(description="DNS monitor (multiple domains, web UI)")
@@ -119,6 +159,21 @@ def main():
                 ok = register_custom_decoder(name, steps)
                 if ok:
                     shared_config['custom_decoders'].append({'name': name, 'steps': steps})
+        except Exception:
+            continue
+
+    # restore custom A decoders from file config
+    file_custom_a = file_cfg.get('custom_a_decoders', []) if isinstance(file_cfg, dict) else []
+    shared_config['custom_a_decoders'] = []
+    for entry in file_custom_a:
+        try:
+            name = entry.get('name') if isinstance(entry, dict) else None
+            steps = entry.get('steps') if isinstance(entry, dict) else None
+            if name and isinstance(steps, list):
+                from a_decoder import register_custom_a_decoder
+                ok = register_custom_a_decoder(name, steps)
+                if ok:
+                    shared_config['custom_a_decoders'].append({'name': name, 'steps': steps, 'decoder_type': 'A'})
         except Exception:
             continue
 
@@ -212,6 +267,9 @@ def main():
 
     signal.signal(signal.SIGINT, handle_sigint)
 
+    # Consecutive DNS query failure counters: key=(domain, server, rtype)
+    query_fail_counts = {}
+
     while running:
         with config_lock:
             domains = normalize_domains(shared_config.get('domains', []))  # list of dicts
@@ -245,10 +303,25 @@ def main():
                 continue
             svr_list = target_servers_override or servers
             for srv in svr_list:
+                fail_key = (name, srv, rtype)
                 queried_vals = query_dns(srv, name, rtype=rtype)
                 if queried_vals is None:
+                    fail_count = _mark_query_failure(query_fail_counts, fail_key, threshold=3)
                     print(f"[ERROR] DNS {srv} query failed for {name} ({rtype})")
+                    # Drop stale snapshot after consecutive failures.
+                    if fail_count >= 3:
+                        ts_fail = int(time.time())
+                        removed = _drop_snapshot_for_failed_target(current_results, history, name, srv, ts=ts_fail)
+                        if removed:
+                            print(f"[NOTICE] Removed stale snapshot after {fail_count} consecutive DNS failures: {name} ({rtype}) @ {srv}")
+                            try:
+                                hist_obj = history.get(name)
+                                if isinstance(hist_obj, dict):
+                                    persist_history_entry(history_dir, name, hist_obj)
+                            except Exception:
+                                pass
                     continue
+                _clear_query_failure(query_fail_counts, fail_key)
                 ts = int(time.time())
                 decoded = []
                 result_vals = queried_vals

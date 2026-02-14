@@ -22,6 +22,31 @@ except Exception:
     get_ip_report = None
 
 
+def purge_removed_domains_state(current_results, history, history_dir, removed_domains):
+    """Purge in-memory and on-disk history state for removed domains."""
+    removed = [str(d or '').strip() for d in (removed_domains or []) if str(d or '').strip()]
+    if not removed:
+        return
+    for domain in removed:
+        try:
+            if isinstance(current_results, dict):
+                current_results.pop(domain, None)
+        except Exception:
+            pass
+        try:
+            if isinstance(history, dict):
+                history.pop(domain, None)
+        except Exception:
+            pass
+        try:
+            if history_dir:
+                fp = os.path.join(history_dir, f"{domain}.json")
+                if os.path.isfile(fp):
+                    os.remove(fp)
+        except Exception:
+            pass
+
+
 def load_frontend_html():
     """
     프론트엔드 HTML을 로드합니다.
@@ -116,8 +141,28 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                 names = sorted(list(TXT_DECODE_METHODS.keys()))
                 a_names = sorted(list(A_DECODE_METHODS.keys()))
                 # include any registered custom decoder metadata from shared_config
-                custom = list(shared_config.get('custom_decoders', []) or [])
-                self._send_json({'decoders': names, 'custom': custom, 'a_decoders': a_names})
+                txt_custom = list(shared_config.get('custom_decoders', []) or [])
+                a_custom = list(shared_config.get('custom_a_decoders', []) or [])
+                custom_all = []
+                for c in txt_custom:
+                    item = dict(c) if isinstance(c, dict) else {}
+                    if item and 'decoder_type' not in item:
+                        item['decoder_type'] = 'TXT'
+                    if item:
+                        custom_all.append(item)
+                for c in a_custom:
+                    item = dict(c) if isinstance(c, dict) else {}
+                    if item and 'decoder_type' not in item:
+                        item['decoder_type'] = 'A'
+                    if item:
+                        custom_all.append(item)
+                self._send_json({
+                    'decoders': names,
+                    'custom': txt_custom,
+                    'custom_a': a_custom,
+                    'custom_all': custom_all,
+                    'a_decoders': a_names
+                })
             except Exception as e:
                 self._send_json({'error': str(e)}, 500)
 
@@ -458,8 +503,8 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
             if parsed.path == '/decoders/custom':
                 # simple GET support to list allowed ops
                 try:
-                    ops = ['regex', 'base64', 'urlsafe_b64', 'xor_hex', 'extract_ip_prefix', 'ascii']
-                    return self._send_json({'allowed_ops': ops})
+                    ops = ['regex', 'base64', 'urlsafe_b64', 'xor_hex', 'xor32_ipv4', 'extract_ip_prefix', 'ascii']
+                    return self._send_json({'allowed_ops': ops, 'decoder_types': ['TXT', 'A']})
                 except Exception:
                     return self._send_json({'error': 'unable to list ops'}, 500)
             if parsed.path == '/history':
@@ -526,6 +571,7 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                         # Get current domains for reference (to preserve decoder options)
                         current_domains = shared_config.get('domains', [])
                         current_map = {d['name']: d for d in current_domains if isinstance(d, dict)}
+                        prev_names = {d.get('name', '').strip() for d in normalize_domains(current_domains) if d.get('name')}
                         
                         # Normalize new domains but preserve decode settings from current.
                         new_domains_normalized = normalize_domains(new_domains_raw)
@@ -547,7 +593,12 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                                 d.pop('txt_decode', None)
                                 d.pop('a_decode', None)
                                 d.pop('a_xor_key', None)
-                        
+                        next_names = {d.get('name', '').strip() for d in new_domains_normalized if d.get('name')}
+                        removed_names = sorted(prev_names - next_names)
+                        if removed_names:
+                            purge_removed_domains_state(current_results, history, history_dir, removed_names)
+                            print(f"[DEBUG] /config POST: Purged removed domain state: {removed_names}")
+
                         shared_config['domains'] = new_domains_normalized
                         print(f"[DEBUG] /config POST: Updated domains to {[d['name'] for d in new_domains_normalized]}")
                     
@@ -569,7 +620,9 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                             'domains': shared_config.get('domains', []),
                             'servers': shared_config.get('servers', []),
                             'interval': shared_config.get('interval'),
-                            'alerts': shared_config.get('alerts', {})
+                            'alerts': shared_config.get('alerts', {}),
+                            'custom_decoders': shared_config.get('custom_decoders', []),
+                            'custom_a_decoders': shared_config.get('custom_a_decoders', []),
                         }
                         try:
                             write_config(config_path, to_write)
@@ -733,13 +786,15 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
 
                 name = data.get('name')
                 steps = data.get('steps')
+                decoder_type = str(data.get('decoder_type', 'TXT')).upper()
+                if decoder_type not in ('TXT', 'A'):
+                    return self._send_json({'error': 'decoder_type must be TXT or A'}, 400)
                 if not name or not isinstance(steps, list):
                     return self._send_json({'error': 'name and steps required'}, 400)
                 try:
                     # server-side validation: limit steps and sizes
                     if not isinstance(steps, list) or len(steps) == 0 or len(steps) > 12:
                         return self._send_json({'error': 'steps must be a non-empty list with <=12 steps'}, 400)
-                    # each step size limits
                     total_chars = 0
                     import re as _re
                     for s in steps:
@@ -761,130 +816,160 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                             key = s.get('key','')
                             if not isinstance(key, str) or len(key) > 128:
                                 return self._send_json({'error': 'xor_hex key too long'}, 400)
+                        if op == 'xor32_ipv4':
+                            key = s.get('key', s.get('key_hex', ''))
+                            if key is not None and len(str(key)) > 64:
+                                return self._send_json({'error': 'xor32_ipv4 key too long'}, 400)
 
-                    from txt_decoder import register_custom_decoder
-                    ok = register_custom_decoder(name, steps)
+                    if decoder_type == 'TXT':
+                        from txt_decoder import register_custom_decoder
+                        ok = register_custom_decoder(name, steps)
+                        list_key = 'custom_decoders'
+                    else:
+                        from a_decoder import register_custom_a_decoder
+                        ok = register_custom_a_decoder(name, steps)
+                        list_key = 'custom_a_decoders'
                     if not ok:
                         return self._send_json({'error': 'failed to register (name conflict or invalid steps)'}, 400)
-                    # persist into shared_config and write to disk
+
                     with config_lock:
-                        lst = shared_config.setdefault('custom_decoders', [])
-                        # avoid duplicate names
+                        lst = shared_config.setdefault(list_key, [])
                         exists = any(x.get('name') == name for x in lst)
                         if not exists:
-                            lst.append({'name': name, 'steps': steps})
-                        # write back to config file
+                            lst.append({'name': name, 'steps': steps, 'decoder_type': decoder_type})
                         if config_path:
                             try:
                                 cfg = read_config(config_path) or {}
                                 cfg['domains'] = cfg.get('domains', shared_config.get('domains', []))
                                 cfg['servers'] = cfg.get('servers', shared_config.get('servers', []))
                                 cfg['interval'] = cfg.get('interval', shared_config.get('interval'))
-                                cfg['custom_decoders'] = lst
+                                cfg['custom_decoders'] = shared_config.get('custom_decoders', [])
+                                cfg['custom_a_decoders'] = shared_config.get('custom_a_decoders', [])
                                 write_config(config_path, cfg)
                             except Exception:
                                 pass
-                        return self._send_json({'status': 'ok', 'registered': name})
+                    return self._send_json({'status': 'ok', 'registered': name, 'decoder_type': decoder_type})
                 except Exception as e:
                     return self._send_json({'error': str(e)}, 500)
 
-                if parsed.path == '/decoders/custom' and self.command == 'DELETE':
-                    length = int(self.headers.get('Content-Length', '0'))
-                    body = self.rfile.read(length) if length > 0 else b''
-                    try:
-                        data = json.loads(body.decode('utf-8')) if body else {}
-                    except Exception:
-                        return self._send_json({'error': 'invalid json'}, 400)
-                    name = data.get('name')
-                    if not name:
-                        return self._send_json({'error': 'name required'}, 400)
-                    try:
+            if parsed.path == '/decoders/custom' and self.command == 'DELETE':
+                length = int(self.headers.get('Content-Length', '0'))
+                body = self.rfile.read(length) if length > 0 else b''
+                try:
+                    data = json.loads(body.decode('utf-8')) if body else {}
+                except Exception:
+                    return self._send_json({'error': 'invalid json'}, 400)
+                name = data.get('name')
+                decoder_type = str(data.get('decoder_type', 'TXT')).upper()
+                if decoder_type not in ('TXT', 'A'):
+                    return self._send_json({'error': 'decoder_type must be TXT or A'}, 400)
+                if not name:
+                    return self._send_json({'error': 'name required'}, 400)
+                try:
+                    if decoder_type == 'TXT':
                         from txt_decoder import unregister_custom_decoder
                         ok = unregister_custom_decoder(name)
-                        if not ok:
-                            return self._send_json({'error': 'not removed (builtin or not found)'}, 400)
-                        # remove from shared_config and persist
-                        with config_lock:
-                            lst = shared_config.get('custom_decoders', [])
-                            newlst = [x for x in lst if x.get('name') != name]
-                            shared_config['custom_decoders'] = newlst
-                            if config_path:
-                                try:
-                                    cfg = read_config(config_path) or {}
-                                    cfg['custom_decoders'] = newlst
-                                    cfg['domains'] = cfg.get('domains', shared_config.get('domains', []))
-                                    cfg['servers'] = cfg.get('servers', shared_config.get('servers', []))
-                                    cfg['interval'] = cfg.get('interval', shared_config.get('interval'))
-                                    write_config(config_path, cfg)
-                                except Exception:
-                                    pass
-                        return self._send_json({'status': 'ok', 'removed': name})
-                    except Exception as e:
-                        return self._send_json({'error': str(e)}, 500)
+                        list_key = 'custom_decoders'
+                    else:
+                        from a_decoder import unregister_custom_a_decoder
+                        ok = unregister_custom_a_decoder(name)
+                        list_key = 'custom_a_decoders'
+                    if not ok:
+                        return self._send_json({'error': 'not removed (builtin or not found)'}, 400)
+                    with config_lock:
+                        lst = shared_config.get(list_key, [])
+                        newlst = [x for x in lst if x.get('name') != name]
+                        shared_config[list_key] = newlst
+                        if config_path:
+                            try:
+                                cfg = read_config(config_path) or {}
+                                cfg['custom_decoders'] = shared_config.get('custom_decoders', [])
+                                cfg['custom_a_decoders'] = shared_config.get('custom_a_decoders', [])
+                                cfg['domains'] = cfg.get('domains', shared_config.get('domains', []))
+                                cfg['servers'] = cfg.get('servers', shared_config.get('servers', []))
+                                cfg['interval'] = cfg.get('interval', shared_config.get('interval'))
+                                write_config(config_path, cfg)
+                            except Exception:
+                                pass
+                    return self._send_json({'status': 'ok', 'removed': name, 'decoder_type': decoder_type})
+                except Exception as e:
+                    return self._send_json({'error': str(e)}, 500)
 
-                if parsed.path == '/decoders/custom' and self.command == 'PUT':
-                    length = int(self.headers.get('Content-Length', '0'))
-                    body = self.rfile.read(length) if length > 0 else b''
-                    try:
-                        data = json.loads(body.decode('utf-8')) if body else {}
-                    except Exception:
-                        return self._send_json({'error': 'invalid json'}, 400)
-                    name = data.get('name')
-                    steps = data.get('steps')
-                    if not name or not isinstance(steps, list):
-                        return self._send_json({'error': 'name and steps required'}, 400)
-                    try:
-                        # validate similar to register
-                        if not isinstance(steps, list) or len(steps) == 0 or len(steps) > 12:
-                            return self._send_json({'error': 'steps must be a non-empty list with <=12 steps'}, 400)
-                        import re as _re
-                        total_chars = 0
-                        for s in steps:
-                            if not isinstance(s, dict) or 'op' not in s:
-                                return self._send_json({'error': 'each step must be a dict with op field'}, 400)
-                            total_chars += sum(len(str(v)) for v in s.values())
-                            if total_chars > 2000:
-                                return self._send_json({'error': 'steps too large'}, 400)
-                            if s.get('op') == 'regex':
-                                pat = s.get('pattern','')
-                                if not isinstance(pat, str) or len(pat) > 300:
-                                    return self._send_json({'error': 'regex pattern too long'}, 400)
-                                try:
-                                    _re.compile(pat)
-                                except Exception as e:
-                                    return self._send_json({'error': 'invalid regex: '+str(e)}, 400)
+            if parsed.path == '/decoders/custom' and self.command == 'PUT':
+                length = int(self.headers.get('Content-Length', '0'))
+                body = self.rfile.read(length) if length > 0 else b''
+                try:
+                    data = json.loads(body.decode('utf-8')) if body else {}
+                except Exception:
+                    return self._send_json({'error': 'invalid json'}, 400)
+                name = data.get('name')
+                steps = data.get('steps')
+                decoder_type = str(data.get('decoder_type', 'TXT')).upper()
+                if decoder_type not in ('TXT', 'A'):
+                    return self._send_json({'error': 'decoder_type must be TXT or A'}, 400)
+                if not name or not isinstance(steps, list):
+                    return self._send_json({'error': 'name and steps required'}, 400)
+                try:
+                    if not isinstance(steps, list) or len(steps) == 0 or len(steps) > 12:
+                        return self._send_json({'error': 'steps must be a non-empty list with <=12 steps'}, 400)
+                    import re as _re
+                    total_chars = 0
+                    for s in steps:
+                        if not isinstance(s, dict) or 'op' not in s:
+                            return self._send_json({'error': 'each step must be a dict with op field'}, 400)
+                        total_chars += sum(len(str(v)) for v in s.values())
+                        if total_chars > 2000:
+                            return self._send_json({'error': 'steps too large'}, 400)
+                        if s.get('op') == 'regex':
+                            pat = s.get('pattern','')
+                            if not isinstance(pat, str) or len(pat) > 300:
+                                return self._send_json({'error': 'regex pattern too long'}, 400)
+                            try:
+                                _re.compile(pat)
+                            except Exception as e:
+                                return self._send_json({'error': 'invalid regex: '+str(e)}, 400)
+                        if s.get('op') == 'xor32_ipv4':
+                            key = s.get('key', s.get('key_hex', ''))
+                            if key is not None and len(str(key)) > 64:
+                                return self._send_json({'error': 'xor32_ipv4 key too long'}, 400)
 
+                    if decoder_type == 'TXT':
                         from txt_decoder import unregister_custom_decoder, register_custom_decoder
-                        # unregister old (if exists and not builtin)
                         unregister_custom_decoder(name)
                         ok = register_custom_decoder(name, steps)
-                        if not ok:
-                            return self._send_json({'error': 'failed to register updated decoder'}, 400)
-                        # update shared_config and persist
-                        with config_lock:
-                            lst = shared_config.setdefault('custom_decoders', [])
-                            # replace or append
-                            replaced = False
-                            for i,x in enumerate(lst):
-                                if x.get('name') == name:
-                                    lst[i] = {'name': name, 'steps': steps}
-                                    replaced = True
-                                    break
-                            if not replaced:
-                                lst.append({'name': name, 'steps': steps})
-                            if config_path:
-                                try:
-                                    cfg = read_config(config_path) or {}
-                                    cfg['custom_decoders'] = lst
-                                    cfg['domains'] = cfg.get('domains', shared_config.get('domains', []))
-                                    cfg['servers'] = cfg.get('servers', shared_config.get('servers', []))
-                                    cfg['interval'] = cfg.get('interval', shared_config.get('interval'))
-                                    write_config(config_path, cfg)
-                                except Exception:
-                                    pass
-                        return self._send_json({'status': 'ok', 'updated': name})
-                    except Exception as e:
-                        return self._send_json({'error': str(e)}, 500)
+                        list_key = 'custom_decoders'
+                    else:
+                        from a_decoder import unregister_custom_a_decoder, register_custom_a_decoder
+                        unregister_custom_a_decoder(name)
+                        ok = register_custom_a_decoder(name, steps)
+                        list_key = 'custom_a_decoders'
+                    if not ok:
+                        return self._send_json({'error': 'failed to register updated decoder'}, 400)
+
+                    with config_lock:
+                        lst = shared_config.setdefault(list_key, [])
+                        replaced = False
+                        for i, x in enumerate(lst):
+                            if x.get('name') == name:
+                                lst[i] = {'name': name, 'steps': steps, 'decoder_type': decoder_type}
+                                replaced = True
+                                break
+                        if not replaced:
+                            lst.append({'name': name, 'steps': steps, 'decoder_type': decoder_type})
+                        if config_path:
+                            try:
+                                cfg = read_config(config_path) or {}
+                                cfg['custom_decoders'] = shared_config.get('custom_decoders', [])
+                                cfg['custom_a_decoders'] = shared_config.get('custom_a_decoders', [])
+                                cfg['domains'] = cfg.get('domains', shared_config.get('domains', []))
+                                cfg['servers'] = cfg.get('servers', shared_config.get('servers', []))
+                                cfg['interval'] = cfg.get('interval', shared_config.get('interval'))
+                                write_config(config_path, cfg)
+                            except Exception:
+                                pass
+                    return self._send_json({'status': 'ok', 'updated': name, 'decoder_type': decoder_type})
+                except Exception as e:
+                    return self._send_json({'error': str(e)}, 500)
 
             if parsed.path == '/decoders/custom/preview' and self.command == 'POST':
                 length = int(self.headers.get('Content-Length', '0'))
@@ -895,6 +980,9 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                     return self._send_json({'error': 'invalid json'}, 400)
                 steps = data.get('steps')
                 sample = data.get('sample')
+                decoder_type = str(data.get('decoder_type', 'TXT')).upper()
+                if decoder_type not in ('TXT', 'A'):
+                    return self._send_json({'error': 'decoder_type must be TXT or A'}, 400)
                 if not isinstance(steps, list) or sample is None:
                     return self._send_json({'error': 'steps(list) and sample required'}, 400)
                 try:
@@ -917,13 +1005,20 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                                 _re.compile(pat)
                             except Exception as e:
                                 return self._send_json({'error': 'invalid regex: '+str(e)}, 400)
+                        if s.get('op') == 'xor32_ipv4':
+                            key = s.get('key', s.get('key_hex', ''))
+                            if key is not None and len(str(key)) > 64:
+                                return self._send_json({'error': 'xor32_ipv4 key too long'}, 400)
 
-                    from txt_decoder import create_custom_decoder
+                    if decoder_type == 'TXT':
+                        from txt_decoder import create_custom_decoder
+                    else:
+                        from a_decoder import create_custom_a_decoder as create_custom_decoder
                     dec = create_custom_decoder(steps)
                     if not dec:
                         return self._send_json({'error': 'invalid steps'}, 400)
                     res = dec([sample])
-                    return self._send_json({'sample': sample, 'decoded': res})
+                    return self._send_json({'sample': sample, 'decoded': res, 'decoder_type': decoder_type})
                 except Exception as e:
                     return self._send_json({'error': str(e)}, 500)
 

@@ -1,0 +1,10 @@
+requests==2.31.0
+dnspython==2.3.0
+PyMISP==2.4.140
+
+# Optional packages (useful for local development / testing)
+python-dotenv==1.0.0
+pytest==7.3.1
+
+# Note: VirusTotal lookups in `vt_lookup.py` use `requests` directly; no special VT package
+# is required by default.
