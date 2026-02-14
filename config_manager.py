@@ -50,9 +50,12 @@ def normalize_domains(value):
     """
     Normalize domain input into a list of dicts.
 
-    Returns a list like: [{ 'name': 'example.com', 'type': 'A', 'txt_decode': 'cafebabe_xor_base64' }, ...]
+    Returns a list like:
+      [{ 'name': 'example.com', 'type': 'A',
+         'txt_decode': 'cafebabe_xor_base64',
+         'a_decode': 'xor32_ipv4', 'a_xor_key': 'E7708E59' }, ...]
     Accepts strings, lists, or dicts. If an item is a dict and contains
-    a `txt_decode` field, it is preserved.
+    `txt_decode` / `a_decode` / `a_xor_key` fields, they are preserved.
 
     Args:
         value: domain information (string, list, or dict)
@@ -72,6 +75,8 @@ def normalize_domains(value):
             name = str(it.get('name', '')).strip()
             typ = str(it.get('type', 'A')).upper() if it.get('type') else 'A'
             txt_decode = it.get('txt_decode')
+            a_decode = it.get('a_decode')
+            a_xor_key = it.get('a_xor_key')
         else:
             s = str(it)
             # split comma/newline
@@ -90,6 +95,10 @@ def normalize_domains(value):
         d = {'name': name, 'type': typ}
         if txt_decode:
             d['txt_decode'] = txt_decode
+        if a_decode is not None and str(a_decode).strip() != '':
+            d['a_decode'] = str(a_decode).strip()
+        if a_xor_key is not None and str(a_xor_key).strip() != '':
+            d['a_xor_key'] = str(a_xor_key).strip()
         out.append(d)
         seen.add(name)
     return out

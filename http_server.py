@@ -14,6 +14,7 @@ from config_manager import normalize_domains, write_config, read_config
 import time
 import mimetypes
 from txt_decoder import TXT_DECODE_METHODS, analyze_domain_decoding
+from a_decoder import A_DECODE_METHODS
 try:
     from vt_lookup import get_ip_report
 except Exception:
@@ -29,11 +30,11 @@ def load_frontend_html():
     Returns:
         str: HTML 콘텐츠
     """
-    # Prefer a dashboard file if present, otherwise fall back to the main frontend.
+    # Use dns_frontend.html as the primary UI. Keep dashboard as legacy fallback.
     base = os.path.dirname(__file__)
     dashboard_path = os.path.join(base, "dns_dashboard.html")
     frontend_path = os.path.join(base, "dns_frontend.html")
-    for p in (dashboard_path, frontend_path):
+    for p in (frontend_path, dashboard_path):
         try:
             with open(p, 'r', encoding='utf-8') as f:
                 return f.read()
@@ -101,6 +102,10 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                         }
                         if info.get('type') == 'TXT' and info.get('txt_decode'):
                             entry['txt_decode'] = info.get('txt_decode')
+                        if info.get('type') == 'A' and info.get('a_decode'):
+                            entry['a_decode'] = info.get('a_decode')
+                        if info.get('type') == 'A' and info.get('a_xor_key'):
+                            entry['a_xor_key'] = info.get('a_xor_key')
                         data[d][srv] = entry
                 self._send_json({'results': data})
             except Exception as e:
@@ -109,9 +114,10 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
         def _handle_decoders(self):
             try:
                 names = sorted(list(TXT_DECODE_METHODS.keys()))
+                a_names = sorted(list(A_DECODE_METHODS.keys()))
                 # include any registered custom decoder metadata from shared_config
                 custom = list(shared_config.get('custom_decoders', []) or [])
-                self._send_json({'decoders': names, 'custom': custom})
+                self._send_json({'decoders': names, 'custom': custom, 'a_decoders': a_names})
             except Exception as e:
                 self._send_json({'error': str(e)}, 500)
 
@@ -185,6 +191,13 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                     except Exception as e:
                         import sys
                         print(f"[ERROR] Failed to save settings to {config_path}: {e}", file=sys.stderr)
+            # apply alert runtime immediately (best effort)
+            try:
+                from alerts import init_from_alerts as _init_alerts_runtime
+                _init_alerts_runtime(alerts)
+            except Exception as e:
+                import sys
+                print(f"[WARN] Failed to apply runtime alert settings: {e}", file=sys.stderr)
             return self._send_json({'status': 'ok', 'alerts': alerts})
 
         def _gather_ip_map(self):
@@ -216,7 +229,7 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                                 ent['domains'].add(d)
                                 ent['count'] += 1
                                 ent['last_ts'] = max(ent['last_ts'], ts)
-                            for ip in side_obj.get('decoded_ips', []) if ev.get('type', 'A') == 'TXT' else []:
+                            for ip in side_obj.get('decoded_ips', []) if ev.get('type', 'A') in ('TXT', 'A') else []:
                                 ent = ip_map.setdefault(ip, {'domains': set(), 'count': 0, 'last_ts': 0})
                                 ent['domains'].add(d)
                                 ent['count'] += 1
@@ -228,7 +241,7 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                                 ent['domains'].add(d)
                                 ent['count'] += 1
                                 ent['last_ts'] = max(ent['last_ts'], ts)
-                        elif ev.get('type', 'A') == 'TXT':
+                        if ev.get('type', 'A') in ('TXT', 'A'):
                             for ip in ev.get('decoded_ips', []):
                                 ent = ip_map.setdefault(ip, {'domains': set(), 'count': 0, 'last_ts': 0})
                                 ent['domains'].add(d)
@@ -374,7 +387,7 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                             'domain': d,
                             'server': srv,
                             'type': 'current',
-                            'rtype': 'TXT-derived',
+                            'rtype': f"{info.get('type', 'A')}-derived",
                             'ts': info.get('ts'),
                             'decoded_ips': list(info.get('decoded_ips', [])),
                             'values': list(info.get('values', []))
@@ -397,7 +410,7 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                                 'old': ev.get('old'),
                                 'new': ev.get('new')
                             })
-                        if rtype == 'TXT' and (ip in ev.get('new', {}).get('decoded_ips', []) or ip in ev.get('old', {}).get('decoded_ips', [])):
+                        if rtype in ('TXT', 'A') and (ip in ev.get('new', {}).get('decoded_ips', []) or ip in ev.get('old', {}).get('decoded_ips', [])):
                             matches.append({
                                 'domain': d,
                                 'server': ev.get('server'),
@@ -417,7 +430,7 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                                 'ts': ts,
                                 'values': ev.get('values')
                             })
-                        if rtype == 'TXT' and ip in ev.get('decoded_ips', []):
+                        if rtype in ('TXT', 'A') and ip in ev.get('decoded_ips', []):
                             matches.append({
                                 'domain': d,
                                 'server': ev.get('server'),
@@ -507,18 +520,33 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                     return self._send_json({'error': 'invalid json'}, 400)
 
                 with config_lock:
-                    # Handle domains update: preserve existing txt_decode settings
+                    # Handle domains update: preserve existing decoder settings
                     if 'domains' in data:
                         new_domains_raw = data['domains']
-                        # Get current domains for reference (to preserve txt_decode)
+                        # Get current domains for reference (to preserve decoder options)
                         current_domains = shared_config.get('domains', [])
                         current_map = {d['name']: d for d in current_domains if isinstance(d, dict)}
                         
-                        # Normalize new domains but preserve txt_decode from current
+                        # Normalize new domains but preserve decode settings from current.
                         new_domains_normalized = normalize_domains(new_domains_raw)
                         for d in new_domains_normalized:
-                            if d['name'] in current_map and 'txt_decode' in current_map[d['name']]:
-                                d['txt_decode'] = current_map[d['name']]['txt_decode']
+                            prev = current_map.get(d.get('name'), {})
+                            typ = str(d.get('type', 'A')).upper()
+                            if typ == 'TXT':
+                                if 'txt_decode' not in d and prev.get('txt_decode'):
+                                    d['txt_decode'] = prev.get('txt_decode')
+                                d.pop('a_decode', None)
+                                d.pop('a_xor_key', None)
+                            elif typ == 'A':
+                                if 'a_decode' not in d and prev.get('a_decode') is not None:
+                                    d['a_decode'] = prev.get('a_decode')
+                                if 'a_xor_key' not in d and prev.get('a_xor_key') is not None:
+                                    d['a_xor_key'] = prev.get('a_xor_key')
+                                d.pop('txt_decode', None)
+                            else:
+                                d.pop('txt_decode', None)
+                                d.pop('a_decode', None)
+                                d.pop('a_xor_key', None)
                         
                         shared_config['domains'] = new_domains_normalized
                         print(f"[DEBUG] /config POST: Updated domains to {[d['name'] for d in new_domains_normalized]}")

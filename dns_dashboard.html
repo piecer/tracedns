@@ -2,498 +2,103 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>TraceDNS Dashboard</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta http-equiv="refresh" content="0; url=/dns_frontend.html" />
+  <title>TraceDNS Dashboard Moved</title>
   <style>
+    :root{
+      --font-ui:"Avenir Next", "Manrope", "Trebuchet MS", "Segoe UI", sans-serif;
+      --bg-1:#eef5f9;
+      --bg-2:#e8f4ef;
+      --ink:#13212e;
+      --line:#d7e4eb;
+      --accent:#0f766e;
+      --accent-2:#0ea5a4;
+      --shadow-xl:0 28px 70px rgba(12, 33, 46, 0.18);
+    }
     *{margin:0;padding:0;box-sizing:border-box;}
     body{
-      font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      background:linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
+      font-family:var(--font-ui);
+      color:var(--ink);
       min-height:100vh;
-      padding:20px;
-      color:#333;
+      display:grid;
+      place-items:center;
+      padding:18px;
+      background:
+        radial-gradient(1200px 500px at 18% -6%, rgba(14,165,164,0.14), transparent 60%),
+        radial-gradient(1000px 420px at 92% 2%, rgba(245,158,11,0.12), transparent 55%),
+        linear-gradient(165deg, var(--bg-1) 0%, var(--bg-2) 46%, #f3f9f6 100%);
     }
-    .container{max-width:1400px;margin:0 auto;background:#fff;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,0.3);overflow:hidden;}
-    header{background:linear-gradient(135deg, #3498db 0%, #2980b9 100%);color:#fff;padding:30px;text-align:center;}
-    header h1{font-size:2.2em;font-weight:700;margin-bottom:8px;}
-    header p.small{opacity:0.9;}
-    nav{padding:20px;background:#f8f9fa;border-bottom:2px solid #e9ecef;display:flex;gap:15px;align-items:center;flex-wrap:wrap;}
-    nav button,nav a{
-      padding:10px 20px;
-      border:none;
-      border-radius:8px;
-      background:linear-gradient(135deg, #3498db 0%, #2980b9 100%);
-      color:#fff;
-      text-decoration:none;
-      font-weight:600;
-      cursor:pointer;
-      transition:all 0.3s ease;
-      font-size:0.9em;
-    }
-    nav button:hover,nav a:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(52,152,219,0.4);}
-    .content{padding:30px;}
-    h2{font-size:1.6em;color:#3498db;margin:25px 0 15px;border-bottom:3px solid #3498db;padding-bottom:10px;}
-    #summary{
-      font-size:1.3em;
-      font-weight:600;
-      padding:20px;
-      background:linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
-      border-radius:8px;
-      border-left:5px solid #4caf50;
-      margin-bottom:20px;
-    }
-    table{
-      width:100%;
-      border-collapse:separate;
-      border-spacing:0;
-      margin-top:15px;
+    .card{
+      width:min(680px, 100%);
+      background:linear-gradient(180deg, #ffffff 0%, #fbfeff 100%);
+      border:1px solid rgba(255,255,255,0.7);
+      border-radius:18px;
+      box-shadow:var(--shadow-xl);
       overflow:hidden;
-      border-radius:8px;
-      box-shadow:0 4px 12px rgba(0,0,0,0.1);
     }
-    th{
-      background:linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+    .head{
       color:#fff;
-      padding:15px;
-      text-align:left;
-      font-weight:600;
-      cursor:pointer;
-      user-select:none;
-      transition:all 0.3s ease;
+      padding:22px 24px;
+      background:linear-gradient(118deg, #0f766e 0%, #0ea5a4 48%, #22b08d 100%);
     }
-    th:hover{background:linear-gradient(135deg, #2980b9 0%, #1f5d8b 100%);}
-    td{padding:12px 15px;border-bottom:1px solid #e9ecef;}
-    tr:hover{background:#f8f9fa;}
-    tr:last-child td{border-bottom:none;}
-    .small{font-size:0.85em;color:#999;}
-    .vt-bad{background:linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%)!important;border-left:4px solid #f44336;}
-    a{color:#3498db;text-decoration:none;font-weight:600;}
-    a:hover{text-decoration:underline;}
-    input,select{
-      padding:10px;
-      border:2px solid #e9ecef;
-      border-radius:6px;
-      font-size:0.9em;
-      transition:border-color 0.3s ease;
-      font-family:inherit;
+    .head h1{
+      font-size:1.28rem;
+      margin-bottom:6px;
     }
-    input:focus,select:focus{outline:none;border-color:#3498db;box-shadow:0 0 0 3px rgba(52,152,219,0.1);}
-    button{
-      padding:10px 20px;
-      border:none;
-      border-radius:6px;
-      background:linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+    .head p{
+      font-size:.9rem;
+      opacity:.94;
+    }
+    .body{
+      padding:20px 24px 22px;
+      line-height:1.55;
+    }
+    .body p{
+      margin-bottom:12px;
+      color:#334c5e;
+    }
+    .actions{
+      display:flex;
+      flex-wrap:wrap;
+      gap:8px;
+    }
+    a{
+      text-decoration:none;
+      border:1px solid #c5dde6;
+      background:#fff;
+      color:#16566c;
+      border-radius:999px;
+      padding:9px 14px;
+      font-size:.84rem;
+      font-weight:700;
+      letter-spacing:.01em;
+      transition:.2s ease;
+    }
+    a:hover{
+      border-color:#1a9ea6;
       color:#fff;
-      font-weight:600;
-      cursor:pointer;
-      transition:all 0.3s ease;
+      background:linear-gradient(135deg, #148b88 0%, #0ea5a4 100%);
+      transform:translateY(-1px);
     }
-    button:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(52,152,219,0.4);}
-    button:disabled{opacity:0.6;cursor:not-allowed;transform:none;}
-    .filter-section{background:#f8f9fa;padding:15px;border-radius:8px;margin-bottom:15px;}
-    .filter-section label{display:inline-block;margin-right:15px;font-weight:600;}
-    #settings{background:#f8f9fa;padding:20px;border-radius:8px;}
-    #settings label{display:block;margin:12px 0 6px;font-weight:600;}
-    #settings input{margin-bottom:15px;}
-    .status-good{color:#4caf50;font-weight:600;}
-    .status-bad{color:#f44336;font-weight:600;}
   </style>
 </head>
 <body>
-<div class="container">
-<header><h1>🌐 TraceDNS Dashboard</h1><p class="small">Real-time DNS monitoring and IP tracking</p></header>
-<nav>
-  <button id="refresh">🔄 Refresh</button>
-  <a href="/dns_frontend.html">⚙️ Domain Settings</a>
-  <a href="/settings.html">🔧 Settings</a>
-  <span style="margin-left:auto;color:#999;">Last updated: <span id="last">-</span></span>
-  <span id="vt_status" style="margin-left:20px;color:#f39c12;font-size:0.85em;">🔄 VT Status: Loading...</span>
-</nav>
-<div class="content">
-
-  <h2>📊 Summary</h2>
-  <div id="summary">Loading...</div>
-
-  <h2>🌍 Unique IPs (VT info included)</h2>
-  <table id="ips">
-    <thead><tr>
-      <th data-key="ip">IP Address</th>
-      <th data-key="count">Count</th>
-      <th data-key="last_ts">Last seen</th>
-      <th data-key="domains">Domains</th>
-      <th data-key="vt">VirusTotal</th>
-    </tr></thead>
-    <tbody></tbody>
-  </table>
-
-  <h2>🔗 Domains</h2>
-  <div id="domains_section">
-    <p class="small">List of configured domains and quick actions.</p>
-    <div class="filter-section">
-      <label><input id="filter_nonresolving" type="checkbox"/> Show only non-resolving</label>
-      &nbsp;&nbsp;
-      <label>Sort by: <select id="domains_sort">
-        <option value="resolving_desc">Resolving first</option>
-        <option value="last_ts_desc">Last seen (newest)</option>
-        <option value="last_ts_asc">Last seen (oldest)</option>
-        <option value="name_asc">Name (A→Z)</option>
-        <option value="name_desc">Name (Z→A)</option>
-      </select></label>
+  <div class="card">
+    <div class="head">
+      <h1>Dashboard consolidated</h1>
+      <p>This endpoint now forwards to the unified main console.</p>
     </div>
-    <table id="domains_table">
-      <thead><tr><th data-key="name">Domain</th><th data-key="type">Type</th><th data-key="resolving">Status</th><th data-key="last_ts">Last seen</th><th>Actions</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-
-  <h2>⚙️ Settings</h2>
-  <div id="settings">
-    <p class="small">Alert integration settings (Teams, MISP, VirusTotal).</p>
-    <label>Teams Webhook URL<br/><input id="teams_webhook" style="width:100%" placeholder="https://..."/></label><br/>
-    <label>MISP URL<br/><input id="misp_url" style="width:100%" placeholder="https://misp.example"/></label><br/>
-    <label>MISP API Key<br/><input id="misp_key" style="width:100%" placeholder="API key"/></label><br/>
-    <label>Push Event ID (MISP)<br/><input id="push_event_id" style="width:100%" placeholder="12345"/></label><br/>
-    <label>VirusTotal API Key<br/><input id="vt_api_key" style="width:100%" placeholder="VT API key"/></label><br/>
-    <div style="margin-top:15px;display:flex;gap:10px;">
-      <button id="load_settings">📥 Load</button>
-      <button id="save_settings">💾 Save</button>
-      <span id="settings_status" class="small" style="line-height:40px;"></span>
+    <div class="body">
+      <p>You are being redirected to <code>/dns_frontend.html</code>.</p>
+      <div class="actions">
+        <a href="/dns_frontend.html">Open Main Console</a>
+        <a href="/settings.html">Open Settings</a>
+      </div>
     </div>
   </div>
-</div>
-
   <script>
-    async function load(){
-      document.getElementById('last').textContent = new Date().toLocaleString();
-      try{
-        const resp = await fetch('/ips?include_vt=1');
-        if(!resp.ok){
-          document.getElementById('summary').textContent = 'Load failed (server error)';
-          return;
-        }
-        const data = await resp.json();
-        let ips = data.ips || [];
-        document.getElementById('summary').textContent = `Unique IPs: ${ips.length}`;
-        // Default: sort by newest (last_ts) descending
-        ips.sort((a,b)=> (b.last_ts||0) - (a.last_ts||0));
-        const tbody = document.querySelector('#ips tbody');
-        tbody.innerHTML = '';
-        for(const r of ips){
-            const tr = document.createElement('tr');
-            if(r.vt && (r.vt.malicious || r.vt.suspicious)) tr.className='vt-bad';
-            const last = r.last_ts ? new Date(r.last_ts*1000).toLocaleString() : '';
-            const domains = (r.domains||[]).join(', ');
-            let vtcell;
-            if(r.vt){
-              const malicious = r.vt.malicious || 0;
-              const suspicious = r.vt.suspicious || 0;
-              const harmless = r.vt.harmless || 0;
-              const total = malicious + suspicious + harmless;
-              let vtText = `🔴 ${malicious} malicious`;
-              if(suspicious > 0) vtText += ` / 🟡 ${suspicious} suspicious`;
-              vtText += ` / 🟢 ${harmless} harmless`;
-              if(total === 0) vtText = '<div class="small">(no analysis)</div>';
-              vtcell = `<div>${vtText}</div>`;
-            } else {
-              vtcell = '<div class="small" style="color:#999;">⏳ VT API Key not configured</div>';
-            }
-            tr.innerHTML = `<td><a href="/ip?ip=${encodeURIComponent(r.ip)}">${r.ip}</a></td><td>${r.count}</td><td>${last}</td><td>${domains}</td><td>${vtcell}</td>`;
-            tbody.appendChild(tr);
-        }
-      }catch(e){
-        console.error('Failed to load /ips', e);
-        document.getElementById('summary').textContent = 'Load failed (network error)';
-        return;
-      }
-    }
-
-    // Sorting logic for table headers
-    let currentSort = {key:'last_ts',dir:-1}; // -1 = desc, 1 = asc
-    function renderSorted(ips){
-      const tbody = document.querySelector('#ips tbody');
-      tbody.innerHTML = '';
-      for(const r of ips){
-        const tr = document.createElement('tr');
-        if(r.vt && (r.vt.malicious || r.vt.suspicious)) tr.className='vt-bad';
-        const last = r.last_ts ? new Date(r.last_ts*1000).toLocaleString() : '';
-        const domains = (r.domains||[]).join(', ');
-        let vtcell;
-        if(r.vt){
-          const malicious = r.vt.malicious || 0;
-          const suspicious = r.vt.suspicious || 0;
-          const harmless = r.vt.harmless || 0;
-          const total = malicious + suspicious + harmless;
-          let vtText = `🔴 ${malicious} malicious`;
-          if(suspicious > 0) vtText += ` / 🟡 ${suspicious} suspicious`;
-          vtText += ` / 🟢 ${harmless} harmless`;
-          if(total === 0) vtText = '<div class="small">(no analysis)</div>';
-          vtcell = `<div>${vtText}</div>`;
-        } else {
-          vtcell = '<div class="small" style="color:#999;">⏳ VT API Key not configured</div>';
-        }
-        tr.innerHTML = `<td><a href="/ip?ip=${encodeURIComponent(r.ip)}">${r.ip}</a></td><td>${r.count}</td><td>${last}</td><td>${domains}</td><td>${vtcell}</td>`;
-        tbody.appendChild(tr);
-      }
-    }
-
-    function doSort(ips, key, dir){
-      const copy = ips.slice();
-      copy.sort((a,b)=>{
-        const aval = (key==='domains') ? (a.domains||[]).join(', ') : (key==='vt' ? (a.vt && (a.vt.malicious||0)) : (a[key]===undefined? -Infinity : a[key]));
-        const bval = (key==='domains') ? (b.domains||[]).join(', ') : (key==='vt' ? (b.vt && (b.vt.malicious||0)) : (b[key]===undefined? -Infinity : b[key]));
-        if(typeof aval === 'string' || typeof bval === 'string'){
-          return dir * String(aval).localeCompare(String(bval));
-        }
-        return dir * ( (aval||0) - (bval||0) );
-      });
-      return copy;
-    }
-
-    // Attach header click handlers for sorting (script is at page bottom so DOM is available)
-    const headers = document.querySelectorAll('#ips thead th');
-    headers.forEach(h=>{
-      h.style.cursor = 'pointer';
-      h.addEventListener('click', async ()=>{
-        const key = h.getAttribute('data-key');
-        if(currentSort.key===key) currentSort.dir *= -1; else { currentSort.key=key; currentSort.dir=-1; }
-        // reload data and apply sort
-        try{
-          const resp = await fetch('/ips?include_vt=1');
-          if(!resp.ok){
-            document.getElementById('summary').textContent = 'Load failed (server error)';
-            return;
-          }
-          const data = await resp.json();
-          let ips2 = data.ips || [];
-          ips2 = doSort(ips2, currentSort.key, currentSort.dir);
-          renderSorted(ips2);
-        }catch(e){
-          console.error('Failed to load /ips for sorting', e);
-          document.getElementById('summary').textContent = 'Load failed (network error)';
-        }
-      });
-    });
-
-    // Domains management
-    // domains cache and rendering helpers
-    let domainsCache = [];
-    function renderDomains(){
-      const tbody = document.querySelector('#domains_table tbody');
-      tbody.innerHTML = '';
-      const onlyNon = document.getElementById('filter_nonresolving').checked;
-      let list = domainsCache.slice();
-      // apply filter
-      if(onlyNon) list = list.filter(x=> !x.resolving);
-      // apply sort
-      const sortVal = document.getElementById('domains_sort').value;
-      if(sortVal === 'resolving_desc'){
-        list.sort((a,b)=> (Number(b.resolving) - Number(a.resolving)) || ((b.last_ts||0)-(a.last_ts||0)));
-      } else if(sortVal === 'last_ts_desc'){
-        list.sort((a,b)=> (b.last_ts||0)-(a.last_ts||0));
-      } else if(sortVal === 'last_ts_asc'){
-        list.sort((a,b)=> (a.last_ts||0)-(b.last_ts||0));
-      } else if(sortVal === 'name_asc'){
-        list.sort((a,b)=> String(a.name).localeCompare(String(b.name)));
-      } else if(sortVal === 'name_desc'){
-        list.sort((a,b)=> String(b.name).localeCompare(String(a.name)));
-      }
-      for(const d of list){
-        const tr = document.createElement('tr');
-        const last = d.last_ts ? new Date(d.last_ts*1000).toLocaleString() : '';
-        const resolving = d.resolving ? '<strong style="color:green">Yes</strong>' : '<span style="color:#999">No</span>';
-        tr.innerHTML = `<td>${d.name}</td><td>${d.type||'A'}</td><td>${resolving}</td><td>${last}</td><td><button data-domain="${d.name}" class="check-domain">Check Now</button> <button data-domain="${d.name}" class="remove-domain">Remove</button></td>`;
-        tbody.appendChild(tr);
-      }
-      // attach handlers
-      document.querySelectorAll('.remove-domain').forEach(btn=>{
-        btn.addEventListener('click', async ()=>{
-          const dom = btn.getAttribute('data-domain');
-          if(!confirm(`Remove domain '${dom}' from configuration?`)) return;
-          try{
-            // fetch current config to preserve other settings
-            const r = await fetch('/config');
-            if(!r.ok) {
-              console.error('[ERROR] Failed to fetch config:', r.status);
-              alert('Failed to fetch config. Status: ' + r.status);
-              return;
-            }
-            const cfg = await r.json();
-            console.log('[DEBUG] Current config fetched:', cfg);
-            
-            // Remove domain from domains array
-            let domains = (cfg.domains || []).filter(x => {
-              if(typeof x === 'object' && x.name) return x.name !== dom;
-              if(typeof x === 'string') return x !== dom;
-              return true;
-            });
-            
-            console.log('[DEBUG] Current domains:', cfg.domains);
-            console.log('[DEBUG] Filtered domains:', domains);
-            console.log('[DEBUG] Removing domain:', dom);
-            
-            // POST updated config preserving servers, interval, alerts, and other settings
-            const payload = {
-              domains: domains,
-              servers: cfg.servers || [],
-              interval: cfg.interval || 60,
-              alerts: cfg.alerts || {}
-            };
-            
-            console.log('[DEBUG] Sending payload:', payload);
-            
-            const resp = await fetch('/config', {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify(payload)
-            });
-            const jr = await resp.json();
-            
-            console.log('[DEBUG] Response:', jr);
-            
-            if(resp.ok && jr.status === 'ok'){
-              console.log('[✓] Domain removed successfully');
-              
-              // Verify the removal was successful by checking response
-              const remaining_domains = jr.domains || [];
-              const still_exists = remaining_domains.some(d => {
-                if(typeof d === 'object' && d.name) return d.name === dom;
-                if(typeof d === 'string') return d === dom;
-                return false;
-              });
-              
-              if(still_exists) {
-                console.error('[ERROR] Domain still exists in returned config!');
-                alert('⚠️ Domain was not removed (still exists in config)');
-                return;
-              }
-              
-              // Remove row from UI
-              const parentTr = btn.closest('tr');
-              if(parentTr) {
-                parentTr.style.opacity = '0.5';
-                parentTr.style.textDecoration = 'line-through';
-              }
-              btn.textContent = '✓ Removed';
-              btn.disabled = true;
-              
-              console.log('[*] Reloading domains list...');
-              // Reload domains after 1 second
-              setTimeout(async ()=> { 
-                await loadDomains(); 
-                await load(); 
-              }, 1000);
-            } else {
-              console.error('[ERROR] Failed to remove domain:', jr);
-              alert('Failed to remove domain: ' + (jr.error || JSON.stringify(jr)));
-            }
-          }catch(e){
-            console.error('[ERROR] remove domain failed', e);
-            alert('Failed to remove domain: ' + e.message);
-          }
-        });
-      });
-      document.querySelectorAll('.check-domain').forEach(btn=>{
-        btn.addEventListener('click', async ()=>{
-          const dom = btn.getAttribute('data-domain');
-          btn.disabled = true; btn.textContent = 'Checking...';
-          try{
-            const r = await fetch('/resolve', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({domain: dom})});
-            if(r.ok){
-              // small delay to allow monitor to run the check
-              setTimeout(async ()=>{ await loadDomains(); await load(); btn.disabled=false; btn.textContent='Check Now'; }, 1500);
-            } else {
-              btn.disabled=false; btn.textContent='Check Now';
-              alert('Resolve request failed');
-            }
-          }catch(e){
-            console.error('check now failed', e);
-            btn.disabled=false; btn.textContent='Check Now';
-            alert('Resolve request failed');
-          }
-        });
-      });
-    }
-
-    async function loadDomains(){
-      try{
-        const resp = await fetch('/domains');
-        if(!resp.ok){ console.warn('Failed to load /domains'); return; }
-        const data = await resp.json();
-        domainsCache = data.domains || [];
-        renderDomains();
-      }catch(e){ console.error('Failed to load domains', e); }
-    }
-    // load domains on start
-    loadDomains();
-
-    document.getElementById('refresh').addEventListener('click', ()=>load());
-    load();
-    // load settings into form
-    async function loadSettings(){
-      try{
-        const r = await fetch('/settings');
-        const j = await r.json();
-        const alerts = (j.settings && j.settings.alerts) ? j.settings.alerts : (j.settings || {}).alerts || {};
-        document.getElementById('teams_webhook').value = alerts.teams_webhook || '';
-        document.getElementById('misp_url').value = alerts.misp_url || '';
-        document.getElementById('misp_key').value = alerts.api_key || '';
-        document.getElementById('push_event_id').value = alerts.push_event_id || '';
-        document.getElementById('vt_api_key').value = alerts.vt_api_key || '';
-      }catch(e){
-        // ignore
-      }
-    }
-    document.getElementById('load_settings').addEventListener('click', ()=>loadSettings());
-    
-    // Check VT configuration status
-    async function checkVTStatus(){
-      try{
-        const r = await fetch('/settings');
-        const j = await r.json();
-        const alerts = (j.settings && j.settings.alerts) ? j.settings.alerts : (j.settings || {}).alerts || {};
-        const vtKey = alerts.vt_api_key;
-        const statusEl = document.getElementById('vt_status');
-        if(vtKey && vtKey.trim() !== ''){
-          statusEl.innerHTML = '✅ VT API Configured';
-          statusEl.style.color = '#27ae60';
-        } else {
-          statusEl.innerHTML = '⚠️ VT API Not Configured - <a href="/settings.html" style="color:#e74c3c;">Setup</a>';
-          statusEl.style.color = '#e74c3c';
-        }
-      }catch(e){
-        console.error('Failed to check VT status', e);
-        document.getElementById('vt_status').textContent = '❌ VT Status: Error';
-      }
-    }
-    checkVTStatus();
-    
-    document.getElementById('save_settings').addEventListener('click', async ()=>{
-      const alerts = {
-        teams_webhook: document.getElementById('teams_webhook').value.trim(),
-        misp_url: document.getElementById('misp_url').value.trim(),
-        api_key: document.getElementById('misp_key').value.trim(),
-        push_event_id: document.getElementById('push_event_id').value.trim(),
-        vt_api_key: document.getElementById('vt_api_key').value.trim()
-      };
-      try{
-        const r = await fetch('/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({alerts})});
-        const j = await r.json();
-        if(j && j.status=='ok'){
-          document.getElementById('settings_status').textContent = 'Saved.';
-          // Check VT status after save
-          setTimeout(()=>checkVTStatus(), 500);
-        } else {
-          document.getElementById('settings_status').textContent = 'Save failed';
-        }
-      }catch(e){
-        document.getElementById('settings_status').textContent = 'Save failed';
-      }
-      setTimeout(()=>{document.getElementById('settings_status').textContent='';},3000);
-    });
-    // auto-load settings once
-    loadSettings();
-    // auto-refresh every 60s
-    setInterval(load, 60000);
+    window.location.replace('/dns_frontend.html');
   </script>
 </body>
 </html>

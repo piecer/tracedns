@@ -1,6 +1,16 @@
 {
   "domains": [
-    "sample.exe"
+    {
+      "name": "sample-txt.example",
+      "type": "TXT",
+      "txt_decode": "cafebabe_xor_base64"
+    },
+    {
+      "name": "sample-a.example",
+      "type": "A",
+      "a_decode": "xor32_ipv4",
+      "a_xor_key": "E7708E59"
+    }
   ],
   "servers": [
     "8.8.8.8",

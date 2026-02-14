@@ -13,7 +13,15 @@ import copy
 import configparser
 import ipaddress
 import binascii
-from pymisp import PyMISP, MISPEvent, MISPAttribute, MISPObject, MISPUser, MISPSighting
+try:
+    from pymisp import PyMISP, MISPEvent, MISPAttribute, MISPObject, MISPUser, MISPSighting
+except Exception:
+    PyMISP = None
+    MISPEvent = None
+    MISPAttribute = None
+    MISPObject = None
+    MISPUser = None
+    MISPSighting = None
 
 
 from typing import Union
@@ -28,6 +36,9 @@ json_data = {
     "title": "New C2 ",
     "themeColor": "0076D7"  
 }
+
+# Runtime MISP client injected by alerts.py. Keep None until initialized.
+misp = None
 
 
 
@@ -48,12 +59,18 @@ def is_valid_ip(ip):
 
 # Function to update sighting for a specific attribute value
 def update_sighting_by_value(event_id, attribute_value, sighting_type='0'):
+    if misp is None:
+        print("MISP client is not initialized; cannot update sighting.")
+        return False
+    if MISPSighting is None:
+        print("PyMISP is not available; cannot update sighting.")
+        return False
     try:
         # Search for the attribute by value
         result = misp.search(controller='attributes', value=attribute_value, type_attribute='ip-src')
     except Exception as e:
         print(f"Error searching for attribute: {e}")
-        return
+        return False
 
     if result and 'Attribute' in result:
         for attribute in result['Attribute']:
@@ -67,9 +84,11 @@ def update_sighting_by_value(event_id, attribute_value, sighting_type='0'):
                     print(f"Sighting updated for attribute with value: {attribute_value}")
                 except Exception as e:
                     print(f"Error adding sighting: {e}")
-                return
+                    return False
+                return True
 
     print(f"Attribute with value {attribute_value} not found.")
+    return False
 
 # Function to get all existing IP attributes as a set
 def get_existing_ips(attributes):
@@ -83,14 +102,23 @@ def get_existing_ips(attributes):
 
 # Function to add new IP attributes if they don't already exist
 def add_unique_ips(event_id, ip_list):
+    if misp is None:
+        print("MISP client is not initialized; cannot add attributes.")
+        return False
+    if MISPAttribute is None:
+        print("PyMISP is not available; cannot add attributes.")
+        return False
+
     try:
         event = misp.get_event(event_id)
     except Exception as e:
         print(f"Error retrieving event: {e}")
-        return
+        return False
     
     if event:
-        attributes = event['Event']['Attribute']
+        attributes = event.get('Event', {}).get('Attribute', [])
+        if not isinstance(attributes, list):
+            attributes = []
         existing_ips = get_existing_ips(attributes)
         added_count = 0
         
@@ -115,8 +143,81 @@ def add_unique_ips(event_id, ip_list):
                     
 
         print(f"Added {added_count} new IP addresses to event {event_id}.")
+        return True
     else:
         print(f"Event ID {event_id} not found.")
+        return False
+
+
+def remove_ips(event_id, ip_list):
+    """Remove matching ip-src attributes from a MISP event.
+
+    ip_list can be:
+      - [(ip, label), ...]
+      - [ip, ...]
+    """
+    if misp is None:
+        print("MISP client is not initialized; cannot remove attributes.")
+        return False
+
+    targets = set()
+    for item in ip_list or []:
+        ip = None
+        if isinstance(item, (list, tuple)) and item:
+            ip = item[0]
+        else:
+            ip = item
+        s = str(ip or '').strip()
+        if not s:
+            continue
+        if not is_valid_ip(s):
+            continue
+        targets.add(s)
+
+    if not targets:
+        return True
+
+    try:
+        event = misp.get_event(event_id)
+    except Exception as e:
+        print(f"Error retrieving event for delete: {e}")
+        return False
+
+    if not event:
+        print(f"Event ID {event_id} not found.")
+        return False
+
+    attributes = event.get('Event', {}).get('Attribute', [])
+    if not isinstance(attributes, list):
+        attributes = []
+
+    to_delete = []
+    for attribute in attributes:
+        try:
+            if attribute.get('type') != 'ip-src':
+                continue
+            value = str(attribute.get('value', '')).strip()
+            if value not in targets:
+                continue
+            attr_id = attribute.get('id') or attribute.get('uuid')
+            if attr_id:
+                to_delete.append((str(attr_id), value))
+        except Exception:
+            continue
+
+    ok = True
+    removed_count = 0
+    for attr_id, value in to_delete:
+        try:
+            misp.delete_attribute(attr_id)
+            removed_count += 1
+            print(f"Removed attribute id={attr_id} value={value}")
+        except Exception as e:
+            ok = False
+            print(f"Error removing attribute {value} ({attr_id}): {e}")
+
+    print(f"Removed {removed_count} IP attributes from event {event_id}.")
+    return ok
 
 
 def merge_lists_no_duplicates(lists):
@@ -176,4 +277,3 @@ def make_json_data(data,text):
 def lists_equal_ignore_order(list1, list2):
     return sorted(list1) == sorted(list2)
 # Function to resolve DNS records for a domain using a specific DNS server
-

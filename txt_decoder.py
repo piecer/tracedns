@@ -528,14 +528,14 @@ def decode_txt_xor_keyextend(txt_values, known_key=None, enc_dataset=None, ip_da
     """
     # 기본 알려진 키 설정 (15바이트 = 30hex chars)
     if known_key is None:
-        known_key = bytes.fromhex("2ad28f0c67f549252d1ec04cdff628")
+        known_key = bytes.fromhex("2ad28f0c67f549252d1ec04ccc0fcc")
     elif isinstance(known_key, str):
         try:
             # hex 문자열을 바이트로 변환
             known_key = bytes.fromhex(known_key)
         except Exception:
             # hex 변환 실패시 기본값 사용
-            known_key = bytes.fromhex("2ad28f0c67f549252d1ec04cdff628")
+            known_key = bytes.fromhex("2ad28f0c67f549252d1ec04ccc0fcc")
     elif isinstance(known_key, list):
         known_key = bytes(known_key)
     

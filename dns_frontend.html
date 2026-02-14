@@ -5,202 +5,429 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>DNS Monitor</title>
 <style>
+:root{
+  --font-ui:"Avenir Next", "Manrope", "Trebuchet MS", "Segoe UI", sans-serif;
+  --font-mono:"JetBrains Mono", "Fira Code", "Consolas", "Monaco", monospace;
+  --bg-1:#eef5f9;
+  --bg-2:#e8f4ef;
+  --surface:#ffffff;
+  --surface-soft:#f7fbfd;
+  --ink:#13212e;
+  --muted:#5b6a77;
+  --line:#d7e4eb;
+  --accent:#0f766e;
+  --accent-2:#0ea5a4;
+  --accent-warm:#f59e0b;
+  --danger:#c43d2b;
+  --ok:#1f9a61;
+  --radius-lg:20px;
+  --radius-md:12px;
+  --shadow-xl:0 28px 70px rgba(12, 33, 46, 0.18);
+  --shadow-sm:0 8px 18px rgba(19, 33, 46, 0.08);
+}
 *{margin:0;padding:0;box-sizing:border-box;}
 body{
-  font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-  background:linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
+  font-family:var(--font-ui);
+  background:
+    radial-gradient(1200px 500px at 18% -6%, rgba(14,165,164,0.14), transparent 60%),
+    radial-gradient(1000px 420px at 92% 2%, rgba(245,158,11,0.12), transparent 55%),
+    linear-gradient(165deg, var(--bg-1) 0%, var(--bg-2) 46%, #f3f9f6 100%);
   min-height:100vh;
-  padding:20px;
-  color:#333;
+  padding:clamp(12px, 2.2vw, 26px);
+  color:var(--ink);
 }
-.container{max-width:1200px;margin:0 auto;background:#fff;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,0.3);overflow:hidden;}
-header{background:linear-gradient(135deg, #3498db 0%, #2980b9 100%);color:#fff;padding:30px;text-align:center;}
-header h1{font-size:2.5em;font-weight:700;margin-bottom:8px;}
-header p{font-size:0.95em;opacity:0.9;}
-nav{
+.container{
+  max-width:1360px;
+  margin:0 auto;
+  background:linear-gradient(180deg, #ffffff 0%, #fbfeff 100%);
+  border:1px solid rgba(255,255,255,0.7);
+  border-radius:var(--radius-lg);
+  box-shadow:var(--shadow-xl);
+  overflow:hidden;
+}
+header{
+  position:relative;
+  color:#fff;
+  padding:36px clamp(18px, 3vw, 34px) 28px;
+  background:linear-gradient(118deg, #0f766e 0%, #0ea5a4 48%, #22b08d 100%);
+  border-bottom:1px solid rgba(255,255,255,0.2);
+}
+header::after{
+  content:"";
+  position:absolute;
+  width:320px;
+  height:320px;
+  border-radius:50%;
+  right:-90px;
+  top:-190px;
+  background:radial-gradient(circle, rgba(255,255,255,0.35) 0%, rgba(255,255,255,0.04) 68%, transparent 72%);
+  pointer-events:none;
+}
+.header-kicker{
+  font-size:.78rem;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+  font-weight:700;
+  opacity:.88;
+  margin-bottom:8px;
+}
+header h1{
+  font-size:clamp(1.9rem, 4.2vw, 2.9rem);
+  line-height:1.1;
+  font-weight:800;
+  margin-bottom:8px;
+}
+header p{
+  font-size:.98rem;
+  line-height:1.55;
+  max-width:780px;
+  opacity:.94;
+}
+.header-tags{
+  margin-top:16px;
   display:flex;
   flex-wrap:wrap;
   gap:8px;
-  padding:20px;
-  background:#f8f9fa;
-  border-bottom:2px solid #e9ecef;
-  justify-content:center;
+}
+.header-tags span{
+  background:rgba(255,255,255,0.16);
+  border:1px solid rgba(255,255,255,0.34);
+  border-radius:999px;
+  padding:6px 10px;
+  font-size:.76rem;
+  font-weight:700;
+  letter-spacing:.02em;
+}
+nav{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+  padding:16px clamp(14px, 2vw, 28px);
+  background:linear-gradient(180deg, #f9fcfd 0%, #f4f9fc 100%);
+  border-bottom:1px solid var(--line);
 }
 nav button{
-  padding:12px 24px;
-  border:2px solid #3498db;
+  border:1px solid #c5dde6;
   background:#fff;
-  color:#3498db;
-  border-radius:8px;
+  color:#16566c;
+  border-radius:999px;
+  padding:10px 16px;
+  font-size:.88rem;
+  font-weight:700;
+  letter-spacing:.01em;
   cursor:pointer;
-  font-weight:600;
-  transition:all 0.3s ease;
-  font-size:0.95em;
+  transition:.2s ease;
 }
-nav button:hover{background:#3498db;color:#fff;transform:translateY(-2px);box-shadow:0 4px 12px rgba(52,152,219,0.4);}
-.section{display:none;padding:30px;animation:fadeIn 0.3s ease;}
-.section.active{display:block;}
-@keyframes fadeIn{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}
-.section h3{font-size:1.8em;margin-bottom:20px;color:#3498db;border-bottom:3px solid #3498db;padding-bottom:10px;}
-.section h4{font-size:1.3em;margin:20px 0 15px;color:#2980b9;}
-label{display:block;margin:15px 0 8px;font-weight:600;color:#555;}
-textarea,input[type=text],input[type=number]{
-  width:100%;
-  padding:12px;
-  margin-bottom:12px;
-  border:2px solid #e9ecef;
-  border-radius:8px;
-  font-size:0.95em;
-  transition:border-color 0.3s ease;
-  font-family:inherit;
-}
-textarea:focus,input[type=text]:focus,input[type=number]:focus{outline:none;border-color:#3498db;box-shadow:0 0 0 3px rgba(52,152,219,0.1);}
-button{
-  padding:12px 24px;
-  margin:8px 8px 8px 0;
-  border:none;
-  border-radius:8px;
-  background:linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+nav button:hover{
+  border-color:#1a9ea6;
   color:#fff;
-  font-weight:600;
-  cursor:pointer;
-  transition:all 0.3s ease;
-  font-size:0.95em;
+  background:linear-gradient(135deg, #148b88 0%, #0ea5a4 100%);
+  transform:translateY(-1px);
 }
-button:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(52,152,219,0.4);}
+nav button.active{
+  border-color:#0f766e;
+  color:#fff;
+  background:linear-gradient(135deg, #0f766e 0%, #0ea5a4 100%);
+  box-shadow:0 8px 16px rgba(15,118,110,0.24);
+}
+.overview-grid{
+  padding:18px clamp(14px, 2vw, 28px) 2px;
+  display:grid;
+  grid-template-columns:repeat(auto-fit, minmax(170px, 1fr));
+  gap:12px;
+  border-bottom:1px solid var(--line);
+  background:linear-gradient(180deg, #f8fcfd 0%, #fefefe 100%);
+}
+.metric-card{
+  background:#fff;
+  border:1px solid var(--line);
+  border-radius:14px;
+  padding:12px 14px;
+  box-shadow:var(--shadow-sm);
+}
+.metric-label{
+  display:block;
+  font-size:.74rem;
+  text-transform:uppercase;
+  letter-spacing:.08em;
+  font-weight:700;
+  color:#6c7f8f;
+  margin-bottom:7px;
+}
+.metric-value{
+  display:block;
+  font-size:1.2rem;
+  font-weight:800;
+  color:#12374f;
+}
+.section{
+  display:none;
+  padding:24px clamp(14px, 2.2vw, 30px) 30px;
+  animation:sectionIn .24s ease;
+  overflow-x:auto;
+}
+.section.active{display:block;}
+@keyframes sectionIn{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}
+.section h3{
+  font-size:1.45rem;
+  color:#0e5c77;
+  margin-bottom:14px;
+}
+.section h4{
+  font-size:1.08rem;
+  margin:22px 0 12px;
+  color:#1d5f77;
+}
+label{
+  display:block;
+  margin:14px 0 7px;
+  font-weight:700;
+  color:#334c5e;
+}
+textarea,input[type=text],input[type=number],select{
+  width:100%;
+  padding:11px 12px;
+  margin-top:6px;
+  border:1px solid #cddde6;
+  border-radius:10px;
+  font-size:.92rem;
+  font-family:var(--font-ui);
+  color:var(--ink);
+  background:#fff;
+  transition:border-color .18s ease, box-shadow .18s ease;
+}
+textarea:focus,input[type=text]:focus,input[type=number]:focus,select:focus{
+  outline:none;
+  border-color:#0ea5a4;
+  box-shadow:0 0 0 3px rgba(14,165,164,0.15);
+}
+button{
+  padding:10px 14px;
+  margin:8px 8px 8px 0;
+  border:1px solid #0f766e;
+  border-radius:10px;
+  background:linear-gradient(135deg, #0f766e 0%, #0ea5a4 100%);
+  color:#fff;
+  font-weight:700;
+  font-size:.87rem;
+  letter-spacing:.01em;
+  cursor:pointer;
+  transition:.2s ease;
+}
+button:hover{
+  transform:translateY(-1px);
+  box-shadow:0 8px 14px rgba(15,118,110,0.24);
+}
 button:active{transform:translateY(0);}
-#log{
-  background:#1e1e1e;
-  color:#00ff00;
-  padding:15px;
-  height:150px;
-  overflow:auto;
-  border-radius:8px;
-  font-family:'Courier New', monospace;
-  font-size:0.85em;
-  line-height:1.5;
-  margin-top:15px;
-  border:2px solid #e9ecef;
+.tab-buttons{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin-bottom:14px;
+}
+.tab-buttons button{margin:0;}
+.tab-buttons button.active{
+  border-color:#b96700;
+  background:linear-gradient(135deg, #d97706 0%, #f59e0b 100%);
+}
+#resultsTable{
+  width:100%;
+  min-width:980px;
 }
 table{
   width:100%;
-  border-collapse:collapse;
-  margin-top:15px;
-  border-radius:8px;
-  box-shadow:0 4px 12px rgba(0,0,0,0.1);
-}
-#resultsTable{
-  display:block;
-  overflow-x:auto;
+  border-collapse:separate;
+  border-spacing:0;
+  margin-top:14px;
+  border:1px solid var(--line);
+  border-radius:12px;
+  overflow:hidden;
+  background:#fff;
+  box-shadow:var(--shadow-sm);
 }
 th{
-  background:linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+  position:sticky;
+  top:0;
+  z-index:1;
+  background:linear-gradient(180deg, #1f6780 0%, #1b5970 100%);
   color:#fff;
-  padding:15px;
+  padding:11px 10px;
   text-align:left;
-  font-weight:600;
-  border:none;
+  font-weight:700;
+  font-size:.82rem;
+  letter-spacing:.02em;
+  white-space:nowrap;
 }
 td{
-  padding:10px 12px;
-  border-bottom:1px solid #e9ecef;
-  max-width:200px;
+  padding:10px 10px;
+  border-bottom:1px solid #ebf2f6;
+  max-width:220px;
   overflow:hidden;
   text-overflow:ellipsis;
   white-space:nowrap;
-}
-th{
-  background:linear-gradient(135deg, #3498db 0%, #2980b9 100%);
-  color:#fff;
-  padding:15px;
-  text-align:left;
-  font-weight:600;
-  border:none;
-  white-space:nowrap;
+  font-size:.88rem;
 }
 tr:last-child td{border-bottom:none;}
-tr:hover{background:#f8f9fa;}
-td:last-child{
+tbody tr:nth-child(2n){background:#fcfeff;}
+tbody tr:hover{background:#f0f8fb;}
+#resultsTable td:last-child{
   display:flex;
-  gap:4px;
-  flex-wrap:wrap;
   align-items:center;
-  max-width:none;
-  padding:10px 6px;
+  gap:6px;
+  flex-wrap:wrap;
   min-width:280px;
+  max-width:none;
 }
-td:last-child button{
-  padding:5px 8px;
-  font-size:0.75em;
-  white-space:nowrap;
-  flex-shrink:0;
-}
-tr:hover td:last-child{
-  background:#f8f9fa;
-}
-td:last-child button{
-  padding:6px 10px;
-  font-size:0.80em;
-  white-space:nowrap;
-  flex-shrink:0;
-  border:1px solid #3498db;
-  background:#fff;
-  color:#2c3e50;
-  border-radius:4px;
-  cursor:pointer;
-  transition:all 0.2s;
-}
-td:last-child button:hover{
-  background:#3498db;
-  color:#fff;
-}
-#historyBox{
-  height:220px;
-  overflow:auto;
-  background:#f8f9fa;
-  border:2px solid #e9ecef;
-  padding:15px;
+#resultsTable td:last-child button{
+  margin:0;
+  padding:6px 9px;
+  font-size:.75rem;
   border-radius:8px;
-  font-family:'Courier New', monospace;
-  font-size:0.85em;
-  line-height:1.6;
+  border:1px solid #bed4df;
+  background:#fff;
+  color:#134560;
+  box-shadow:none;
 }
-.domain-table input{width:70%;}
-.domain-table select{width:25%;padding:8px;border:2px solid #e9ecef;border-radius:6px;}
+#resultsTable td:last-child button:hover{
+  border-color:#0ea5a4;
+  color:#fff;
+  background:linear-gradient(135deg, #0f766e 0%, #0ea5a4 100%);
+}
+#verifyResult,
+#statusVerifyResult,
+#analyzeResult,
+#customPreviewResult,
+#customList,
+#historyBox,
+#queryResult{
+  background:linear-gradient(180deg, #ffffff 0%, #f8fbfd 100%) !important;
+  border:1px solid var(--line) !important;
+  border-radius:12px !important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.85);
+}
+#historyBox,
+#queryResult,
+#analyzeResult,
+#verifyResult,
+#statusVerifyResult,
+#customPreviewResult{
+  font-family:var(--font-mono) !important;
+  font-size:.83rem;
+}
+#historyBox{height:220px;overflow:auto;padding:14px;}
+#queryResult{margin-top:12px;padding:12px;white-space:pre-wrap;word-break:break-word;min-height:96px;}
+#log{
+  background:#0d1720;
+  color:#94ffaa;
+  padding:14px;
+  height:150px;
+  overflow:auto;
+  border-radius:12px;
+  border:1px solid #223748;
+  font-family:var(--font-mono);
+  font-size:.8rem;
+  line-height:1.45;
+  margin-top:14px;
+}
+.domain-table input{width:100%;}
+.domain-table select{width:100%;}
 .wrap-cell{
   overflow:hidden;
   text-overflow:ellipsis;
   white-space:nowrap;
-  max-width:200px;
+  max-width:220px;
   display:block;
 }
 .info-box{
-  background:linear-gradient(135deg, #f0f4ff 0%, #f8f1ff 100%);
-  border-left:4px solid #667eea;
-  padding:15px;
-  border-radius:8px;
-  margin:15px 0;
-  font-size:0.95em;
-  line-height:1.6;
+  background:linear-gradient(132deg, #ebf9f6 0%, #fff9ec 100%);
+  border-left:4px solid #0ea5a4;
+  padding:14px;
+  border-radius:12px;
+  margin:12px 0;
+  font-size:.9rem;
+  line-height:1.56;
 }
-.info-box code{background:#fff;padding:2px 6px;border-radius:4px;font-family:'Courier New', monospace;color:#d63031;}
-.success{color:#27ae60;font-weight:600;}
-.error{color:#e74c3c;font-weight:600;}
-.tab-buttons{display:flex;gap:8px;margin-bottom:15px;}
-.tab-buttons button{margin:0;}
-.tab-buttons button.active{background:linear-gradient(135deg, #667eea 0%, #764ba2 100%);}
+.info-box code{
+  background:#fff;
+  padding:1px 6px;
+  border-radius:6px;
+  font-family:var(--font-mono);
+  color:#a33e00;
+}
+.success{color:var(--ok);font-weight:700;}
+.error{color:var(--danger);font-weight:700;}
+#refreshState{
+  display:inline-flex;
+  align-items:center;
+  border:1px solid #bfd3dd;
+  background:#fff;
+  color:#2b4d62;
+  border-radius:999px;
+  padding:8px 12px;
+  font-size:.8rem;
+  font-weight:700;
+}
+#refreshState.is-paused{
+  border-color:#f3c07b;
+  background:#fff7ea;
+  color:#9a5800;
+}
+@media (max-width:960px){
+  nav{gap:8px;}
+  nav button{padding:9px 13px;font-size:.82rem;}
+  .overview-grid{grid-template-columns:repeat(2, minmax(0, 1fr));}
+  .section{padding:18px 12px 24px;}
+}
+@media (max-width:640px){
+  header{padding:26px 14px 20px;}
+  .overview-grid{grid-template-columns:1fr;}
+  .metric-value{font-size:1.05rem;}
+  th,td{font-size:.78rem;}
+}
 </style>
 </head>
 <body>
 <div class="container">
-<header><h1>🔍 DNS Monitor</h1><p>Advanced DNS record tracking and TXT decoding</p></header>
+<header>
+  <div class="header-kicker">TraceDNS Console</div>
+  <h1>DNS Monitor</h1>
+  <p>Resolve, decode, verify, and track IOC lifecycle from one operational screen.</p>
+  <div class="header-tags">
+    <span>TXT/A Decode</span>
+    <span>MISP Sync</span>
+    <span>Teams Alerting</span>
+    <span>History Tracking</span>
+  </div>
+</header>
 <nav>
-  <button id="menuSettings">⚙️ Settings</button>
-  <button id="menuStatus">📊 Status</button>
-  <button id="menuQuery">🔎 Query</button>
-  <button id="menuIPs">📍 All IPs</button>
-  <button id="menuValidIPs">✅ Valid IPs</button>
+  <button id="menuSettings" class="active">Settings</button>
+  <button id="menuStatus">Status</button>
+  <button id="menuQuery">Query</button>
+  <button id="menuIPs">All IPs</button>
+  <button id="menuValidIPs">Valid IPs</button>
 </nav>
+<div class="overview-grid" id="overviewGrid">
+  <div class="metric-card">
+    <span class="metric-label">Configured Domains</span>
+    <span class="metric-value" id="metricConfigured">0</span>
+  </div>
+  <div class="metric-card">
+    <span class="metric-label">Status Rows</span>
+    <span class="metric-value" id="metricStatusRows">0</span>
+  </div>
+  <div class="metric-card">
+    <span class="metric-label">Managed IOC IPs</span>
+    <span class="metric-value" id="metricDecoded">0</span>
+  </div>
+  <div class="metric-card">
+    <span class="metric-label">All / Valid IPs</span>
+    <span class="metric-value" id="metricIps">0 / valid 0</span>
+  </div>
+  <div class="metric-card">
+    <span class="metric-label">Last Refresh (UTC)</span>
+    <span class="metric-value" id="metricUpdated">-</span>
+  </div>
+</div>
 
 <div id="settings" class="section">
   <h3>⚙️ Settings</h3>
@@ -209,7 +436,7 @@ td:last-child button:hover{
     <button id="settingsTabCustom">Custom decoders</button>
   </div>
   <table class="domain-table" id="domainTable">
-    <thead><tr><th>Domain</th><th>Type</th><th>TXT Decode</th><th></th></tr></thead>
+    <thead><tr><th>Domain</th><th>Type</th><th>TXT Decode</th><th>A Decode</th><th>A XOR Key</th><th></th></tr></thead>
     <tbody></tbody>
   </table>
   <button id="addDomain">+ Add Domain</button>
@@ -257,7 +484,7 @@ td:last-child button:hover{
       <button id="clearCustom">🗑️ Clear</button>
     </div>
     <div id="customPreviewResult" style="background:#fff7e6;padding:15px;margin-top:15px;white-space:pre-wrap;font-family:monospace;border-radius:8px;border:2px solid #ffeaa7;"></div>
-    <h5 style="margin-top:15px;color:#764ba2;">Registered Custom Decoders</h5>
+    <h5 style="margin-top:15px;color:#1b5970;">Registered Custom Decoders</h5>
     <div id="customList" style="border:2px solid #e9ecef;padding:15px;max-height:220px;overflow:auto;background:#f8f9fa;border-radius:8px;"></div>
   </div>
   <pre id="log"></pre>
@@ -268,6 +495,7 @@ td:last-child button:hover{
   <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:15px;">
     <button id="pauseRefreshBtn">⏸️ Pause Auto-Refresh</button>
     <button id="statusVerifyBtn">🔬 Verify Domains</button>
+    <span id="refreshState">Auto-refresh active</span>
   </div>
   <div id="statusVerifyResult" style="background:#f8f9fa;padding:15px;max-height:240px;overflow:auto;margin-bottom:15px;font-family:monospace;border-radius:8px;border:2px solid #e9ecef;display:none;"></div>
   <table id="resultsTable">
@@ -315,9 +543,22 @@ td:last-child button:hover{
 </div>
 
 <script>
+const SECTION_BUTTON_MAP = {
+  settings: 'menuSettings',
+  status: 'menuStatus',
+  query: 'menuQuery',
+  ips: 'menuIPs',
+  validips: 'menuValidIPs'
+};
+
 function showSection(name){
   ['settings','status','query','ips','validips'].forEach(id=>document.getElementById(id).classList.remove('active'));
   document.getElementById(name).classList.add('active');
+  Object.keys(SECTION_BUTTON_MAP).forEach(sec=>{
+    const btn = document.getElementById(SECTION_BUTTON_MAP[sec]);
+    if(!btn) return;
+    btn.classList.toggle('active', sec === name);
+  });
 }
 document.getElementById('menuSettings').onclick = ()=> showSection('settings');
 document.getElementById('menuStatus').onclick = ()=> showSection('status');
@@ -327,8 +568,35 @@ document.getElementById('menuValidIPs').onclick = ()=> showSection('validips');
 
 function log(msg){ document.getElementById('log').textContent += msg + "\n"; }
 
+const uiOverview = {
+  configured: 0,
+  statusRows: 0,
+  managedIps: 0,
+  allIps: 0,
+  validIps: 0,
+  lastRefreshUtc: '-'
+};
+
+function updateOverviewPanel(){
+  const set = (id, value)=>{
+    const el = document.getElementById(id);
+    if(el) el.textContent = value;
+  };
+  set('metricConfigured', String(uiOverview.configured));
+  set('metricStatusRows', String(uiOverview.statusRows));
+  set('metricDecoded', String(uiOverview.managedIps));
+  set('metricIps', `${uiOverview.allIps} / valid ${uiOverview.validIps}`);
+  set('metricUpdated', uiOverview.lastRefreshUtc);
+}
+
+function touchOverviewTs(){
+  uiOverview.lastRefreshUtc = new Date().toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, 'Z');
+  updateOverviewPanel();
+}
+
 // Global decoder cache
 window.DECODERS = [];
+window.A_DECODERS = [];
 
 async function loadDecoders(){
   try{
@@ -338,6 +606,7 @@ async function loadDecoders(){
     if(j){
       window.DECODERS = Array.isArray(j.decoders) ? j.decoders : [];
       window.CUSTOM_DECODERS = Array.isArray(j.custom) ? j.custom : [];
+      window.A_DECODERS = Array.isArray(j.a_decoders) ? j.a_decoders : [];
     }
   }catch(e){ /* ignore */ }
 }
@@ -345,49 +614,81 @@ async function loadDecoders(){
 function addDomainRow(obj){
   const tbody = document.querySelector('#domainTable tbody');
   const tr = document.createElement('tr');
+
   const tdName = document.createElement('td');
-  const inp = document.createElement('input'); inp.type='text'; inp.value = obj && obj.name ? obj.name : '';
+  const inp = document.createElement('input');
+  inp.type = 'text';
+  inp.className = 'domain-name';
+  inp.value = obj && obj.name ? obj.name : '';
   tdName.appendChild(inp);
+
   const tdType = document.createElement('td');
   const sel = document.createElement('select');
+  sel.className = 'domain-type';
   // Expand supported record type list
   ['A','TXT','AAAA','CNAME','MX','NS','SRV','CAA'].forEach(t=>{ const o = document.createElement('option'); o.value=t; o.text=t; sel.appendChild(o); });
   if(obj && obj.type) sel.value = obj.type.toUpperCase();
   tdType.appendChild(sel);
-  const tdDecode = document.createElement('td');
+
+  // TXT decoder select
+  const tdTxtDecode = document.createElement('td');
   const selDecode = document.createElement('select');
+  selDecode.className = 'txt-decode';
   // Decoder list is loaded dynamically from the backend; use fallback if not loaded yet
   const FALLBACK_DECODERS = ['cafebabe_xor_base64','plain_base64','btea_variant','xor_ipstring_base64_fixedkey','base64_xor_febabe','base56','safeb64_xor','c2_multiplex'];
   const decs = (window.DECODERS && window.DECODERS.length) ? window.DECODERS : FALLBACK_DECODERS;
   // include custom decoders names as well
   const customNames = (window.CUSTOM_DECODERS || []).map(c=>c.name);
   const finalDecs = (decs || []).concat(customNames.filter(n=>!(decs||[]).includes(n)));
-  finalDecs.forEach(t=>{ const o = document.createElement('option'); o.value=t; o.text=t; selDecode.appendChild(o); });
-  if(obj && obj.txt_decode) selDecode.value = obj.txt_decode;
-  // If type is not TXT, disable decoder selection
-  if(!(obj && obj.type && obj.type.toUpperCase() === 'TXT')){
-    selDecode.disabled = true;
+  if(obj && obj.txt_decode && !finalDecs.includes(obj.txt_decode)){
+    finalDecs.push(obj.txt_decode);
   }
+  finalDecs.forEach(t=>{ const o = document.createElement('option'); o.value=t; o.text=t; selDecode.appendChild(o); });
+  if(obj && obj.txt_decode && finalDecs.includes(obj.txt_decode)) selDecode.value = obj.txt_decode;
+  tdTxtDecode.appendChild(selDecode);
 
-  // Toggle TXT decoder selection enabled/disabled when type changes
-  sel.onchange = function(){
-    if(this.value && this.value.toUpperCase() === 'TXT'){
-      selDecode.disabled = false;
-    } else {
-      selDecode.disabled = true;
-      // 선택된 디코더 값 제거해서 저장 시 의도치 않은 값 유지 방지
-      selDecode.selectedIndex = 0;
-    }
+  // A decoder select
+  const tdADecode = document.createElement('td');
+  const selADecode = document.createElement('select');
+  selADecode.className = 'a-decode';
+  const FALLBACK_A_DECODERS = ['none', 'xor32_ipv4'];
+  const aDecs = (window.A_DECODERS && window.A_DECODERS.length) ? window.A_DECODERS.slice() : FALLBACK_A_DECODERS.slice();
+  if(obj && obj.a_decode && !aDecs.includes(obj.a_decode)){
+    aDecs.push(obj.a_decode);
+  }
+  aDecs.forEach(t=>{ const o = document.createElement('option'); o.value=t; o.text=t; selADecode.appendChild(o); });
+  if(obj && obj.a_decode && aDecs.includes(obj.a_decode)) selADecode.value = obj.a_decode;
+  tdADecode.appendChild(selADecode);
+
+  // A XOR key input
+  const tdAKey = document.createElement('td');
+  const inpAKey = document.createElement('input');
+  inpAKey.type = 'text';
+  inpAKey.className = 'a-xor-key';
+  inpAKey.placeholder = 'E7708E59 or 0xE7708E59';
+  inpAKey.value = (obj && obj.a_xor_key) ? obj.a_xor_key : '';
+  tdAKey.appendChild(inpAKey);
+
+  // Toggle decoder fields by record type
+  const toggleDecodeInputs = function(){
+    const typ = (sel.value || 'A').toUpperCase();
+    const isTXT = typ === 'TXT';
+    const isA = typ === 'A';
+    selDecode.disabled = !isTXT;
+    selADecode.disabled = !isA;
+    inpAKey.disabled = !isA;
   };
-  tdDecode.appendChild(selDecode);
-  // expose for potential external control
-  selDecode.dataset.decoderList = 'dynamic';
+  sel.onchange = toggleDecodeInputs;
+  toggleDecodeInputs();
+
   const tdBtn = document.createElement('td');
   const del = document.createElement('button'); 
   del.textContent='🗑️ Remove'; 
   del.title = 'Remove this domain';
   del.onclick = async ()=> { 
     tr.remove();
+    uiOverview.configured = document.querySelectorAll('#domainTable tbody tr').length;
+    updateOverviewPanel();
     // 자동으로 저장
     const payload = {
       domains: collectDomainsFromUI(),
@@ -403,8 +704,15 @@ function addDomainRow(obj){
     }
   };
   tdBtn.appendChild(del);
-  tr.appendChild(tdName); tr.appendChild(tdType); tr.appendChild(tdDecode); tr.appendChild(tdBtn);
+  tr.appendChild(tdName);
+  tr.appendChild(tdType);
+  tr.appendChild(tdTxtDecode);
+  tr.appendChild(tdADecode);
+  tr.appendChild(tdAKey);
+  tr.appendChild(tdBtn);
   tbody.appendChild(tr);
+  uiOverview.configured = document.querySelectorAll('#domainTable tbody tr').length;
+  updateOverviewPanel();
 }
 
 document.getElementById('addDomain').onclick = ()=> addDomainRow();
@@ -413,10 +721,16 @@ document.getElementById('addDomain').onclick = ()=> addDomainRow();
 function showSettingsTab(tab){
   const dom = document.getElementById('domainTable');
   const custom = document.getElementById('customSection');
+  const btnDomains = document.getElementById('settingsTabDomains');
+  const btnCustom = document.getElementById('settingsTabCustom');
   if(tab === 'custom'){
     dom.style.display = 'none'; custom.style.display = 'block';
+    btnDomains.classList.remove('active');
+    btnCustom.classList.add('active');
   } else {
     dom.style.display = ''; custom.style.display = 'none';
+    btnCustom.classList.remove('active');
+    btnDomains.classList.add('active');
   }
 }
 document.getElementById('settingsTabDomains').onclick = ()=> showSettingsTab('domains');
@@ -426,12 +740,23 @@ function collectDomainsFromUI(){
   const rows = document.querySelectorAll('#domainTable tbody tr');
   const out = [];
   rows.forEach(r=>{
-    const name = (r.querySelector('input').value||'').trim();
-    const typ = (r.querySelector('select').value||'A').toUpperCase();
-    const txt_decode = r.querySelectorAll('select')[1].value;
+    const name = ((r.querySelector('.domain-name') || {}).value || '').trim();
+    const typ = ((r.querySelector('.domain-type') || {}).value || 'A').toUpperCase();
+    const txt_decode = ((r.querySelector('.txt-decode') || {}).value || '').trim();
+    const a_decode = ((r.querySelector('.a-decode') || {}).value || 'none').trim();
+    const a_xor_key = ((r.querySelector('.a-xor-key') || {}).value || '').trim();
     if(name) {
       const obj = {name: name, type: typ};
-      if(typ === 'TXT') obj.txt_decode = txt_decode;
+      if(typ === 'TXT'){
+        if(txt_decode) obj.txt_decode = txt_decode;
+      } else if(typ === 'A'){
+        if(a_decode && a_decode !== 'none') obj.a_decode = a_decode;
+        // key를 넣었는데 method를 안 고른 경우 xor32 기본으로 자동 지정
+        if(a_xor_key){
+          if(!obj.a_decode) obj.a_decode = 'xor32_ipv4';
+          obj.a_xor_key = a_xor_key;
+        }
+      }
       out.push(obj);
     }
   });
@@ -451,11 +776,14 @@ async function loadCfg(){
         if(typeof d === 'string') addDomainRow({name:d, type:'A'});
         else if(typeof d === 'object') addDomainRow(d);
       });
+      uiOverview.configured = domains.length;
+      updateOverviewPanel();
     }
     const servers = j.servers || [];
     document.getElementById('servers').value = (Array.isArray(servers) ? servers : []).join(',');
     document.getElementById('interval').value = j.interval || 60;
     log('Loaded config');
+    touchOverviewTs();
   }catch(e){ log('Config load error:'+e); }
 }
 document.getElementById('load').onclick = loadCfg;
@@ -466,6 +794,8 @@ document.getElementById('save').onclick = async ()=>{
     servers: document.getElementById('servers').value.split(',').map(s=>s.trim()).filter(Boolean),
     interval: parseInt(document.getElementById('interval').value) || 60
   };
+  uiOverview.configured = payload.domains.length;
+  updateOverviewPanel();
   try{
     const r = await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     const j = await r.json();
@@ -571,7 +901,6 @@ async function refreshResults(){
     const j = await r.json();
     const tbody = document.querySelector('#resultsTable tbody');
     const results = j.results || {};
-    console.log('[DEBUG] refreshResults: results count =', Object.keys(results).length, 'results =', results);
     // build a map of existing rows keyed by domain||srv to preserve verify rows and avoid full re-render
     const existing = {};
     Array.from(tbody.querySelectorAll('tr')).forEach(r => {
@@ -582,12 +911,21 @@ async function refreshResults(){
     });
 
     const newKeys = [];
+    let statusRows = 0;
+    const managedSet = new Set();
     Object.keys(results).sort().forEach(d=>{
       const srvMap = results[d];
       if(typeof srvMap !== 'object') return;
       Object.keys(srvMap).forEach(srv=>{
         const info = srvMap[srv];
         if(typeof info !== 'object') return;
+        statusRows += 1;
+        const rtype = (info.type || '').toUpperCase();
+        if(rtype === 'TXT'){
+          (info.decoded_ips || []).forEach(ip=>{ if(ip) managedSet.add(ip); });
+        } else if(rtype === 'A'){
+          (info.values || []).forEach(ip=>{ if(ip) managedSet.add(ip); });
+        }
         const key = d + '||' + srv;
         newKeys.push(key);
         let tr = existing[key];
@@ -606,36 +944,32 @@ async function refreshResults(){
         const tdSrv = document.createElement('td'); tdSrv.textContent = srv;
         const tdVals = document.createElement('td'); tdVals.textContent = fullVals.length > 200 ? fullVals.slice(0,200) + '…' : fullVals; tdVals.title = fullVals; tdVals.className = 'wrap-cell';
         const tdDecoded = document.createElement('td'); tdDecoded.textContent = fullDecoded.length > 200 ? fullDecoded.slice(0,200) + '…' : fullDecoded; tdDecoded.title = fullDecoded; tdDecoded.className = 'wrap-cell';
-        const tdMethod = document.createElement('td'); tdMethod.textContent = (info.type === 'TXT' && info.txt_decode) ? info.txt_decode : '-';
+        const tdMethod = document.createElement('td');
+        if(info.type === 'TXT' && info.txt_decode){
+          tdMethod.textContent = info.txt_decode;
+        } else if(info.type === 'A' && info.a_decode){
+          tdMethod.textContent = info.a_xor_key ? `${info.a_decode} (${info.a_xor_key})` : info.a_decode;
+        } else {
+          tdMethod.textContent = '-';
+        }
         const tdTs = document.createElement('td'); tdTs.textContent = info.ts ? new Date(info.ts*1000).toISOString() : '-';
         const tdActions = document.createElement('td');
-        console.log('[DEBUG] Creating actions for domain:', d, 'type:', info.type);
         
         // History 버튼 (모든 레코드)
         const histBtn = document.createElement('button'); 
-        histBtn.textContent = '📜 History'; 
+        histBtn.className = 'action-btn';
+        histBtn.textContent = 'History';
         histBtn.title = 'View history for this domain';
-        histBtn.style.padding = '6px 10px';
-        histBtn.style.fontSize = '0.80em';
-        histBtn.style.whiteSpace = 'nowrap';
-        histBtn.style.marginRight = '2px';
-        histBtn.style.flexShrink = '0';
         histBtn.onclick = ()=> loadHistory(d);
         tdActions.appendChild(histBtn);
-        console.log('[DEBUG] History button added');
         
         // TXT 레코드인 경우만 Analyze와 Verify 버튼 추가
         if(info.type === 'TXT'){
-          console.log('[DEBUG] TXT record detected for domain:', d);
           // Analyze 버튼
           const analyzeBtn = document.createElement('button'); 
-          analyzeBtn.textContent = '🔍 Analyze';
+          analyzeBtn.className = 'action-btn';
+          analyzeBtn.textContent = 'Analyze';
           analyzeBtn.title = 'Analyze TXT decoding methods';
-          analyzeBtn.style.padding = '6px 10px';
-          analyzeBtn.style.fontSize = '0.80em';
-          analyzeBtn.style.whiteSpace = 'nowrap';
-          analyzeBtn.style.marginRight = '2px';
-          analyzeBtn.style.flexShrink = '0';
           analyzeBtn.onclick = async ()=>{
             const sample = (info.values||[]).join('|');
             try{ 
@@ -647,17 +981,12 @@ async function refreshResults(){
             }
           };
           tdActions.appendChild(analyzeBtn);
-          console.log('[DEBUG] Analyze button added');
           
           // Verify 버튼
           const verifyBtn = document.createElement('button'); 
-          verifyBtn.textContent = '✅ Verify';
+          verifyBtn.className = 'action-btn';
+          verifyBtn.textContent = 'Verify';
           verifyBtn.title = 'Verify this domain\'s TXT records';
-          verifyBtn.style.padding = '6px 10px';
-          verifyBtn.style.fontSize = '0.80em';
-          verifyBtn.style.whiteSpace = 'nowrap';
-          verifyBtn.style.marginRight = '2px';
-          verifyBtn.style.flexShrink = '0';
           verifyBtn.onclick = async ()=>{
             const next = tr.nextElementSibling;
             if(next && next.classList && next.classList.contains('verify-row') && next.dataset && next.dataset.domain===d){ 
@@ -735,9 +1064,7 @@ async function refreshResults(){
             } 
           };
           tdActions.appendChild(verifyBtn);
-          console.log('[DEBUG] Verify button added');
         }
-        console.log('[DEBUG] Final tdActions children count:', tdActions.children.length);
         
         tr.appendChild(tdDomain); tr.appendChild(tdType); tr.appendChild(tdSrv); tr.appendChild(tdVals); tr.appendChild(tdDecoded); tr.appendChild(tdMethod); tr.appendChild(tdTs); tr.appendChild(tdActions);
 
@@ -762,6 +1089,9 @@ async function refreshResults(){
         r.remove();
       }
     });
+    uiOverview.statusRows = statusRows;
+    uiOverview.managedIps = managedSet.size;
+    touchOverviewTs();
   }catch(e){ console.log('refresh error', e); }
 }
 
@@ -858,6 +1188,9 @@ async function refreshIPs(){
       console.error('refreshIPs: ips is not an array', arr);
       return;
     }
+    uiOverview.allIps = arr.length;
+    uiOverview.validIps = arr.filter(it=>it && it.valid).length;
+    updateOverviewPanel();
     arr.forEach(it=>{
       if(typeof it !== 'object') return;
       const tr = document.createElement('tr');
@@ -868,6 +1201,7 @@ async function refreshIPs(){
       tr.appendChild(tdIp); tr.appendChild(tdDomains); tr.appendChild(tdCount); tr.appendChild(tdTs);
       tbody.appendChild(tr);
     });
+    touchOverviewTs();
   }catch(e){ console.log('refreshIPs error', e); }
 }
 
@@ -910,7 +1244,11 @@ async function refreshValidIPs(){
     const arr = j.ips || [];
     if(!Array.isArray(arr)) return;
     // display only syntactically valid IPs (backend also provides 'valid')
-    arr.filter(it => it && it.valid).forEach(it=>{
+    const validOnly = arr.filter(it => it && it.valid);
+    uiOverview.allIps = arr.length;
+    uiOverview.validIps = validOnly.length;
+    updateOverviewPanel();
+    validOnly.forEach(it=>{
       const tr = document.createElement('tr');
       const tdIp = document.createElement('td'); tdIp.textContent = it.ip || '';
       const tdDomains = document.createElement('td'); tdDomains.textContent = (it.domains||[]).join(', ');
@@ -920,6 +1258,7 @@ async function refreshValidIPs(){
       tr.appendChild(tdIp); tr.appendChild(tdDomains); tr.appendChild(tdCount); tr.appendChild(tdTs); tr.appendChild(tdValid);
       tbody.appendChild(tr);
     });
+    touchOverviewTs();
   }catch(e){ console.log('refreshValidIPs error', e); }
 }
 
@@ -928,17 +1267,32 @@ async function refreshValidIPs(){
   let hoverPause = false;  // temporary pause while hovering over results
 
   function isPaused(){ return manualPause || hoverPause; }
+  function updateRefreshStateBadge(){
+    const el = document.getElementById('refreshState');
+    if(!el) return;
+    if(manualPause){
+      el.textContent = 'Auto-refresh paused';
+      el.classList.add('is-paused');
+    } else if(hoverPause){
+      el.textContent = 'Inspect mode (hover pause)';
+      el.classList.add('is-paused');
+    } else {
+      el.textContent = 'Auto-refresh active';
+      el.classList.remove('is-paused');
+    }
+  }
 
   document.getElementById('pauseRefreshBtn').onclick = function(){
     manualPause = !manualPause;
-    this.textContent = manualPause ? 'Resume Auto-Refresh' : 'Pause Auto-Refresh';
+    this.textContent = manualPause ? '▶ Resume Auto-Refresh' : '⏸ Pause Auto-Refresh';
+    updateRefreshStateBadge();
     if(!manualPause){ refreshResults(); refreshIPs(); }
   };
 
   // pause when user hovers results table to allow inspection of long URLs
   const resultsTable = document.getElementById('resultsTable');
-  resultsTable.addEventListener('mouseenter', ()=>{ hoverPause = true; });
-  resultsTable.addEventListener('mouseleave', ()=>{ hoverPause = false; });
+  resultsTable.addEventListener('mouseenter', ()=>{ hoverPause = true; updateRefreshStateBadge(); });
+  resultsTable.addEventListener('mouseleave', ()=>{ hoverPause = false; updateRefreshStateBadge(); });
 
   // periodic refresh — skip work if paused to avoid wiping user's view
   setInterval(()=>{ if(!isPaused()) refreshResults(); }, 5000);
@@ -946,21 +1300,20 @@ async function refreshValidIPs(){
 
 // initialize dynamic decoders and valid IPs refresh hook
 window.addEventListener('load', ()=>{
-  console.log('[DEBUG] Page load event triggered');
+  updateRefreshStateBadge();
+  updateOverviewPanel();
   
   // Initialize sections
   try {
     showSection('settings');
-    console.log('[DEBUG] Settings section shown');
   } catch(e) {
-    console.error('[ERROR] Failed to show settings section:', e);
+    console.error('Failed to show settings section:', e);
   }
   
   try {
     showSettingsTab('domains');
-    console.log('[DEBUG] Settings tab changed to domains');
   } catch(e) {
-    console.error('[ERROR] Failed to show settings tab:', e);
+    console.error('Failed to show settings tab:', e);
   }
   
   loadDecoders().then(()=>{
@@ -972,7 +1325,7 @@ window.addEventListener('load', ()=>{
     refreshResults();
     refreshIPs();
   } catch(e) {
-    console.error('[ERROR] Failed to refresh:', e);
+    console.error('Failed to refresh:', e);
   }
   
   document.getElementById('refreshValidBtn').onclick = ()=>{

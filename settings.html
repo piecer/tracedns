@@ -5,150 +5,316 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>TraceDNS Settings</title>
   <style>
+    :root{
+      --font-ui:"Avenir Next", "Manrope", "Trebuchet MS", "Segoe UI", sans-serif;
+      --bg-1:#eef5f9;
+      --bg-2:#e8f4ef;
+      --ink:#13212e;
+      --muted:#5b6a77;
+      --line:#d7e4eb;
+      --accent:#0f766e;
+      --accent-2:#0ea5a4;
+      --warn:#f59e0b;
+      --danger:#c43d2b;
+      --ok:#1f9a61;
+      --shadow-xl:0 28px 70px rgba(12, 33, 46, 0.18);
+      --shadow-sm:0 8px 18px rgba(19, 33, 46, 0.08);
+    }
     *{margin:0;padding:0;box-sizing:border-box;}
     body{
-      font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      background:linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
+      font-family:var(--font-ui);
+      color:var(--ink);
       min-height:100vh;
-      padding:20px;
-      color:#333;
+      padding:clamp(12px, 2.2vw, 24px);
+      background:
+        radial-gradient(1200px 500px at 18% -6%, rgba(14,165,164,0.14), transparent 60%),
+        radial-gradient(1000px 420px at 92% 2%, rgba(245,158,11,0.12), transparent 55%),
+        linear-gradient(165deg, var(--bg-1) 0%, var(--bg-2) 46%, #f3f9f6 100%);
     }
-    .container{max-width:800px;margin:0 auto;background:#fff;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,0.3);overflow:hidden;}
-    header{background:linear-gradient(135deg, #3498db 0%, #2980b9 100%);color:#fff;padding:30px;text-align:center;}
-    header h1{font-size:2.2em;font-weight:700;margin-bottom:8px;}
-    nav{padding:15px 20px;background:#f8f9fa;border-bottom:2px solid #e9ecef;}
-    nav a{
-      color:#3498db;
-      text-decoration:none;
-      font-weight:600;
-      margin-right:20px;
-      transition:color 0.3s ease;
+    .container{
+      max-width:980px;
+      margin:0 auto;
+      background:linear-gradient(180deg, #ffffff 0%, #fbfeff 100%);
+      border:1px solid rgba(255,255,255,0.7);
+      border-radius:18px;
+      box-shadow:var(--shadow-xl);
+      overflow:hidden;
     }
-    nav a:hover{color:#2980b9;}
-    .content{padding:30px;}
-    h1{font-size:1.8em;color:#3498db;margin-bottom:15px;border-bottom:3px solid #3498db;padding-bottom:10px;}
-    p.small{font-size:0.9em;color:#999;margin-bottom:20px;}
-    label{
-      display:block;
-      margin:15px 0 8px;
-      font-weight:600;
-      color:#555;
+    header{
+      color:#fff;
+      padding:30px clamp(18px, 3vw, 30px) 24px;
+      background:linear-gradient(118deg, #0f766e 0%, #0ea5a4 48%, #22b08d 100%);
+      border-bottom:1px solid rgba(255,255,255,0.2);
     }
-    input{
-      width:100%;
-      padding:12px;
-      margin-bottom:15px;
-      border:2px solid #e9ecef;
-      border-radius:8px;
-      font-size:0.95em;
-      transition:border-color 0.3s ease;
-      font-family:inherit;
+    .header-kicker{
+      font-size:.78rem;
+      letter-spacing:.12em;
+      text-transform:uppercase;
+      font-weight:700;
+      opacity:.88;
+      margin-bottom:8px;
     }
-    input:focus{outline:none;border-color:#3498db;box-shadow:0 0 0 3px rgba(52,152,219,0.1);}
-    .button-group{
+    header h1{
+      font-size:clamp(1.5rem, 3vw, 2rem);
+      line-height:1.15;
+      margin-bottom:7px;
+    }
+    header p{
+      font-size:.94rem;
+      line-height:1.5;
+      opacity:.95;
+      max-width:720px;
+    }
+    .topnav{
       display:flex;
-      gap:10px;
-      margin-top:20px;
       flex-wrap:wrap;
+      gap:10px;
+      padding:14px clamp(14px, 2vw, 26px);
+      border-bottom:1px solid var(--line);
+      background:linear-gradient(180deg, #f9fcfd 0%, #f4f9fc 100%);
+    }
+    .topnav a{
+      text-decoration:none;
+      border:1px solid #c5dde6;
+      background:#fff;
+      color:#16566c;
+      border-radius:999px;
+      padding:9px 14px;
+      font-size:.84rem;
+      font-weight:700;
+      letter-spacing:.01em;
+      transition:.2s ease;
+    }
+    .topnav a:hover{
+      border-color:#1a9ea6;
+      color:#fff;
+      background:linear-gradient(135deg, #148b88 0%, #0ea5a4 100%);
+      transform:translateY(-1px);
+    }
+    .content{
+      padding:24px clamp(14px, 2.2vw, 30px) 30px;
+    }
+    .section-title{
+      font-size:1.2rem;
+      color:#0e5c77;
+      margin-bottom:6px;
+      font-weight:800;
+    }
+    .section-desc{
+      color:var(--muted);
+      font-size:.9rem;
+      margin-bottom:16px;
+      line-height:1.5;
+    }
+    .form-grid{
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:12px;
+      margin-bottom:14px;
+    }
+    .field.full{grid-column:1 / -1;}
+    .field label{
+      display:block;
+      font-size:.82rem;
+      font-weight:800;
+      color:#334c5e;
+      margin-bottom:6px;
+    }
+    .field input{
+      width:100%;
+      padding:11px 12px;
+      border:1px solid #cddde6;
+      border-radius:10px;
+      font-size:.92rem;
+      font-family:var(--font-ui);
+      color:var(--ink);
+      background:#fff;
+      transition:border-color .18s ease, box-shadow .18s ease;
+    }
+    .field input:focus{
+      outline:none;
+      border-color:#0ea5a4;
+      box-shadow:0 0 0 3px rgba(14,165,164,0.15);
+    }
+    .toolbar{
+      display:flex;
+      align-items:center;
+      flex-wrap:wrap;
+      gap:8px;
     }
     button{
-      padding:12px 24px;
-      border:none;
-      border-radius:8px;
-      background:linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+      padding:10px 14px;
+      border:1px solid #0f766e;
+      border-radius:10px;
+      background:linear-gradient(135deg, #0f766e 0%, #0ea5a4 100%);
       color:#fff;
-      font-weight:600;
+      font-weight:700;
+      font-size:.87rem;
+      letter-spacing:.01em;
       cursor:pointer;
-      transition:all 0.3s ease;
-      font-size:0.95em;
+      transition:.2s ease;
     }
-    button:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(52,152,219,0.4);}
-    button:active{transform:translateY(0);}
+    button:hover{
+      transform:translateY(-1px);
+      box-shadow:0 8px 14px rgba(15,118,110,0.24);
+    }
+    .btn-soft{
+      border-color:#c5dde6;
+      color:#134560;
+      background:#fff;
+      box-shadow:none;
+    }
+    .btn-soft:hover{
+      border-color:#0ea5a4;
+      color:#fff;
+      background:linear-gradient(135deg, #0f766e 0%, #0ea5a4 100%);
+    }
     #settings_status{
-      line-height:40px;
-      padding:0 15px;
-      font-weight:600;
-      border-radius:6px;
+      display:inline-flex;
+      align-items:center;
+      min-height:36px;
+      border-radius:999px;
+      padding:0 12px;
+      font-size:.82rem;
+      font-weight:700;
+      border:1px solid transparent;
     }
-    .success{color:#4caf50;background:#e8f5e9;}
-    .error{color:#f44336;background:#ffebee;}
+    #settings_status.success{
+      color:var(--ok);
+      background:rgba(31,154,97,0.08);
+      border-color:rgba(31,154,97,0.35);
+    }
+    #settings_status.error{
+      color:var(--danger);
+      background:rgba(196,61,43,0.08);
+      border-color:rgba(196,61,43,0.35);
+    }
+    .tip-box{
+      margin-top:12px;
+      border:1px solid var(--line);
+      border-left:4px solid var(--warn);
+      border-radius:10px;
+      background:#fffaf0;
+      padding:11px 12px;
+      font-size:.82rem;
+      color:#6b4b00;
+      line-height:1.5;
+      box-shadow:var(--shadow-sm);
+    }
+    @media (max-width:860px){
+      .form-grid{grid-template-columns:1fr;}
+      .field.full{grid-column:auto;}
+    }
   </style>
 </head>
 <body>
 <div class="container">
-<header><h1>⚙️ TraceDNS Settings</h1></header>
-<nav>
-  <a href="/">📊 Dashboard</a>
-  <a href="/dns_frontend.html">🔍 Domain Settings</a>
-</nav>
-<div class="content">
-  <h1>Configuration</h1>
-  <p class="small">Configure alert integrations and external service credentials.</p>
-  
-  <label>Teams Webhook URL<br/>
-    <input id="teams_webhook" placeholder="https://outlook.webhook.office.com/webhookb2/..." />
-  </label>
-  
-  <label>MISP URL<br/>
-    <input id="misp_url" placeholder="https://misp.example.com" />
-  </label>
-  
-  <label>MISP API Key<br/>
-    <input id="misp_key" type="password" placeholder="Your MISP API key" />
-  </label>
-  
-  <label>Push Event ID (MISP)<br/>
-    <input id="push_event_id" placeholder="12345" />
-  </label>
-  
-  <label>VirusTotal API Key<br/>
-    <input id="vt_api_key" type="password" placeholder="Your VirusTotal API key" />
-  </label>
-  
-  <div class="button-group">
-    <button id="load_settings">📥 Load Settings</button>
-    <button id="save_settings">💾 Save Settings</button>
-    <span id="settings_status"></span>
+  <header>
+    <div class="header-kicker">TraceDNS Console</div>
+    <h1>Alert Integration Settings</h1>
+    <p>Configure external integrations used by monitoring and IOC synchronization workflows.</p>
+  </header>
+
+  <nav class="topnav">
+    <a href="/">Main Console</a>
+    <a href="/dns_frontend.html">Domain Monitor</a>
+  </nav>
+
+  <div class="content">
+    <h2 class="section-title">Configuration</h2>
+    <p class="section-desc">Teams, MISP, and VirusTotal keys are persisted in `dns_config.json` under the `alerts` section.</p>
+
+    <div class="form-grid">
+      <div class="field full">
+        <label for="teams_webhook">Teams Webhook URL</label>
+        <input id="teams_webhook" placeholder="https://outlook.webhook.office.com/webhookb2/..." />
+      </div>
+      <div class="field">
+        <label for="misp_url">MISP URL</label>
+        <input id="misp_url" placeholder="https://misp.example.com" />
+      </div>
+      <div class="field">
+        <label for="push_event_id">Push Event ID (MISP)</label>
+        <input id="push_event_id" placeholder="12345" />
+      </div>
+      <div class="field">
+        <label for="misp_key">MISP API Key</label>
+        <input id="misp_key" type="password" placeholder="Your MISP API key" />
+      </div>
+      <div class="field">
+        <label for="vt_api_key">VirusTotal API Key</label>
+        <input id="vt_api_key" type="password" placeholder="Your VirusTotal API key" />
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <button id="load_settings" class="btn-soft">Load Settings</button>
+      <button id="save_settings">Save Settings</button>
+      <span id="settings_status"></span>
+    </div>
+
+    <div class="tip-box">
+      For security, avoid using production keys on shared environments and rotate keys if exposed.
+    </div>
   </div>
 </div>
-</div>
 
-  <script>
-    async function loadSettings(){
-      try{
-        const r = await fetch('/settings');
-        const j = await r.json();
-        const alerts = (j.settings && j.settings.alerts) ? j.settings.alerts : (j.settings || {}).alerts || {};
-        document.getElementById('teams_webhook').value = alerts.teams_webhook || '';
-        document.getElementById('misp_url').value = alerts.misp_url || '';
-        document.getElementById('misp_key').value = alerts.api_key || '';
-        document.getElementById('push_event_id').value = alerts.push_event_id || '';
-        document.getElementById('vt_api_key').value = alerts.vt_api_key || '';
-      }catch(e){console.log(e)}
+<script>
+  function setStatus(message, kind){
+    const el = document.getElementById('settings_status');
+    el.textContent = message || '';
+    el.classList.remove('success', 'error');
+    if(kind === 'success' || kind === 'error'){
+      el.classList.add(kind);
     }
-    document.getElementById('load_settings').addEventListener('click', ()=>loadSettings());
-    document.getElementById('save_settings').addEventListener('click', async ()=>{
-      const alerts = {
-        teams_webhook: document.getElementById('teams_webhook').value.trim(),
-        misp_url: document.getElementById('misp_url').value.trim(),
-        api_key: document.getElementById('misp_key').value.trim(),
-        push_event_id: document.getElementById('push_event_id').value.trim(),
-        vt_api_key: document.getElementById('vt_api_key').value.trim()
-      };
-      try{
-        const r = await fetch('/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({alerts})});
-        const j = await r.json();
-        if(j && j.status=='ok'){
-          document.getElementById('settings_status').textContent = 'Saved.';
-        } else {
-          document.getElementById('settings_status').textContent = 'Save failed';
-        }
-      }catch(e){
-        document.getElementById('settings_status').textContent = 'Save failed';
+  }
+
+  async function loadSettings(){
+    try{
+      const r = await fetch('/settings');
+      const j = await r.json();
+      const alerts = (j.settings && j.settings.alerts) ? j.settings.alerts : (j.settings || {}).alerts || {};
+      document.getElementById('teams_webhook').value = alerts.teams_webhook || '';
+      document.getElementById('misp_url').value = alerts.misp_url || '';
+      document.getElementById('misp_key').value = alerts.api_key || '';
+      document.getElementById('push_event_id').value = alerts.push_event_id || '';
+      document.getElementById('vt_api_key').value = alerts.vt_api_key || '';
+      setStatus('Loaded', 'success');
+    }catch(e){
+      setStatus('Load failed', 'error');
+    }
+    setTimeout(()=>setStatus('', null), 2600);
+  }
+
+  document.getElementById('load_settings').addEventListener('click', loadSettings);
+
+  document.getElementById('save_settings').addEventListener('click', async ()=>{
+    const alerts = {
+      teams_webhook: document.getElementById('teams_webhook').value.trim(),
+      misp_url: document.getElementById('misp_url').value.trim(),
+      api_key: document.getElementById('misp_key').value.trim(),
+      push_event_id: document.getElementById('push_event_id').value.trim(),
+      vt_api_key: document.getElementById('vt_api_key').value.trim()
+    };
+    try{
+      const r = await fetch('/settings', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({alerts})
+      });
+      const j = await r.json();
+      if(j && j.status === 'ok'){
+        setStatus('Saved', 'success');
+      } else {
+        setStatus(j && j.error ? `Save failed: ${j.error}` : 'Save failed', 'error');
       }
-      setTimeout(()=>{document.getElementById('settings_status').textContent='';},3000);
-    });
-    loadSettings();
-  </script>
+    }catch(e){
+      setStatus('Save failed', 'error');
+    }
+    setTimeout(()=>setStatus('', null), 3000);
+  });
+
+  loadSettings();
+</script>
 </body>
 </html>

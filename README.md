@@ -1,11 +1,12 @@
 # TraceDNS
 
-A lightweight DNS TXT-monitoring toolkit for extracting indicators (plaintext or encoded IPs) from TXT records, managing custom decoders via a safe DSL, and optionally alerting via Microsoft Teams and MISP.
+A lightweight DNS monitoring toolkit for extracting indicators from TXT records and optionally post-processing A-record IPs (for example XOR-based C2 derivation), with optional Teams/MISP alerting.
 
 ## Features
 
-- Monitor domains' DNS TXT records for C2-style IP indicators.
+- Monitor domains' DNS TXT and A records for C2-style IP indicators.
 - Multiple built-in TXT decoders (base64, xor variants, BTEA variants, plain IP extraction, etc.).
+- Optional A-record post-processing method (`xor32_ipv4`) with user-supplied XOR key.
 - Register, preview, edit and delete safe custom decoders from the web UI; custom decoders persist in `dns_config.json`.
 - Alerts: Teams webhook and MISP integration for newly discovered IPs.
 - Dashboard UI showing unique IPs and optional VirusTotal lookup (store VT API key in settings).
@@ -49,6 +50,11 @@ Key items in `dns_config.json`:
 - `custom_decoders`: array of custom decoder objects persisted by the UI
 - `alerts`: object containing `teams_webhook`, `misp_url`, `misp_api_key`, `vt_api_key`, etc.
 
+Per-domain decoder fields:
+
+- TXT domains: `txt_decode`
+- A domains: `a_decode` (e.g. `xor32_ipv4`) and optional `a_xor_key` (hex/int/dotted-byte format)
+
 Do not rename config keys unless you know the code depends on them.
 
 ## Custom Decoder DSL (overview)
@@ -68,4 +74,3 @@ Contributions are welcome. Please open issues or PRs with focused changes. When 
 ## License & Authors
 
 This repository is maintained by the project owner. Add a license file if you plan to publish publicly.
-

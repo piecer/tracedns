@@ -13,10 +13,44 @@ import os
 
 from dns_query import query_dns
 from txt_decoder import decode_txt_hidden_ips, register_custom_decoder
+from a_decoder import decode_a_hidden_ips
 from config_manager import read_config, normalize_domains, write_config
 from history_manager import load_history_files, persist_history_entry, ensure_history_dir
 from http_server import ThreadingHTTPServer, make_handler
-from alerts import init_from_config as alerts_init, alert_new_ips
+from alerts import (
+    init_from_config as alerts_init,
+    init_from_alerts as alerts_init_from_dict,
+    alert_new_ips,
+    alert_removed_ips,
+)
+
+
+def _collect_active_ip_map(current_results, allowed_domains=None):
+    """Build managed IP -> domain-name-set map from current snapshots."""
+    allow = None if allowed_domains is None else set(allowed_domains)
+    out = {}
+    for domain, server_map in (current_results or {}).items():
+        if allow is not None and domain not in allow:
+            continue
+        if not isinstance(server_map, dict):
+            continue
+        for _, snap in server_map.items():
+            if not isinstance(snap, dict):
+                continue
+            rtype = str(snap.get('type', '')).upper()
+            if rtype == 'TXT':
+                ips = snap.get('decoded_ips', []) or []
+            elif rtype == 'A':
+                # A-type with post-process enabled already stores managed/transformed IPs in values.
+                ips = snap.get('values', []) or []
+            else:
+                ips = []
+            for ip in ips:
+                s = str(ip or '').strip()
+                if not s:
+                    continue
+                out.setdefault(s, set()).add(domain)
+    return out
 
 
 def main():
@@ -89,6 +123,7 @@ def main():
             continue
 
     # restore alert settings from file config (if any)
+    alerts_cfg = {}
     try:
         alerts_cfg = file_cfg.get('alerts') if isinstance(file_cfg, dict) else None
         if alerts_cfg:
@@ -103,15 +138,24 @@ def main():
                 pass
     except Exception:
         shared_config['alerts'] = {}
+        alerts_cfg = {}
 
-    # initialize alerting (Teams + MISP) from config.ini (best-effort)
-    try:
-        alerts_init('config.ini')
-    except Exception:
+    # initialize alerting (Teams + MISP)
+    # Priority: dns_config.json alerts -> config.ini fallback
+    alerting_ready = False
+    if isinstance(alerts_cfg, dict) and alerts_cfg:
         try:
-            alerts_init()
+            alerting_ready = bool(alerts_init_from_dict(alerts_cfg))
         except Exception:
-            pass
+            alerting_ready = False
+    if not alerting_ready:
+        try:
+            alerting_ready = bool(alerts_init('config.ini'))
+        except Exception:
+            try:
+                alerting_ready = bool(alerts_init())
+            except Exception:
+                alerting_ready = False
 
     # history persistence dir
     if config_path:
@@ -131,12 +175,27 @@ def main():
             current_results.setdefault(domain, {})
             # copy snapshot servers
             for srv, snap in curr.items():
-                current_results[domain][srv] = {
+                restored = {
                     'type': snap.get('type'),
                     'values': snap.get('values', []),
                     'decoded_ips': snap.get('decoded_ips', []),
                     'ts': snap.get('ts', 0)
                 }
+                if snap.get('txt_decode'):
+                    restored['txt_decode'] = snap.get('txt_decode')
+                if snap.get('a_decode'):
+                    restored['a_decode'] = snap.get('a_decode')
+                if snap.get('a_xor_key'):
+                    restored['a_xor_key'] = snap.get('a_xor_key')
+                current_results[domain][srv] = restored
+
+    # active managed IP baseline (configured domains only); used for removal detection.
+    configured_names = {
+        d.get('name', '').strip()
+        for d in normalize_domains(shared_config.get('domains', []))
+        if d.get('name')
+    }
+    active_ip_map_prev = _collect_active_ip_map(current_results, configured_names)
 
     # start HTTP server
     handler_class = make_handler(shared_config, config_lock, config_path, history_dir, current_results, history)
@@ -179,19 +238,32 @@ def main():
             name = dobj.get('name', '').strip()
             rtype = dobj.get('type', 'A').upper()
             txt_decode = dobj.get('txt_decode', 'cafebabe_xor_base64')
+            a_decode = dobj.get('a_decode', 'none')
+            a_xor_key = dobj.get('a_xor_key')
+            a_decode_active = str(a_decode or '').strip().lower() not in ('', 'none')
             if not name:
                 continue
             svr_list = target_servers_override or servers
             for srv in svr_list:
-                result_vals = query_dns(srv, name, rtype=rtype)
-                if result_vals is None:
+                queried_vals = query_dns(srv, name, rtype=rtype)
+                if queried_vals is None:
                     print(f"[ERROR] DNS {srv} query failed for {name} ({rtype})")
                     continue
                 ts = int(time.time())
                 decoded = []
+                result_vals = queried_vals
                 if rtype == 'TXT':
                     # pass domain name to decoder so domain-specific rules can be applied
                     decoded = decode_txt_hidden_ips(result_vals, method=txt_decode, domain=name)
+                elif rtype == 'A':
+                    if a_decode_active:
+                        # If A post-process is enabled, manage only transformed IPs.
+                        transformed = decode_a_hidden_ips(queried_vals, method=a_decode, key_hex=a_xor_key, domain=name)
+                        result_vals = sorted(set(transformed or []))
+                        # Exclude raw-resolved IPs from managed fields when decode is enabled.
+                        decoded = []
+                    else:
+                        decoded = []
                 prev = current_results.get(name, {}).get(srv)
                 # ensure history dict exists
                 history.setdefault(name, {'meta': {}, 'events': [], 'current': {}})
@@ -206,6 +278,10 @@ def main():
                     }
                     if rtype == 'TXT':
                         snap['txt_decode'] = txt_decode
+                    elif rtype == 'A':
+                        snap['a_decode'] = a_decode or 'none'
+                        if a_xor_key:
+                            snap['a_xor_key'] = a_xor_key
                     current_results.setdefault(name, {})[srv] = snap
                     # update history current snapshot
                     hist_snap = {
@@ -216,6 +292,10 @@ def main():
                     }
                     if rtype == 'TXT':
                         hist_snap['txt_decode'] = txt_decode
+                    elif rtype == 'A':
+                        hist_snap['a_decode'] = a_decode or 'none'
+                        if a_xor_key:
+                            hist_snap['a_xor_key'] = a_xor_key
                     hist_obj.setdefault('current', {})[srv] = hist_snap
                     # set first_seen if missing
                     meta = hist_obj.setdefault('meta', {})
@@ -227,8 +307,22 @@ def main():
                     print(f"[INIT] {name} ({rtype}) @ {srv} -> {result_vals} decoded:{decoded}")
                     # persist so restarts can reuse
                     persist_history_entry(history_dir, name, hist_obj)
+                    # initial observation for a newly tracked domain/server can still contain new IOC IPs
+                    try:
+                        if rtype == 'TXT' and decoded:
+                            tuples = [(ip, name) for ip in sorted(set(decoded))]
+                            alert_new_ips(tuples)
+                        elif rtype == 'A' and a_decode_active and result_vals:
+                            tuples = [(ip, name) for ip in sorted(set(result_vals))]
+                            alert_new_ips(tuples)
+                    except Exception:
+                        pass
                 else:
-                    if prev.get('values') != result_vals or prev.get('type') != rtype:
+                    if (
+                        prev.get('values') != result_vals
+                        or prev.get('type') != rtype
+                        or (prev.get('decoded_ips') or []) != (decoded or [])
+                    ):
                         ev = {
                             'ts': ts,
                             'server': srv,
@@ -250,19 +344,32 @@ def main():
                         }
                         if rtype == 'TXT':
                             snap_update['txt_decode'] = txt_decode
+                        elif rtype == 'A':
+                            snap_update['a_decode'] = a_decode or 'none'
+                            if a_xor_key:
+                                snap_update['a_xor_key'] = a_xor_key
                         hist_obj.setdefault('current', {})[srv] = snap_update
                         current_results[name][srv] = snap_update
                         print(f"[NOTICE] {name} ({rtype}) @ {srv} changed: {prev.get('values')} -> {result_vals} decoded:{decoded}")
                         persist_history_entry(history_dir, name, hist_obj)
-                        # If this was a TXT record change, check for newly added decoded IPs
+                        # If a decoder produced derived IPs, alert only on newly added ones.
                         try:
                             if rtype == 'TXT':
                                 old_decoded = set(prev.get('decoded_ips') or [])
                                 new_decoded = set(decoded or [])
                                 added = list(new_decoded - old_decoded)
                                 if added:
-                                    # prepare tuples (ip, domain) and send alerts
                                     tuples = [(ip, name) for ip in added]
+                                    try:
+                                        alert_new_ips(tuples)
+                                    except Exception:
+                                        pass
+                            elif rtype == 'A' and a_decode_active:
+                                old_vals = set(prev.get('values') or [])
+                                new_vals = set(result_vals or [])
+                                added = list(new_vals - old_vals)
+                                if added:
+                                    tuples = [(ip, name) for ip in sorted(added)]
                                     try:
                                         alert_new_ips(tuples)
                                     except Exception:
@@ -270,6 +377,23 @@ def main():
                         except Exception:
                             pass
                     # else unchanged
+
+        # Reconcile active IP set only after a full configured-domain scan.
+        full_domain_scan = not (force_req and 'domains' in force_req)
+        if full_domain_scan:
+            configured_names = {d.get('name', '').strip() for d in domains if d.get('name')}
+            active_ip_map_now = _collect_active_ip_map(current_results, configured_names)
+            removed_ips = sorted(set(active_ip_map_prev.keys()) - set(active_ip_map_now.keys()))
+            if removed_ips:
+                removed_tuples = []
+                for ip in removed_ips:
+                    labels = sorted(active_ip_map_prev.get(ip, set()))
+                    removed_tuples.append((ip, ",".join(labels) if labels else "unknown"))
+                try:
+                    alert_removed_ips(removed_tuples)
+                except Exception:
+                    pass
+            active_ip_map_prev = active_ip_map_now
 
         # sleep ticks
         for _ in range(interval):
