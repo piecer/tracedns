@@ -16,10 +16,14 @@ import mimetypes
 from txt_decoder import TXT_DECODE_METHODS, analyze_domain_decoding
 from a_decoder import A_DECODE_METHODS
 try:
-    from vt_lookup import get_ip_report
+    from vt_lookup import get_ip_report, begin_cache_batch, end_cache_batch
 except Exception:
     # vt_lookup optional; if missing or import fails, get_ip_report will be treated as unavailable
     get_ip_report = None
+    def begin_cache_batch():
+        return 0
+    def end_cache_batch(flush=True):
+        return False
 
 
 def purge_removed_domains_state(current_results, history, history_dir, removed_domains):
@@ -359,6 +363,674 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
             except Exception as e:
                 self._send_json({'error': str(e)}, 500)
 
+        def _handle_domain_analysis(self, qs):
+            """Return per-domain resolving/decoded IP view with optional AS context."""
+            try:
+                import ipaddress as _ip
+                include_vt = True
+                if qs.get('include_vt') is not None:
+                    try:
+                        include_vt = bool(int(qs.get('include_vt', ['1'])[0]))
+                    except Exception:
+                        include_vt = True
+
+                cfg_domains = shared_config.get('domains', []) or []
+                cfg_type_map = {}
+                for d in cfg_domains:
+                    if isinstance(d, dict):
+                        name = str(d.get('name') or '').strip()
+                        typ = str(d.get('type') or 'A').upper()
+                    else:
+                        name = str(d or '').strip()
+                        typ = 'A'
+                    if name:
+                        cfg_type_map[name] = typ
+
+                domain_map = {}
+                # seed with configured domains
+                for name, typ in cfg_type_map.items():
+                    domain_map[name] = {
+                        'domain': name,
+                        'record_types': {typ},
+                        'resolved_ips': set(),
+                        'decoded_ips': set(),
+                        'last_ts': 0
+                    }
+
+                for d, m in current_results.items():
+                    ent = domain_map.setdefault(d, {
+                        'domain': d,
+                        'record_types': set(),
+                        'resolved_ips': set(),
+                        'decoded_ips': set(),
+                        'last_ts': 0
+                    })
+                    for _srv, info in (m or {}).items():
+                        rtype = str(info.get('type') or 'A').upper()
+                        ent['record_types'].add(rtype)
+                        ts = int(info.get('ts') or 0)
+                        ent['last_ts'] = max(ent['last_ts'], ts)
+
+                        if rtype == 'A':
+                            for ip in (info.get('values') or []):
+                                ip_s = str(ip or '').strip()
+                                if not ip_s:
+                                    continue
+                                try:
+                                    _ip.ip_address(ip_s)
+                                    ent['resolved_ips'].add(ip_s)
+                                except Exception:
+                                    continue
+
+                        for ip in (info.get('decoded_ips') or []):
+                            ip_s = str(ip or '').strip()
+                            if not ip_s:
+                                continue
+                            try:
+                                _ip.ip_address(ip_s)
+                                ent['decoded_ips'].add(ip_s)
+                            except Exception:
+                                continue
+
+                vt_cache = {}
+
+                def _vt_brief(ip):
+                    if not include_vt or not get_ip_report:
+                        return None
+                    if ip in vt_cache:
+                        return vt_cache[ip]
+                    rep = None
+                    try:
+                        rep = get_ip_report(ip)
+                    except Exception:
+                        rep = None
+                    brief = None
+                    if isinstance(rep, dict):
+                        brief = {
+                            'asn': rep.get('asn'),
+                            'as_owner': rep.get('as_owner'),
+                            'country': rep.get('country'),
+                            'malicious': int(rep.get('malicious', 0) or 0),
+                            'suspicious': int(rep.get('suspicious', 0) or 0),
+                        }
+                    vt_cache[ip] = brief
+                    return brief
+
+                out = []
+                vt_batch_started = False
+                if include_vt and get_ip_report:
+                    begin_cache_batch()
+                    vt_batch_started = True
+                try:
+                    for d in sorted(domain_map.keys()):
+                        ent = domain_map[d]
+                        resolved_ips = sorted(list(ent['resolved_ips']))
+                        decoded_ips = sorted(list(ent['decoded_ips']))
+
+                        ip_rows = []
+                        for ip in resolved_ips:
+                            ip_rows.append({'role': 'resolved', 'ip': ip, 'vt': _vt_brief(ip)})
+                        for ip in decoded_ips:
+                            ip_rows.append({'role': 'decoded', 'ip': ip, 'vt': _vt_brief(ip)})
+
+                        as_counter = {}
+                        for row in ip_rows:
+                            vt = row.get('vt') or {}
+                            asn = vt.get('asn')
+                            owner = vt.get('as_owner')
+                            country = vt.get('country')
+                            if asn is None and not owner and not country:
+                                continue
+                            key = f"{asn}|{owner}|{country}"
+                            e = as_counter.setdefault(key, {'asn': asn, 'as_owner': owner, 'country': country, 'count': 0})
+                            e['count'] += 1
+                        as_summary = sorted(as_counter.values(), key=lambda x: (-x['count'], str(x.get('asn') or '')))
+
+                        out.append({
+                            'domain': d,
+                            'record_types': sorted(list(ent['record_types'])),
+                            'resolved_ips': resolved_ips,
+                            'decoded_ips': decoded_ips,
+                            'ip_rows': ip_rows,
+                            'as_summary': as_summary,
+                            'resolving': bool(resolved_ips or decoded_ips),
+                            'last_ts': ent.get('last_ts', 0),
+                        })
+                finally:
+                    if vt_batch_started:
+                        end_cache_batch(flush=True)
+
+                self._send_json({'domains': out, 'include_vt': include_vt})
+            except Exception as e:
+                self._send_json({'error': str(e)}, 500)
+
+        def _handle_ip_list_analysis(self):
+            """Analyze an arbitrary IP list (VT/AS/Country summaries + heuristics)."""
+            length = int(self.headers.get('Content-Length', '0'))
+            body = self.rfile.read(length) if length > 0 else b''
+            try:
+                data = json.loads(body.decode('utf-8')) if body else {}
+            except Exception:
+                return self._send_json({'error': 'invalid json'}, 400)
+
+            raw_ips = data.get('ips')
+            include_vt_raw = data.get('include_vt', True)
+            if isinstance(include_vt_raw, str):
+                include_vt = include_vt_raw.strip().lower() not in ('0', 'false', 'off', 'no', 'n')
+            else:
+                include_vt = bool(include_vt_raw)
+
+            raw_row_limit = data.get('row_limit', 1500)
+            try:
+                row_limit = int(raw_row_limit)
+            except Exception:
+                row_limit = 1500
+            if row_limit < 100:
+                row_limit = 100
+            if row_limit > 5000:
+                row_limit = 5000
+
+            raw_vt_budget = data.get('vt_lookup_budget', 1200)
+            try:
+                vt_lookup_budget = int(raw_vt_budget)
+            except Exception:
+                vt_lookup_budget = 1200
+            if vt_lookup_budget < 0:
+                vt_lookup_budget = 0
+            if vt_lookup_budget > 5000:
+                vt_lookup_budget = 5000
+
+            import re as _re
+            import ipaddress as _ip
+
+            max_input_tokens = 20000
+            max_valid_ips = 10000
+            as_summary_limit = 800
+            country_summary_limit = 400
+            as_country_summary_limit = 800
+
+            def _classify_csp(as_owner):
+                owner_txt = str(as_owner or '').strip()
+                ltxt = owner_txt.lower()
+                if not ltxt:
+                    return {'csp': 'other', 'csp_label': 'Other/Unknown', 'csp_major': False}
+
+                csp_rules = [
+                    ('amazon', 'Amazon AWS', True, ('amazon', 'amazon.com', 'aws')),
+                    ('google', 'Google Cloud', True, ('google', 'gcp', 'google cloud')),
+                    ('microsoft', 'Microsoft Azure', True, ('microsoft', 'azure')),
+                    ('cloudflare', 'Cloudflare', True, ('cloudflare',)),
+                    ('oracle', 'Oracle Cloud', True, ('oracle', 'oci')),
+                    ('alibaba', 'Alibaba Cloud', True, ('alibaba', 'aliyun')),
+                    ('tencent', 'Tencent Cloud', True, ('tencent',)),
+                    ('akamai', 'Akamai/Linode', False, ('akamai', 'linode')),
+                    ('digitalocean', 'DigitalOcean', False, ('digitalocean',)),
+                    ('ovh', 'OVHcloud', False, ('ovh', 'ovhcloud')),
+                ]
+                for csp_id, label, major, needles in csp_rules:
+                    if any(n in ltxt for n in needles):
+                        return {'csp': csp_id, 'csp_label': label, 'csp_major': bool(major)}
+                return {'csp': 'other', 'csp_label': 'Other/Unknown', 'csp_major': False}
+
+            tokens = []
+            if isinstance(raw_ips, str):
+                tokens = [x.strip() for x in _re.split(r'[\s,;|]+', raw_ips) if x and x.strip()]
+            elif isinstance(raw_ips, list):
+                for item in raw_ips:
+                    if item is None:
+                        continue
+                    s = str(item).strip()
+                    if not s:
+                        continue
+                    parts = [x.strip() for x in _re.split(r'[\s,;|]+', s) if x and x.strip()]
+                    tokens.extend(parts)
+            else:
+                return self._send_json({'error': 'ips must be a string or list'}, 400)
+
+            submitted_count = len(tokens)
+            if submitted_count == 0:
+                return self._send_json({'error': 'no ip inputs'}, 400)
+            if submitted_count > max_input_tokens:
+                return self._send_json({'error': f'too many inputs (max {max_input_tokens} tokens)'}, 400)
+
+            # de-duplicate while preserving input order
+            unique_tokens = []
+            seen_tokens = set()
+            for t in tokens:
+                if t not in seen_tokens:
+                    seen_tokens.add(t)
+                    unique_tokens.append(t)
+
+            valid_ips = []
+            invalid_inputs = []
+            seen_valid = set()
+            for tok in unique_tokens:
+                try:
+                    ip_s = str(_ip.ip_address(tok))
+                    if ip_s not in seen_valid:
+                        seen_valid.add(ip_s)
+                        valid_ips.append(ip_s)
+                except Exception:
+                    invalid_inputs.append(tok)
+
+            if len(valid_ips) > max_valid_ips:
+                return self._send_json({'error': f'too many valid IPs (max {max_valid_ips})'}, 400)
+
+            vt_enabled = bool(include_vt and get_ip_report)
+            vt_unavailable_reason = None
+            if include_vt and not get_ip_report:
+                vt_unavailable_reason = 'vt_lookup_not_available'
+
+            rows = []
+            as_map = {}
+            country_map = {}
+            as_country_map = {}
+            csp_map = {}
+            vt_missing_count = 0
+            vt_lookup_attempted = 0
+            vt_budget_limited = False
+
+            vt_batch_started = False
+            if vt_enabled:
+                begin_cache_batch()
+                vt_batch_started = True
+            try:
+                for idx, ip in enumerate(valid_ips):
+                    rep = None
+                    if vt_enabled:
+                        use_cache_only = idx >= vt_lookup_budget
+                        if use_cache_only:
+                            vt_budget_limited = True
+                        else:
+                            vt_lookup_attempted += 1
+                        try:
+                            if use_cache_only:
+                                try:
+                                    rep = get_ip_report(ip, cache_only=True)
+                                except TypeError:
+                                    # Backward compatibility with older vt_lookup signature.
+                                    rep = None
+                            else:
+                                rep = get_ip_report(ip)
+                        except Exception:
+                            rep = None
+                    if vt_enabled and not isinstance(rep, dict):
+                        vt_missing_count += 1
+
+                    asn = rep.get('asn') if isinstance(rep, dict) else None
+                    as_owner = rep.get('as_owner') if isinstance(rep, dict) else None
+                    country = rep.get('country') if isinstance(rep, dict) else None
+                    malicious = int(rep.get('malicious', 0) or 0) if isinstance(rep, dict) else 0
+                    suspicious = int(rep.get('suspicious', 0) or 0) if isinstance(rep, dict) else 0
+                    csp_info = _classify_csp(as_owner)
+
+                    row = {
+                        'ip': ip,
+                        'asn': str(asn) if asn is not None else '-',
+                        'as_owner': str(as_owner) if as_owner else '-',
+                        'csp': csp_info.get('csp', 'other'),
+                        'csp_label': csp_info.get('csp_label', 'Other/Unknown'),
+                        'csp_major': bool(csp_info.get('csp_major', False)),
+                        'country': str(country) if country else '-',
+                        'malicious': malicious,
+                        'suspicious': suspicious,
+                        'vt': {
+                            'asn': asn,
+                            'as_owner': as_owner,
+                            'country': country,
+                            'malicious': malicious,
+                            'suspicious': suspicious,
+                        } if isinstance(rep, dict) else None
+                    }
+                    rows.append(row)
+
+                    # Summaries are based on entries with at least one VT context field.
+                    if not isinstance(rep, dict):
+                        continue
+                    asn_key = str(asn) if asn is not None else 'N/A'
+                    owner_key = str(as_owner) if as_owner else '-'
+                    country_key = str(country) if country else 'N/A'
+
+                    as_k = f"{asn_key}|{owner_key}"
+                    as_ent = as_map.setdefault(as_k, {
+                        'asn': asn_key,
+                        'as_owner': owner_key,
+                        'csp': csp_info.get('csp', 'other'),
+                        'csp_label': csp_info.get('csp_label', 'Other/Unknown'),
+                        'csp_major': bool(csp_info.get('csp_major', False)),
+                        'ip_count': 0,
+                        'malicious_ips': 0,
+                        'suspicious_ips': 0,
+                        'countries': set()
+                    })
+                    as_ent['ip_count'] += 1
+                    if malicious > 0:
+                        as_ent['malicious_ips'] += 1
+                    if suspicious > 0:
+                        as_ent['suspicious_ips'] += 1
+                    as_ent['countries'].add(country_key)
+
+                    c_ent = country_map.setdefault(country_key, {
+                        'country': country_key,
+                        'ip_count': 0,
+                        'malicious_ips': 0,
+                        'suspicious_ips': 0,
+                        'asns': set()
+                    })
+                    c_ent['ip_count'] += 1
+                    if malicious > 0:
+                        c_ent['malicious_ips'] += 1
+                    if suspicious > 0:
+                        c_ent['suspicious_ips'] += 1
+                    c_ent['asns'].add(asn_key)
+
+                    ac_k = f"{asn_key}|{country_key}|{owner_key}"
+                    ac_ent = as_country_map.setdefault(ac_k, {
+                        'asn': asn_key,
+                        'country': country_key,
+                        'as_owner': owner_key,
+                        'csp': csp_info.get('csp', 'other'),
+                        'csp_label': csp_info.get('csp_label', 'Other/Unknown'),
+                        'csp_major': bool(csp_info.get('csp_major', False)),
+                        'ip_count': 0,
+                        'malicious_ips': 0,
+                        'suspicious_ips': 0
+                    })
+                    ac_ent['ip_count'] += 1
+                    if malicious > 0:
+                        ac_ent['malicious_ips'] += 1
+                    if suspicious > 0:
+                        ac_ent['suspicious_ips'] += 1
+
+                    csp_k = csp_info.get('csp', 'other')
+                    csp_ent = csp_map.setdefault(csp_k, {
+                        'csp': csp_k,
+                        'csp_label': csp_info.get('csp_label', 'Other/Unknown'),
+                        'csp_major': bool(csp_info.get('csp_major', False)),
+                        'ip_count': 0,
+                        'malicious_ips': 0,
+                        'suspicious_ips': 0,
+                        'asns': set(),
+                        'countries': set()
+                    })
+                    csp_ent['ip_count'] += 1
+                    if malicious > 0:
+                        csp_ent['malicious_ips'] += 1
+                    if suspicious > 0:
+                        csp_ent['suspicious_ips'] += 1
+                    csp_ent['asns'].add(asn_key)
+                    csp_ent['countries'].add(country_key)
+            finally:
+                if vt_batch_started:
+                    end_cache_batch(flush=True)
+
+            as_summary = []
+            for v in as_map.values():
+                as_summary.append({
+                    'asn': v['asn'],
+                    'as_owner': v['as_owner'],
+                    'csp': v.get('csp', 'other'),
+                    'csp_label': v.get('csp_label', 'Other/Unknown'),
+                    'csp_major': bool(v.get('csp_major', False)),
+                    'ip_count': v['ip_count'],
+                    'malicious_ips': v['malicious_ips'],
+                    'suspicious_ips': v['suspicious_ips'],
+                    'countries': sorted(list(v['countries']))
+                })
+            as_summary.sort(key=lambda x: (-x['ip_count'], -x['malicious_ips'], x['asn']))
+
+            country_summary = []
+            for v in country_map.values():
+                country_summary.append({
+                    'country': v['country'],
+                    'ip_count': v['ip_count'],
+                    'malicious_ips': v['malicious_ips'],
+                    'suspicious_ips': v['suspicious_ips'],
+                    'asn_count': len(v['asns'])
+                })
+            country_summary.sort(key=lambda x: (-x['ip_count'], -x['malicious_ips'], x['country']))
+
+            as_country_summary = list(as_country_map.values())
+            as_country_summary.sort(key=lambda x: (-x['ip_count'], -x['malicious_ips'], x['asn'], x['country']))
+
+            csp_summary = []
+            for v in csp_map.values():
+                csp_summary.append({
+                    'csp': v['csp'],
+                    'csp_label': v['csp_label'],
+                    'csp_major': bool(v['csp_major']),
+                    'ip_count': v['ip_count'],
+                    'malicious_ips': v['malicious_ips'],
+                    'suspicious_ips': v['suspicious_ips'],
+                    'asn_count': len(v['asns']),
+                    'country_count': len(v['countries'])
+                })
+            csp_summary.sort(key=lambda x: (-x['ip_count'], -x['malicious_ips'], (0 if x.get('csp_major') else 1), x['csp_label']))
+
+            hints = []
+
+            def _add_hint(level, title, detail):
+                hints.append({'level': level, 'title': title, 'detail': detail})
+
+            valid_count = len(valid_ips)
+            if valid_count == 0:
+                _add_hint('high', 'No Valid IP', 'All submitted values are invalid IP format.')
+            else:
+                if not include_vt:
+                    _add_hint('info', 'VT Disabled', 'AS/Country enrichment is disabled by request.')
+                elif vt_unavailable_reason:
+                    _add_hint('warn', 'VT Unavailable', 'VT lookup module is not available in this runtime.')
+                elif vt_missing_count == valid_count:
+                    _add_hint('warn', 'No VT Coverage', 'No VT context was returned for submitted valid IPs.')
+
+                known_rows = [r for r in rows if r.get('asn') not in ('-', 'N/A') or r.get('country') not in ('-', 'N/A')]
+                known_n = len(known_rows)
+                if known_n > 0:
+                    as_counter = {}
+                    country_counter = {}
+                    mal_n = 0
+                    susp_n = 0
+                    for r in known_rows:
+                        asn = r.get('asn')
+                        country = r.get('country')
+                        if asn and asn not in ('-', 'N/A'):
+                            as_counter[asn] = as_counter.get(asn, 0) + 1
+                        if country and country not in ('-', 'N/A'):
+                            country_counter[country] = country_counter.get(country, 0) + 1
+                        if int(r.get('malicious', 0) or 0) > 0:
+                            mal_n += 1
+                        if int(r.get('suspicious', 0) or 0) > 0:
+                            susp_n += 1
+
+                    if as_counter:
+                        top_asn, top_as_count = max(as_counter.items(), key=lambda kv: kv[1])
+                        top_as_ratio = top_as_count / max(1, known_n)
+                        if top_as_ratio >= 0.60:
+                            _add_hint('high', 'AS Concentration', f'Top ASN {top_asn} accounts for {top_as_ratio:.0%} of enriched IPs.')
+                        elif top_as_ratio <= 0.25 and len(as_counter) >= 4:
+                            _add_hint('mid', 'AS Distribution', f'IPs are distributed across many ASNs ({len(as_counter)}).')
+
+                    if country_counter:
+                        top_country, top_country_count = max(country_counter.items(), key=lambda kv: kv[1])
+                        top_country_ratio = top_country_count / max(1, known_n)
+                        if top_country_ratio >= 0.60:
+                            _add_hint('mid', 'Country Concentration', f'Top country {top_country} accounts for {top_country_ratio:.0%} of enriched IPs.')
+                        if len(country_counter) >= 5 and (len(country_counter) / max(1, known_n)) >= 0.35:
+                            _add_hint('mid', 'Multi-country Spread', f'IPs span many countries ({len(country_counter)}).')
+
+                    mal_ratio = mal_n / max(1, known_n)
+                    if mal_ratio >= 0.30:
+                        _add_hint('high', 'High Malicious Ratio', f'{mal_ratio:.0%} of enriched IPs have malicious detections.')
+                    elif mal_n > 0:
+                        _add_hint('mid', 'Malicious Presence', f'{mal_n}/{known_n} enriched IPs have malicious detections.')
+                    elif susp_n > 0:
+                        _add_hint('mid', 'Suspicious Presence', f'{susp_n}/{known_n} enriched IPs have suspicious detections.')
+
+                    as_diversity = len(as_counter) / max(1, known_n) if known_n else 0
+                    if as_diversity >= 0.70:
+                        _add_hint('mid', 'High AS Diversity', f'AS diversity ratio is {as_diversity:.0%}, suggesting distributed infrastructure.')
+
+                    major_csp_entries = [x for x in csp_summary if x.get('csp_major')]
+                    if major_csp_entries:
+                        major_total = sum(int(x.get('ip_count', 0) or 0) for x in major_csp_entries)
+                        major_ratio = major_total / max(1, known_n)
+                        if major_ratio >= 0.40:
+                            _add_hint('warn', 'Major CSP Footprint', f'{major_total}/{known_n} enriched IPs are on major CSP infrastructure. Scope blocking carefully.')
+                        else:
+                            _add_hint('info', 'CSP Footprint', f'{major_total}/{known_n} enriched IPs map to major CSP providers.')
+                else:
+                    if include_vt and not vt_unavailable_reason:
+                        _add_hint('warn', 'Limited Context', 'No ASN/Country fields available to profile infrastructure.')
+
+            if vt_enabled and vt_budget_limited:
+                _add_hint('warn', 'VT Lookup Budget Applied', f'Live VT lookups were limited to {vt_lookup_budget}; remaining IPs were processed in cache-only mode.')
+
+            rows_total = len(rows)
+            shown_rows = rows[:row_limit]
+            rows_truncated = rows_total > len(shown_rows)
+            if rows_truncated:
+                _add_hint('info', 'UI Row Limit Applied', f'Per-IP details are limited to {len(shown_rows)} rows for UI performance.')
+
+            as_summary_total = len(as_summary)
+            country_summary_total = len(country_summary)
+            as_country_summary_total = len(as_country_summary)
+
+            shown_as_summary = as_summary[:as_summary_limit]
+            shown_country_summary = country_summary[:country_summary_limit]
+            shown_as_country_summary = as_country_summary[:as_country_summary_limit]
+
+            if as_summary_total > len(shown_as_summary):
+                _add_hint('info', 'AS Summary Limited', f'AS summary output is limited to top {len(shown_as_summary)} rows.')
+            if country_summary_total > len(shown_country_summary):
+                _add_hint('info', 'Country Summary Limited', f'Country summary output is limited to top {len(shown_country_summary)} rows.')
+            if as_country_summary_total > len(shown_as_country_summary):
+                _add_hint('info', 'AS×Country Summary Limited', f'AS×Country summary output is limited to top {len(shown_as_country_summary)} rows.')
+
+            return self._send_json({
+                'submitted_count': submitted_count,
+                'unique_input_count': len(unique_tokens),
+                'valid_count': len(valid_ips),
+                'invalid_count': len(invalid_inputs),
+                'invalid_inputs': invalid_inputs[:200],
+                'include_vt': include_vt,
+                'vt_enabled': vt_enabled,
+                'vt_missing_count': vt_missing_count,
+                'vt_lookup_budget': vt_lookup_budget,
+                'vt_lookup_attempted': vt_lookup_attempted,
+                'ips_total_count': rows_total,
+                'ips_displayed_count': len(shown_rows),
+                'ips_truncated': rows_truncated,
+                'row_limit': row_limit,
+                'as_summary_total': as_summary_total,
+                'as_summary_displayed_count': len(shown_as_summary),
+                'as_summary_truncated': as_summary_total > len(shown_as_summary),
+                'country_summary_total': country_summary_total,
+                'country_summary_displayed_count': len(shown_country_summary),
+                'country_summary_truncated': country_summary_total > len(shown_country_summary),
+                'as_country_summary_total': as_country_summary_total,
+                'as_country_summary_displayed_count': len(shown_as_country_summary),
+                'as_country_summary_truncated': as_country_summary_total > len(shown_as_country_summary),
+                'ips': shown_rows,
+                'as_summary': shown_as_summary,
+                'country_summary': shown_country_summary,
+                'as_country_summary': shown_as_country_summary,
+                'csp_summary': csp_summary,
+                'hints': hints
+            })
+
+        def _handle_misp_event_ips(self):
+            """Load ip-src attributes from a MISP event."""
+            length = int(self.headers.get('Content-Length', '0'))
+            body = self.rfile.read(length) if length > 0 else b''
+            try:
+                data = json.loads(body.decode('utf-8')) if body else {}
+            except Exception:
+                return self._send_json({'error': 'invalid json'}, 400)
+
+            event_id = data.get('event_id')
+            if event_id in (None, ''):
+                with config_lock:
+                    alerts_cfg = shared_config.get('alerts', {}) if isinstance(shared_config, dict) else {}
+                if isinstance(alerts_cfg, dict):
+                    event_id = alerts_cfg.get('push_event_id')
+
+            if event_id in (None, ''):
+                return self._send_json({'error': 'event_id required (or configure alerts.push_event_id)'}, 400)
+
+            try:
+                event_id_int = int(str(event_id).strip())
+            except Exception:
+                return self._send_json({'error': 'invalid event_id'}, 400)
+
+            # Prefer already-initialized MISP client from alerts runtime.
+            misp_client = None
+            misp_mod = None
+            try:
+                import mispupdate_code as _misp_mod
+                misp_mod = _misp_mod
+                misp_client = getattr(_misp_mod, 'misp', None)
+            except Exception:
+                misp_mod = None
+
+            if misp_client is None:
+                # Try runtime re-init from current alerts config.
+                try:
+                    from alerts import init_from_alerts as _alerts_init_from_dict
+                    with config_lock:
+                        alerts_cfg = shared_config.get('alerts', {}) if isinstance(shared_config, dict) else {}
+                    if isinstance(alerts_cfg, dict) and alerts_cfg:
+                        _alerts_init_from_dict(alerts_cfg)
+                        if misp_mod is None:
+                            import mispupdate_code as _misp_mod2
+                            misp_mod = _misp_mod2
+                        misp_client = getattr(misp_mod, 'misp', None) if misp_mod else None
+                except Exception:
+                    misp_client = None
+
+            if misp_client is None:
+                return self._send_json({'error': 'misp client not initialized; check MISP URL/API key settings'}, 400)
+
+            try:
+                evt = misp_client.get_event(event_id_int)
+            except Exception as e:
+                return self._send_json({'error': f'failed to fetch event: {e}'}, 500)
+
+            event_obj = evt.get('Event', {}) if isinstance(evt, dict) else {}
+            attrs = event_obj.get('Attribute', []) if isinstance(event_obj, dict) else []
+            if not isinstance(attrs, list):
+                attrs = []
+
+            import ipaddress as _ip
+            ips = []
+            invalid_values = []
+            seen = set()
+            for a in attrs:
+                if not isinstance(a, dict):
+                    continue
+                if str(a.get('type', '')).lower() != 'ip-src':
+                    continue
+                v = str(a.get('value', '')).strip()
+                if not v:
+                    continue
+                try:
+                    _ip.ip_address(v)
+                except Exception:
+                    invalid_values.append(v)
+                    continue
+                if v not in seen:
+                    seen.add(v)
+                    ips.append(v)
+
+            return self._send_json({
+                'status': 'ok',
+                'event_id': event_id_int,
+                'event_info': event_obj.get('info') if isinstance(event_obj, dict) else None,
+                'attribute_count': len(attrs),
+                'count': len(ips),
+                'ips': ips,
+                'invalid_values': invalid_values[:200]
+            })
+
         def _handle_ips(self, qs):
             try:
                 ip_map = self._gather_ip_map()
@@ -374,32 +1046,40 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
 
                 include_vt = bool(int(qs.get('include_vt', ['0'])[0]) if qs.get('include_vt') else False)
                 out = []
-                for ip, v in ip_map.items():
-                    # validate IP syntax
-                    valid = True
-                    try:
-                        import ipaddress as _ip
-                        _ip.ip_address(ip)
-                    except Exception:
-                        valid = False
-                    if cutoff is not None and v.get('last_ts', 0) < cutoff:
-                        continue
-                    row = {
-                        'ip': ip,
-                        'domains': sorted(list(v['domains'])),
-                        'count': v['count'],
-                        'last_ts': v['last_ts'],
-                        'valid': valid
-                    }
-                    # optionally include VirusTotal reputation info (requires env var VIRUSTOTAL_API_KEY)
-                    if include_vt and get_ip_report:
+                vt_batch_started = False
+                if include_vt and get_ip_report:
+                    begin_cache_batch()
+                    vt_batch_started = True
+                try:
+                    for ip, v in ip_map.items():
+                        # validate IP syntax
+                        valid = True
                         try:
-                            rep = get_ip_report(ip)
-                            row['vt'] = rep
+                            import ipaddress as _ip
+                            _ip.ip_address(ip)
                         except Exception:
-                            row['vt'] = None
+                            valid = False
+                        if cutoff is not None and v.get('last_ts', 0) < cutoff:
+                            continue
+                        row = {
+                            'ip': ip,
+                            'domains': sorted(list(v['domains'])),
+                            'count': v['count'],
+                            'last_ts': v['last_ts'],
+                            'valid': valid
+                        }
+                        # optionally include VirusTotal reputation info (requires env var VIRUSTOTAL_API_KEY)
+                        if include_vt and get_ip_report:
+                            try:
+                                rep = get_ip_report(ip)
+                                row['vt'] = rep
+                            except Exception:
+                                row['vt'] = None
 
-                    out.append(row)
+                        out.append(row)
+                finally:
+                    if vt_batch_started:
+                        end_cache_batch(flush=True)
                 out.sort(key=lambda x: (-x['count'], -x['last_ts']))
                 self._send_json({'ips': out})
             except Exception as e:
@@ -517,6 +1197,8 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                 return self._handle_ips(qs)
             if parsed.path == '/domains':
                 return self._handle_domains()
+            if parsed.path == '/domain-analysis':
+                return self._handle_domain_analysis(qs)
             if parsed.path == '/':
                 b = frontend_html.encode('utf-8')
                 self.send_response(200)
@@ -737,44 +1419,58 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
                         domains = [d.get('name') if isinstance(d, dict) else d for d in shared_config.get('domains', [])]
 
                 results = {}
-                for dom in domains:
-                    if not dom:
-                        continue
-                    # gather a sample TXT value from current_results if available
-                    sample_vals = []
-                    for srv, info in (current_results.get(dom) or {}).items():
-                        if info.get('type') == 'TXT':
-                            sample_vals.extend(info.get('values', []) or [])
-                    sample = '|'.join(sample_vals) if sample_vals else ''
-                    try:
-                        analysis = analyze_domain_decoding(dom, sample)
-                    except Exception as e:
-                        results[dom] = {'error': str(e)}
-                        continue
+                vt_batch_started = False
+                if get_ip_report:
+                    begin_cache_batch()
+                    vt_batch_started = True
+                try:
+                    for dom in domains:
+                        if not dom:
+                            continue
+                        # gather a sample TXT value from current_results if available
+                        sample_vals = []
+                        for srv, info in (current_results.get(dom) or {}).items():
+                            if info.get('type') == 'TXT':
+                                sample_vals.extend(info.get('values', []) or [])
+                        sample = '|'.join(sample_vals) if sample_vals else ''
+                        try:
+                            analysis = analyze_domain_decoding(dom, sample)
+                        except Exception as e:
+                            results[dom] = {'error': str(e)}
+                            continue
 
-                    # attach VT reports per decoded ip if available
-                    for name, info in (analysis.get('analysis') or {}).items():
-                        ips = info.get('ips', [])
-                        detailed = []
-                        for ip in ips:
-                            valid = True
-                            try:
-                                import ipaddress as _ip
-                                _ip.ip_address(ip)
-                            except Exception:
-                                valid = False
-                            vt = None
-                            if get_ip_report:
+                        # attach VT reports per decoded ip if available
+                        for name, info in (analysis.get('analysis') or {}).items():
+                            ips = info.get('ips', [])
+                            detailed = []
+                            for ip in ips:
+                                valid = True
                                 try:
-                                    vt = get_ip_report(ip)
+                                    import ipaddress as _ip
+                                    _ip.ip_address(ip)
                                 except Exception:
-                                    vt = None
-                            detailed.append({'ip': ip, 'valid': valid, 'vt': vt})
-                        info['detailed_ips'] = detailed
+                                    valid = False
+                                vt = None
+                                if get_ip_report:
+                                    try:
+                                        vt = get_ip_report(ip)
+                                    except Exception:
+                                        vt = None
+                                detailed.append({'ip': ip, 'valid': valid, 'vt': vt})
+                            info['detailed_ips'] = detailed
 
-                    results[dom] = analysis
+                        results[dom] = analysis
+                finally:
+                    if vt_batch_started:
+                        end_cache_batch(flush=True)
 
                 return self._send_json({'results': results})
+
+            if parsed.path == '/ip-list-analysis':
+                return self._handle_ip_list_analysis()
+
+            if parsed.path == '/misp/event-ips':
+                return self._handle_misp_event_ips()
 
             if parsed.path == '/decoders/custom' and self.command == 'POST':
                 length = int(self.headers.get('Content-Length', '0'))

@@ -433,6 +433,71 @@ tbody tr:hover{background:#f0f8fb;}
   border-color:#f2d59b;
   background:#fff8e9;
 }
+.csp-badge{
+  display:inline-flex;
+  align-items:center;
+  border-radius:999px;
+  padding:2px 9px;
+  font-size:.72rem;
+  font-weight:800;
+  letter-spacing:.01em;
+  border:1px solid #d4e3eb;
+  background:#f5f8fa;
+  color:#2e4c60;
+  white-space:nowrap;
+}
+.csp-badge.major{
+  box-shadow:0 0 0 1px rgba(255, 204, 122, 0.5) inset;
+}
+.csp-amazon{background:#fff3e0;border-color:#f0c58b;color:#8b4b03;}
+.csp-google{background:#e9f6ff;border-color:#abd6fb;color:#0b4f8a;}
+.csp-microsoft{background:#eef2ff;border-color:#b9c7ff;color:#2f3d9a;}
+.csp-cloudflare{background:#fff5ec;border-color:#f3be93;color:#a24b12;}
+.csp-oracle{background:#ffecec;border-color:#f0b0b0;color:#922626;}
+.csp-alibaba{background:#fff0f2;border-color:#f2b2bf;color:#9d2445;}
+.csp-tencent{background:#edf6ff;border-color:#b8d8fb;color:#24598d;}
+.csp-akamai{background:#effaf4;border-color:#b4e0c6;color:#1f6f47;}
+.csp-digitalocean{background:#ebf6ff;border-color:#b8daff;color:#0055a0;}
+.csp-ovh{background:#eef4ff;border-color:#bfd0ff;color:#2b4fa3;}
+.csp-other{background:#f6f8fa;border-color:#d7e1e8;color:#425b6d;}
+.domain-summary-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));
+  gap:12px;
+  margin:10px 0 14px;
+}
+.summary-card{
+  border:1px solid var(--line);
+  border-radius:12px;
+  background:linear-gradient(180deg, #ffffff 0%, #f8fcfe 100%);
+  box-shadow:var(--shadow-sm);
+  overflow:hidden;
+}
+.summary-card h4{
+  margin:0;
+  padding:10px 12px;
+  font-size:.92rem;
+  color:#1e5d76;
+  border-bottom:1px solid #e7f0f5;
+  background:linear-gradient(180deg, #f4fafd 0%, #edf6fb 100%);
+}
+.summary-card table{
+  margin:0;
+  border:none;
+  border-radius:0;
+  box-shadow:none;
+}
+.summary-card th{
+  position:static;
+  top:auto;
+  background:linear-gradient(180deg, #2f6780 0%, #2a5f76 100%);
+  font-size:.74rem;
+  padding:8px 8px;
+}
+.summary-card td{
+  font-size:.8rem;
+  padding:8px 8px;
+}
 @media (max-width:960px){
   nav{gap:8px;}
   nav button{padding:9px 13px;font-size:.82rem;}
@@ -464,6 +529,8 @@ tbody tr:hover{background:#f0f8fb;}
   <button id="menuSettings">Settings</button>
   <button id="menuStatus" class="active">Status</button>
   <button id="menuQuery">Query</button>
+  <button id="menuDomainAnalysis">Domain Analysis</button>
+  <button id="menuIpIntel">Botnet IP Analysis</button>
   <button id="menuIPs">All IPs</button>
   <button id="menuValidIPs">Valid IPs</button>
 </nav>
@@ -615,6 +682,127 @@ tbody tr:hover{background:#f0f8fb;}
   <div id="queryResult"></div>
 </div>
 
+<div id="domainanalysis" class="section">
+  <h3>🧭 Domain Analysis</h3>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+    <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
+      <input id="domain_analysis_include_vt" type="checkbox" checked style="width:auto;margin:0;" />
+      Include AS context (VT)
+    </label>
+    <button id="refreshDomainAnalysisBtn">🔄 Refresh</button>
+    <span id="domainAnalysisMeta" style="font-size:.78rem;color:#5b6a77;"></span>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+    <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
+      Domain Filter
+      <select id="domainAnalysisDomainSelect" style="width:auto;min-width:220px;margin-top:0;">
+        <option value="">All domains</option>
+      </select>
+    </label>
+    <button id="clearDomainAnalysisFilterBtn">Show All</button>
+  </div>
+  <table id="domainDomainStatsTable">
+    <thead><tr><th>Domain</th><th>Resolved IPs</th><th>Decoded IPs</th><th>Unique AS</th><th>Unique Countries</th><th>Top AS</th><th>Top Country</th><th>Last Seen</th><th>View</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div class="domain-summary-grid">
+    <div class="summary-card">
+      <h4>AS Group Summary</h4>
+      <table id="domainAsSummaryTable">
+        <thead><tr><th>ASN</th><th>AS Owner</th><th>IPs</th><th>Domains</th><th>Countries</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="summary-card">
+      <h4>Country Summary</h4>
+      <table id="domainCountrySummaryTable">
+        <thead><tr><th>Country</th><th>IPs</th><th>Domains</th><th>ASNs</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="summary-card">
+      <h4>AS × Country Intersection</h4>
+      <table id="domainAsCountrySummaryTable">
+        <thead><tr><th>ASN</th><th>Country</th><th>AS Owner</th><th>IPs</th><th>Domains</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+  <table id="domainAnalysisTable">
+    <thead><tr><th>Domain</th><th>Record Types</th><th>Role</th><th>IP</th><th>ASN</th><th>AS Owner</th><th>Country</th><th>VT (M/S)</th><th>Last Seen</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<div id="ipintel" class="section">
+  <h3>🛰️ Botnet IP Analysis</h3>
+  <p style="color:#5b6a77;margin-bottom:10px;">Paste IP list and extract VT-based AS/Country patterns to estimate botnet characteristics.</p>
+  <label>Input IP list (newline/comma/space separated)
+    <textarea id="ipIntelInput" rows="6" placeholder="1.2.3.4&#10;8.8.8.8, 9.9.9.9"></textarea>
+  </label>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+    <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
+      <input id="ipIntelIncludeVt" type="checkbox" checked style="width:auto;margin:0;" />
+      Include VT enrichment
+    </label>
+    <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
+      Row limit
+      <input id="ipIntelRowLimit" type="number" min="100" max="5000" value="1500" style="width:96px;margin-top:0;" />
+    </label>
+    <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
+      VT lookup budget
+      <input id="ipIntelVtBudget" type="number" min="0" max="5000" value="1200" style="width:96px;margin-top:0;" />
+    </label>
+    <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
+      MISP Event ID
+      <input id="ipIntelMispEventId" type="text" placeholder="push_event_id" style="width:140px;margin-top:0;" />
+    </label>
+    <button id="loadIpIntelMispBtn">📥 Load from MISP</button>
+    <button id="runIpIntelBtn">🔍 Analyze IP List</button>
+    <span id="ipIntelMeta" style="font-size:.78rem;color:#5b6a77;"></span>
+  </div>
+  <p style="font-size:.78rem;color:#5b6a77;margin:2px 0 10px;">Supports up to 10,000 valid IPs. Per-IP rows are intentionally limited for browser stability.</p>
+  <div class="domain-summary-grid">
+    <div class="summary-card">
+      <h4>AS Group Summary</h4>
+      <table id="ipIntelAsSummaryTable">
+        <thead><tr><th>ASN</th><th>AS Owner</th><th>CSP</th><th>IPs</th><th>Malicious</th><th>Countries</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="summary-card">
+      <h4>Country Summary</h4>
+      <table id="ipIntelCountrySummaryTable">
+        <thead><tr><th>Country</th><th>IPs</th><th>ASNs</th><th>Malicious</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="summary-card">
+      <h4>AS × Country Intersection</h4>
+      <table id="ipIntelAsCountrySummaryTable">
+        <thead><tr><th>ASN</th><th>Country</th><th>AS Owner</th><th>CSP</th><th>IPs</th><th>Malicious</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="summary-card">
+      <h4>CSP Footprint Summary</h4>
+      <table id="ipIntelCspSummaryTable">
+        <thead><tr><th>CSP</th><th>IPs</th><th>ASNs</th><th>Countries</th><th>Malicious</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+  <h4>Estimated Characteristics</h4>
+  <div id="ipIntelHintsBox" style="background:#f8f9fa;padding:12px;border:1px solid #d7e4eb;border-radius:10px;margin-bottom:10px;"></div>
+  <h4>Per-IP Details</h4>
+  <table id="ipIntelResultTable">
+    <thead><tr><th>IP</th><th>ASN</th><th>AS Owner</th><th>CSP</th><th>Country</th><th>VT (M/S)</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <h4>Invalid Inputs</h4>
+  <div id="ipIntelInvalidBox" style="background:#fff7e6;padding:12px;border:1px solid #f0d39e;border-radius:10px;"></div>
+</div>
+
 <div id="ips" class="section">
   <h3>📍 All IPs</h3>
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
@@ -648,12 +836,14 @@ const SECTION_BUTTON_MAP = {
   settings: 'menuSettings',
   status: 'menuStatus',
   query: 'menuQuery',
+  domainanalysis: 'menuDomainAnalysis',
+  ipintel: 'menuIpIntel',
   ips: 'menuIPs',
   validips: 'menuValidIPs'
 };
 
 function showSection(name){
-  ['settings','status','query','ips','validips'].forEach(id=>document.getElementById(id).classList.remove('active'));
+  ['settings','status','query','domainanalysis','ipintel','ips','validips'].forEach(id=>document.getElementById(id).classList.remove('active'));
   document.getElementById(name).classList.add('active');
   Object.keys(SECTION_BUTTON_MAP).forEach(sec=>{
     const btn = document.getElementById(SECTION_BUTTON_MAP[sec]);
@@ -664,10 +854,752 @@ function showSection(name){
 document.getElementById('menuSettings').onclick = ()=> showSection('settings');
 document.getElementById('menuStatus').onclick = ()=> showSection('status');
 document.getElementById('menuQuery').onclick = ()=> showSection('query');
+document.getElementById('menuDomainAnalysis').onclick = ()=> { showSection('domainanalysis'); refreshDomainAnalysis(); };
+document.getElementById('menuIpIntel').onclick = ()=> showSection('ipintel');
 document.getElementById('menuIPs').onclick = ()=> showSection('ips');
 document.getElementById('menuValidIPs').onclick = ()=> showSection('validips');
 
 function log(msg){ document.getElementById('log').textContent += msg + "\n"; }
+const IPV4_PATTERN = /^(\d{1,3}\.){3}\d{1,3}$/;
+window.DOMAIN_ANALYSIS_CACHE = [];
+window.DOMAIN_ANALYSIS_INCLUDE_VT = true;
+
+function isIPv4(value){
+  const s = String(value || '').trim();
+  if(!IPV4_PATTERN.test(s)) return false;
+  const parts = s.split('.').map(n=>Number(n));
+  return parts.length === 4 && parts.every(n=>Number.isInteger(n) && n >= 0 && n <= 255);
+}
+
+function openQueryForValue(value){
+  const v = String(value || '').trim();
+  if(!v) return;
+  const q = document.getElementById('queryValue');
+  if(q) q.value = v;
+  showSection('query');
+  runQuery(v);
+}
+
+async function runQuery(v){
+  const value = String(v || '').trim();
+  if(!value){ alert('Enter search value'); return; }
+  if(isIPv4(value)){
+    const r = await fetch('/ip?ip='+encodeURIComponent(value));
+    const j = await r.json();
+    document.getElementById('queryResult').textContent = JSON.stringify(j, null, 2);
+    return;
+  }
+  // search value across history/current by fetching /results + /history client-side (simple approach)
+  const r1 = await fetch('/results'); const res = await r1.json();
+  const matches = [];
+  for(const d of Object.keys(res.results||{})){
+    const srvMap = res.results[d];
+    for(const s of Object.keys(srvMap)){
+      const info = srvMap[s];
+      if((info.values||[]).some(x=>x.includes(value))){
+        matches.push({domain:d, server:s, type:info.type, ts:info.ts, values:info.values});
+      }
+    }
+  }
+  // fallback: fetch history per domain from results list
+  const histMatches = [];
+  for(const d of Object.keys(res.results||{})){
+    const hresp = await fetch('/history?domain='+encodeURIComponent(d));
+    const hj = await hresp.json();
+    (hj.history||[]).forEach(ev=>{
+      if(ev.new && (ev.new.values||[]).some(x=>x.includes(value)) || ev.old && (ev.old.values||[]).some(x=>x.includes(value))){
+        histMatches.push({domain:d, server:ev.server, ts:ev.ts, old:ev.old, new:ev.new});
+      } else if(ev.values && (ev.values||[]).some(x=>x.includes(value))){
+        histMatches.push({domain:d, server:ev.server, ts:ev.ts, values:ev.values});
+      }
+    });
+  }
+  document.getElementById('queryResult').textContent = JSON.stringify({current:matches, history:histMatches}, null, 2);
+}
+
+function setSummaryMessage(tbody, colSpan, message){
+  if(!tbody) return;
+  tbody.innerHTML = '';
+  const tr = document.createElement('tr');
+  const td = document.createElement('td');
+  td.colSpan = colSpan;
+  td.textContent = message;
+  tr.appendChild(td);
+  tbody.appendChild(tr);
+}
+
+function formatListPreview(values, maxItems){
+  const maxN = Math.max(1, Number(maxItems || 3));
+  const arr = Array.from(new Set((values || []).map(v=>String(v || '').trim()).filter(Boolean)));
+  if(!arr.length) return '-';
+  if(arr.length <= maxN) return arr.join(', ');
+  return `${arr.slice(0, maxN).join(', ')} +${arr.length - maxN}`;
+}
+
+function parseBoundedInt(raw, fallbackValue, minValue, maxValue){
+  const n = Number.parseInt(String(raw == null ? '' : raw), 10);
+  if(!Number.isFinite(n)) return fallbackValue;
+  if(n < minValue) return minValue;
+  if(n > maxValue) return maxValue;
+  return n;
+}
+
+function normalizeCspKey(raw){
+  const s = String(raw || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  return s || 'other';
+}
+
+function createCspBadge(cspKeyRaw, cspLabelRaw, isMajor){
+  const cspKey = normalizeCspKey(cspKeyRaw);
+  const label = String(cspLabelRaw || '').trim() || 'Other/Unknown';
+  const span = document.createElement('span');
+  span.className = `csp-badge csp-${cspKey}`;
+  if(isMajor) span.classList.add('major');
+  span.textContent = label;
+  if(isMajor){
+    span.title = 'Major CSP - blocking should be scoped carefully';
+  }
+  return span;
+}
+
+function getDomainStatsEntry(domainObj){
+  const rows = Array.isArray(domainObj && domainObj.ip_rows) ? domainObj.ip_rows : [];
+  const resolved = new Set();
+  const decoded = new Set();
+  const asFreq = new Map();
+  const countryFreq = new Map();
+  rows.forEach(row=>{
+    const ip = String((row && row.ip) || '').trim();
+    if(!isIPv4(ip)) return;
+    const role = String((row && row.role) || '').toLowerCase();
+    if(role === 'resolved') resolved.add(ip);
+    if(role === 'decoded') decoded.add(ip);
+    const vt = (row && row.vt) || {};
+    const asn = (vt && vt.asn != null) ? String(vt.asn) : '';
+    const country = (vt && vt.country) ? String(vt.country) : '';
+    if(asn) asFreq.set(asn, (asFreq.get(asn) || 0) + 1);
+    if(country) countryFreq.set(country, (countryFreq.get(country) || 0) + 1);
+  });
+  const topAs = Array.from(asFreq.entries()).sort((a,b)=>b[1]-a[1])[0] || null;
+  const topCountry = Array.from(countryFreq.entries()).sort((a,b)=>b[1]-a[1])[0] || null;
+  return {
+    resolvedCount: resolved.size,
+    decodedCount: decoded.size,
+    asCount: asFreq.size,
+    countryCount: countryFreq.size,
+    topAs: topAs ? `${topAs[0]} (${topAs[1]})` : '-',
+    topCountry: topCountry ? `${topCountry[0]} (${topCountry[1]})` : '-',
+  };
+}
+
+function populateDomainAnalysisFilter(domains){
+  const sel = document.getElementById('domainAnalysisDomainSelect');
+  if(!sel) return '';
+  const prev = String(sel.value || '');
+  const names = Array.from(new Set((domains || []).map(d=>String((d && d.domain) || '').trim()).filter(Boolean))).sort();
+  sel.innerHTML = '';
+  const allOpt = document.createElement('option');
+  allOpt.value = '';
+  allOpt.textContent = 'All domains';
+  sel.appendChild(allOpt);
+  names.forEach(name=>{
+    const o = document.createElement('option');
+    o.value = name;
+    o.textContent = name;
+    sel.appendChild(o);
+  });
+  sel.value = names.includes(prev) ? prev : '';
+  return sel.value;
+}
+
+function renderDomainStatsTable(allDomains, selectedDomain){
+  const tbody = document.querySelector('#domainDomainStatsTable tbody');
+  if(!tbody) return;
+  tbody.innerHTML = '';
+  const arr = Array.isArray(allDomains) ? allDomains.slice() : [];
+  if(!arr.length){
+    setSummaryMessage(tbody, 9, 'No domains available');
+    return;
+  }
+  arr.sort((a,b)=>String((a && a.domain) || '').localeCompare(String((b && b.domain) || '')));
+  arr.forEach(d=>{
+    const name = String((d && d.domain) || '');
+    const tsText = (d && d.last_ts) ? new Date(d.last_ts*1000).toISOString() : '-';
+    const st = getDomainStatsEntry(d);
+    const tr = document.createElement('tr');
+    if(selectedDomain && name === selectedDomain){
+      tr.style.background = '#eef8ff';
+    }
+    const c1 = document.createElement('td'); c1.textContent = name;
+    const c2 = document.createElement('td'); c2.textContent = String(st.resolvedCount);
+    const c3 = document.createElement('td'); c3.textContent = String(st.decodedCount);
+    const c4 = document.createElement('td'); c4.textContent = String(st.asCount);
+    const c5 = document.createElement('td'); c5.textContent = String(st.countryCount);
+    const c6 = document.createElement('td'); c6.textContent = st.topAs;
+    const c7 = document.createElement('td'); c7.textContent = st.topCountry;
+    const c8 = document.createElement('td'); c8.textContent = tsText;
+    const c9 = document.createElement('td');
+    const btn = document.createElement('button');
+    btn.style.margin = '0';
+    btn.textContent = (selectedDomain && name === selectedDomain) ? 'Viewing' : 'View';
+    btn.onclick = ()=>{
+      const sel = document.getElementById('domainAnalysisDomainSelect');
+      if(sel){
+        sel.value = name;
+      }
+      applyDomainAnalysisFilter();
+    };
+    c9.appendChild(btn);
+    tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3); tr.appendChild(c4); tr.appendChild(c5); tr.appendChild(c6); tr.appendChild(c7); tr.appendChild(c8); tr.appendChild(c9);
+    tbody.appendChild(tr);
+  });
+}
+
+function renderDomainAnalysisSummaries(domains, includeVT){
+  const asBody = document.querySelector('#domainAsSummaryTable tbody');
+  const countryBody = document.querySelector('#domainCountrySummaryTable tbody');
+  const crossBody = document.querySelector('#domainAsCountrySummaryTable tbody');
+  if(!asBody || !countryBody || !crossBody){
+    return {asGroups: 0, countries: 0, intersections: 0};
+  }
+
+  if(!includeVT){
+    setSummaryMessage(asBody, 5, 'VT context is disabled');
+    setSummaryMessage(countryBody, 4, 'VT context is disabled');
+    setSummaryMessage(crossBody, 5, 'VT context is disabled');
+    return {asGroups: 0, countries: 0, intersections: 0};
+  }
+
+  const asMap = new Map();
+  const countryMap = new Map();
+  const crossMap = new Map();
+  const seenDomainIp = new Set();
+  const seenAsRole = new Set();
+  const seenCrossRole = new Set();
+
+  (domains || []).forEach(d=>{
+    const domainName = String((d && d.domain) || '').trim();
+    const rows = Array.isArray(d && d.ip_rows) ? d.ip_rows : [];
+    rows.forEach(row=>{
+      const ip = String((row && row.ip) || '').trim();
+      if(!isIPv4(ip)) return;
+      const role = String((row && row.role) || '-').toLowerCase();
+      const vt = (row && row.vt) || {};
+      const asn = (vt && vt.asn != null) ? String(vt.asn) : 'N/A';
+      const asOwner = (vt && vt.as_owner) ? String(vt.as_owner) : '-';
+      const country = (vt && vt.country) ? String(vt.country) : 'N/A';
+      const domainIpKey = `${domainName}|${ip}`;
+      const isNewDomainIp = !seenDomainIp.has(domainIpKey);
+      if(isNewDomainIp) seenDomainIp.add(domainIpKey);
+
+      const asKey = `${asn}|${asOwner}`;
+      const asEntry = asMap.get(asKey) || {
+        asn: asn,
+        as_owner: asOwner,
+        ip_count: 0,
+        domains: new Set(),
+        countries: new Set(),
+        resolved: 0,
+        decoded: 0
+      };
+      asEntry.countries.add(country);
+      if(isNewDomainIp){
+        asEntry.ip_count += 1;
+        if(domainName) asEntry.domains.add(domainName);
+      }
+      const asRoleKey = `${asKey}|${domainName}|${role}|${ip}`;
+      if(!seenAsRole.has(asRoleKey)){
+        seenAsRole.add(asRoleKey);
+        if(role === 'resolved') asEntry.resolved += 1;
+        if(role === 'decoded') asEntry.decoded += 1;
+      }
+      asMap.set(asKey, asEntry);
+
+      const countryEntry = countryMap.get(country) || {
+        country: country,
+        ip_count: 0,
+        domains: new Set(),
+        asns: new Set()
+      };
+      countryEntry.asns.add(asn);
+      if(isNewDomainIp){
+        countryEntry.ip_count += 1;
+        if(domainName) countryEntry.domains.add(domainName);
+      }
+      countryMap.set(country, countryEntry);
+
+      const crossKey = `${asn}|${country}|${asOwner}`;
+      const crossEntry = crossMap.get(crossKey) || {
+        asn: asn,
+        country: country,
+        as_owner: asOwner,
+        ip_count: 0,
+        domains: new Set(),
+        resolved: 0,
+        decoded: 0
+      };
+      if(isNewDomainIp){
+        crossEntry.ip_count += 1;
+        if(domainName) crossEntry.domains.add(domainName);
+      }
+      const crossRoleKey = `${crossKey}|${domainName}|${role}|${ip}`;
+      if(!seenCrossRole.has(crossRoleKey)){
+        seenCrossRole.add(crossRoleKey);
+        if(role === 'resolved') crossEntry.resolved += 1;
+        if(role === 'decoded') crossEntry.decoded += 1;
+      }
+      crossMap.set(crossKey, crossEntry);
+    });
+  });
+
+  const asRows = Array.from(asMap.values()).map(e=>({
+    asn: e.asn,
+    as_owner: e.as_owner,
+    ip_count: e.ip_count,
+    domain_count: e.domains.size,
+    countries: Array.from(e.countries),
+    resolved: e.resolved,
+    decoded: e.decoded
+  })).sort((a,b)=>(b.ip_count - a.ip_count) || (b.domain_count - a.domain_count));
+
+  const countryRows = Array.from(countryMap.values()).map(e=>({
+    country: e.country,
+    ip_count: e.ip_count,
+    domain_count: e.domains.size,
+    asn_count: e.asns.size
+  })).sort((a,b)=>(b.ip_count - a.ip_count) || (b.domain_count - a.domain_count));
+
+  const crossRows = Array.from(crossMap.values()).map(e=>({
+    asn: e.asn,
+    country: e.country,
+    as_owner: e.as_owner,
+    ip_count: e.ip_count,
+    domain_count: e.domains.size,
+    resolved: e.resolved,
+    decoded: e.decoded
+  })).sort((a,b)=>(b.ip_count - a.ip_count) || (b.domain_count - a.domain_count));
+
+  asBody.innerHTML = '';
+  countryBody.innerHTML = '';
+  crossBody.innerHTML = '';
+
+  if(!asRows.length){
+    setSummaryMessage(asBody, 5, 'No AS context data');
+  } else {
+    asRows.forEach(e=>{
+      const tr = document.createElement('tr');
+      const c1 = document.createElement('td'); c1.textContent = e.asn;
+      const c2 = document.createElement('td'); c2.textContent = e.as_owner || '-';
+      const c3 = document.createElement('td'); c3.textContent = String(e.ip_count);
+      c3.title = `resolved ${e.resolved} / decoded ${e.decoded}`;
+      const c4 = document.createElement('td'); c4.textContent = String(e.domain_count);
+      const c5 = document.createElement('td'); c5.textContent = formatListPreview(e.countries, 3);
+      c5.title = (e.countries || []).join(', ');
+      tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3); tr.appendChild(c4); tr.appendChild(c5);
+      asBody.appendChild(tr);
+    });
+  }
+
+  if(!countryRows.length){
+    setSummaryMessage(countryBody, 4, 'No country data');
+  } else {
+    countryRows.forEach(e=>{
+      const tr = document.createElement('tr');
+      const c1 = document.createElement('td'); c1.textContent = e.country;
+      const c2 = document.createElement('td'); c2.textContent = String(e.ip_count);
+      const c3 = document.createElement('td'); c3.textContent = String(e.domain_count);
+      const c4 = document.createElement('td'); c4.textContent = String(e.asn_count);
+      tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3); tr.appendChild(c4);
+      countryBody.appendChild(tr);
+    });
+  }
+
+  if(!crossRows.length){
+    setSummaryMessage(crossBody, 5, 'No AS×Country intersection data');
+  } else {
+    crossRows.forEach(e=>{
+      const tr = document.createElement('tr');
+      const c1 = document.createElement('td'); c1.textContent = e.asn;
+      const c2 = document.createElement('td'); c2.textContent = e.country;
+      const c3 = document.createElement('td'); c3.textContent = e.as_owner || '-';
+      const c4 = document.createElement('td'); c4.textContent = String(e.ip_count);
+      c4.title = `resolved ${e.resolved} / decoded ${e.decoded}`;
+      const c5 = document.createElement('td'); c5.textContent = String(e.domain_count);
+      tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3); tr.appendChild(c4); tr.appendChild(c5);
+      crossBody.appendChild(tr);
+    });
+  }
+
+  return {
+    asGroups: asRows.length,
+    countries: countryRows.length,
+    intersections: crossRows.length
+  };
+}
+
+function renderDomainAnalysisTable(domains, includeVT, totalDomainsCount){
+  const tbody = document.querySelector('#domainAnalysisTable tbody');
+  const meta = document.getElementById('domainAnalysisMeta');
+  if(!tbody) return;
+  tbody.innerHTML = '';
+
+  const arr = Array.isArray(domains) ? domains : [];
+  let ipRowsCount = 0;
+  arr.forEach(d=>{
+    const domainName = String((d && d.domain) || '');
+    const types = Array.isArray(d && d.record_types) ? d.record_types.join(', ') : '-';
+    const tsText = (d && d.last_ts) ? new Date(d.last_ts*1000).toISOString() : '-';
+    const rows = Array.isArray(d && d.ip_rows) ? d.ip_rows : [];
+    if(!rows.length){
+      const tr = document.createElement('tr');
+      const c1 = document.createElement('td'); c1.textContent = domainName;
+      const c2 = document.createElement('td'); c2.textContent = types;
+      const c3 = document.createElement('td'); c3.textContent = '-';
+      const c4 = document.createElement('td'); c4.textContent = '-';
+      const c5 = document.createElement('td'); c5.textContent = '-';
+      const c6 = document.createElement('td'); c6.textContent = '-';
+      const c7 = document.createElement('td'); c7.textContent = '-';
+      const c8 = document.createElement('td'); c8.textContent = includeVT ? '-' : 'off';
+      const c9 = document.createElement('td'); c9.textContent = tsText;
+      tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3); tr.appendChild(c4); tr.appendChild(c5); tr.appendChild(c6); tr.appendChild(c7); tr.appendChild(c8); tr.appendChild(c9);
+      tbody.appendChild(tr);
+      return;
+    }
+    rows.forEach(row=>{
+      ipRowsCount += 1;
+      const tr = document.createElement('tr');
+      const vt = (row && row.vt) || null;
+      const m = Number((vt && vt.malicious) || 0);
+      const s = Number((vt && vt.suspicious) || 0);
+
+      const c1 = document.createElement('td'); c1.textContent = domainName;
+      const c2 = document.createElement('td'); c2.textContent = types;
+      const c3 = document.createElement('td'); c3.textContent = String((row && row.role) || '-');
+      const c4 = document.createElement('td');
+      c4.textContent = String((row && row.ip) || '-');
+      if(isIPv4(row && row.ip)){
+        c4.style.cursor = 'pointer';
+        c4.title = 'Open in Query';
+        c4.onclick = ()=> openQueryForValue(row.ip);
+      }
+      const c5 = document.createElement('td'); c5.textContent = vt && vt.asn != null ? String(vt.asn) : '-';
+      const c6 = document.createElement('td'); c6.textContent = vt && vt.as_owner ? String(vt.as_owner) : '-';
+      const c7 = document.createElement('td'); c7.textContent = vt && vt.country ? String(vt.country) : '-';
+      const c8 = document.createElement('td'); c8.textContent = includeVT ? `${m}/${s}` : 'off';
+      const c9 = document.createElement('td'); c9.textContent = tsText;
+      tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3); tr.appendChild(c4); tr.appendChild(c5); tr.appendChild(c6); tr.appendChild(c7); tr.appendChild(c8); tr.appendChild(c9);
+      tbody.appendChild(tr);
+    });
+  });
+
+  const summary = renderDomainAnalysisSummaries(arr, includeVT);
+  const selected = String((document.getElementById('domainAnalysisDomainSelect') || {}).value || '');
+  if(meta){
+    meta.textContent = `${arr.length}/${Math.max(0, Number(totalDomainsCount || arr.length))} domains / ${ipRowsCount} IP rows / AS ${summary.asGroups} / Countries ${summary.countries} / AS×Country ${summary.intersections}${selected ? ` / Filter: ${selected}` : ''}`;
+  }
+  touchOverviewTs();
+}
+
+function applyDomainAnalysisFilter(){
+  const allDomains = Array.isArray(window.DOMAIN_ANALYSIS_CACHE) ? window.DOMAIN_ANALYSIS_CACHE : [];
+  const includeVT = !!window.DOMAIN_ANALYSIS_INCLUDE_VT;
+  const selected = String((document.getElementById('domainAnalysisDomainSelect') || {}).value || '');
+  const filtered = selected ? allDomains.filter(d=>String((d && d.domain) || '') === selected) : allDomains;
+  renderDomainStatsTable(allDomains, selected);
+  renderDomainAnalysisTable(filtered, includeVT, allDomains.length);
+}
+
+async function refreshDomainAnalysis(){
+  try{
+    const includeVT = !!(document.getElementById('domain_analysis_include_vt') && document.getElementById('domain_analysis_include_vt').checked);
+    const r = await fetch('/domain-analysis?include_vt=' + (includeVT ? '1' : '0'));
+    if(!r.ok){
+      console.error('refreshDomainAnalysis: HTTP error', r.status);
+      return;
+    }
+    const j = await r.json();
+    window.DOMAIN_ANALYSIS_CACHE = Array.isArray(j.domains) ? j.domains : [];
+    window.DOMAIN_ANALYSIS_INCLUDE_VT = includeVT;
+    populateDomainAnalysisFilter(window.DOMAIN_ANALYSIS_CACHE);
+    applyDomainAnalysisFilter();
+  }catch(e){
+    console.log('refreshDomainAnalysis error', e);
+  }
+}
+
+async function analyzeIpIntel(){
+  const raw = String((document.getElementById('ipIntelInput') || {}).value || '').trim();
+  const includeVT = !!(document.getElementById('ipIntelIncludeVt') && document.getElementById('ipIntelIncludeVt').checked);
+  const rowLimit = parseBoundedInt((document.getElementById('ipIntelRowLimit') || {}).value, 1500, 100, 5000);
+  const vtBudget = parseBoundedInt((document.getElementById('ipIntelVtBudget') || {}).value, 1200, 0, 5000);
+  const meta = document.getElementById('ipIntelMeta');
+  const hintsBox = document.getElementById('ipIntelHintsBox');
+  const invalidBox = document.getElementById('ipIntelInvalidBox');
+  const ipBody = document.querySelector('#ipIntelResultTable tbody');
+  const asBody = document.querySelector('#ipIntelAsSummaryTable tbody');
+  const cBody = document.querySelector('#ipIntelCountrySummaryTable tbody');
+  const acBody = document.querySelector('#ipIntelAsCountrySummaryTable tbody');
+  const cspBody = document.querySelector('#ipIntelCspSummaryTable tbody');
+
+  if(!raw){
+    if(meta) meta.textContent = 'Input IP list first';
+    return;
+  }
+  if(meta) meta.textContent = 'Analyzing...';
+
+  try{
+    const r = await fetch('/ip-list-analysis', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        ips: raw,
+        include_vt: includeVT,
+        row_limit: rowLimit,
+        vt_lookup_budget: vtBudget
+      })
+    });
+    const j = await r.json();
+    if(!r.ok){
+      if(meta) meta.textContent = `Analyze failed: ${(j && j.error) ? j.error : 'HTTP '+r.status}`;
+      if(ipBody) setSummaryMessage(ipBody, 6, 'No data');
+      if(asBody) setSummaryMessage(asBody, 6, 'No data');
+      if(cBody) setSummaryMessage(cBody, 4, 'No data');
+      if(acBody) setSummaryMessage(acBody, 6, 'No data');
+      if(cspBody) setSummaryMessage(cspBody, 5, 'No data');
+      if(hintsBox) hintsBox.textContent = '-';
+      if(invalidBox) invalidBox.textContent = '-';
+      return;
+    }
+
+    const rows = Array.isArray(j.ips) ? j.ips : [];
+    const asRows = Array.isArray(j.as_summary) ? j.as_summary : [];
+    const cRows = Array.isArray(j.country_summary) ? j.country_summary : [];
+    const acRows = Array.isArray(j.as_country_summary) ? j.as_country_summary : [];
+    const cspRows = Array.isArray(j.csp_summary) ? j.csp_summary : [];
+    const hints = Array.isArray(j.hints) ? j.hints : [];
+    const invalid = Array.isArray(j.invalid_inputs) ? j.invalid_inputs : [];
+    const ipsTotal = Number((j && j.ips_total_count) || rows.length || 0);
+    const ipsShown = Number((j && j.ips_displayed_count) || rows.length || 0);
+    const ipsLimited = !!(j && j.ips_truncated);
+    const vtBudgetInfo = Number((j && j.vt_lookup_budget) || vtBudget || 0);
+    const vtAttemptedInfo = Number((j && j.vt_lookup_attempted) || 0);
+
+    if(meta){
+      let txt = `submitted ${j.submitted_count || 0} / valid ${j.valid_count || 0} / invalid ${j.invalid_count || 0} / displayed ${ipsShown}/${ipsTotal}`;
+      if(ipsLimited){
+        txt += ' (row-limited)';
+      }
+      if(includeVT){
+        txt += ` / VT budget ${vtBudgetInfo} (attempted ${vtAttemptedInfo})`;
+      }
+      meta.textContent = txt;
+    }
+
+    if(ipBody){
+      ipBody.innerHTML = '';
+      if(!rows.length){
+        setSummaryMessage(ipBody, 6, 'No valid IP results');
+      } else {
+        rows.forEach(it=>{
+          const tr = document.createElement('tr');
+          const c1 = document.createElement('td');
+          c1.textContent = String((it && it.ip) || '-');
+          if(isIPv4(it && it.ip)){
+            c1.style.cursor = 'pointer';
+            c1.title = 'Open in Query';
+            c1.onclick = ()=> openQueryForValue(it.ip);
+          }
+          const c2 = document.createElement('td'); c2.textContent = String((it && it.asn) || '-');
+          const c3 = document.createElement('td'); c3.textContent = String((it && it.as_owner) || '-');
+          const c4 = document.createElement('td');
+          c4.appendChild(createCspBadge((it && it.csp) || 'other', (it && it.csp_label) || 'Other/Unknown', !!(it && it.csp_major)));
+          const c5 = document.createElement('td'); c5.textContent = String((it && it.country) || '-');
+          const c6 = document.createElement('td');
+          c6.textContent = includeVT ? `${Number((it && it.malicious) || 0)}/${Number((it && it.suspicious) || 0)}` : 'off';
+          tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3); tr.appendChild(c4); tr.appendChild(c5); tr.appendChild(c6);
+          ipBody.appendChild(tr);
+        });
+      }
+    }
+
+    if(asBody){
+      asBody.innerHTML = '';
+      if(!asRows.length){
+        setSummaryMessage(asBody, 6, 'No AS summary');
+      } else {
+        asRows.forEach(it=>{
+          const tr = document.createElement('tr');
+          const c1 = document.createElement('td'); c1.textContent = String((it && it.asn) || '-');
+          const c2 = document.createElement('td'); c2.textContent = String((it && it.as_owner) || '-');
+          const c3 = document.createElement('td');
+          c3.appendChild(createCspBadge((it && it.csp) || 'other', (it && it.csp_label) || 'Other/Unknown', !!(it && it.csp_major)));
+          const c4 = document.createElement('td'); c4.textContent = String((it && it.ip_count) || 0);
+          const c5 = document.createElement('td'); c5.textContent = String((it && it.malicious_ips) || 0);
+          const c6 = document.createElement('td'); c6.textContent = formatListPreview((it && it.countries) || [], 3);
+          tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3); tr.appendChild(c4); tr.appendChild(c5); tr.appendChild(c6);
+          asBody.appendChild(tr);
+        });
+      }
+    }
+
+    if(cBody){
+      cBody.innerHTML = '';
+      if(!cRows.length){
+        setSummaryMessage(cBody, 4, 'No country summary');
+      } else {
+        cRows.forEach(it=>{
+          const tr = document.createElement('tr');
+          const c1 = document.createElement('td'); c1.textContent = String((it && it.country) || '-');
+          const c2 = document.createElement('td'); c2.textContent = String((it && it.ip_count) || 0);
+          const c3 = document.createElement('td'); c3.textContent = String((it && it.asn_count) || 0);
+          const c4 = document.createElement('td'); c4.textContent = String((it && it.malicious_ips) || 0);
+          tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3); tr.appendChild(c4);
+          cBody.appendChild(tr);
+        });
+      }
+    }
+
+    if(acBody){
+      acBody.innerHTML = '';
+      if(!acRows.length){
+        setSummaryMessage(acBody, 6, 'No AS×Country intersection summary');
+      } else {
+        acRows.forEach(it=>{
+          const tr = document.createElement('tr');
+          const c1 = document.createElement('td'); c1.textContent = String((it && it.asn) || '-');
+          const c2 = document.createElement('td'); c2.textContent = String((it && it.country) || '-');
+          const c3 = document.createElement('td'); c3.textContent = String((it && it.as_owner) || '-');
+          const c4 = document.createElement('td');
+          c4.appendChild(createCspBadge((it && it.csp) || 'other', (it && it.csp_label) || 'Other/Unknown', !!(it && it.csp_major)));
+          const c5 = document.createElement('td'); c5.textContent = String((it && it.ip_count) || 0);
+          const c6 = document.createElement('td'); c6.textContent = String((it && it.malicious_ips) || 0);
+          tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3); tr.appendChild(c4); tr.appendChild(c5); tr.appendChild(c6);
+          acBody.appendChild(tr);
+        });
+      }
+    }
+
+    if(cspBody){
+      cspBody.innerHTML = '';
+      if(!cspRows.length){
+        setSummaryMessage(cspBody, 5, 'No CSP summary');
+      } else {
+        cspRows.forEach(it=>{
+          const tr = document.createElement('tr');
+          const c1 = document.createElement('td');
+          c1.appendChild(createCspBadge((it && it.csp) || 'other', (it && it.csp_label) || 'Other/Unknown', !!(it && it.csp_major)));
+          const c2 = document.createElement('td'); c2.textContent = String((it && it.ip_count) || 0);
+          const c3 = document.createElement('td'); c3.textContent = String((it && it.asn_count) || 0);
+          const c4 = document.createElement('td'); c4.textContent = String((it && it.country_count) || 0);
+          const c5 = document.createElement('td'); c5.textContent = String((it && it.malicious_ips) || 0);
+          tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3); tr.appendChild(c4); tr.appendChild(c5);
+          cspBody.appendChild(tr);
+        });
+      }
+    }
+
+    if(hintsBox){
+      hintsBox.innerHTML = '';
+      if(!hints.length){
+        hintsBox.textContent = 'No heuristics available';
+      } else {
+        hints.forEach(h=>{
+          const div = document.createElement('div');
+          const level = String((h && h.level) || 'info').toUpperCase();
+          const title = String((h && h.title) || 'Hint');
+          const detail = String((h && h.detail) || '-');
+          div.style.padding = '4px 0';
+          div.textContent = `[${level}] ${title}: ${detail}`;
+          hintsBox.appendChild(div);
+        });
+      }
+    }
+
+    if(invalidBox){
+      if(!invalid.length){
+        invalidBox.textContent = 'No invalid inputs';
+      } else {
+        invalidBox.textContent = invalid.join(', ');
+      }
+    }
+    touchOverviewTs();
+  }catch(e){
+    if(meta) meta.textContent = 'Analyze error: ' + e;
+  }
+}
+
+async function loadIpIntelFromMisp(autoAnalyze){
+  const eventId = String((document.getElementById('ipIntelMispEventId') || {}).value || '').trim();
+  const meta = document.getElementById('ipIntelMeta');
+  const invalidBox = document.getElementById('ipIntelInvalidBox');
+  if(meta) meta.textContent = 'Loading MISP ip-src...';
+  try{
+    const payload = {};
+    if(eventId) payload.event_id = eventId;
+    const r = await fetch('/misp/event-ips', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const j = await r.json();
+    if(!r.ok || !j || j.status !== 'ok'){
+      if(meta) meta.textContent = `MISP load failed: ${(j && j.error) ? j.error : 'HTTP '+r.status}`;
+      return;
+    }
+
+    const ips = Array.isArray(j.ips) ? j.ips : [];
+    const ta = document.getElementById('ipIntelInput');
+    if(ta){
+      ta.value = ips.join('\n');
+    }
+    if(!eventId){
+      const eidEl = document.getElementById('ipIntelMispEventId');
+      if(eidEl && j.event_id != null){
+        eidEl.value = String(j.event_id);
+      }
+    }
+    if(meta){
+      const info = j.event_info ? ` (${j.event_info})` : '';
+      meta.textContent = `Loaded ${ips.length} ip-src from MISP event ${j.event_id}${info}`;
+    }
+    const invalid = Array.isArray(j.invalid_values) ? j.invalid_values : [];
+    if(invalidBox){
+      invalidBox.textContent = invalid.length ? `Invalid attribute values: ${invalid.join(', ')}` : 'No invalid inputs';
+    }
+    if(autoAnalyze && ips.length){
+      await analyzeIpIntel();
+    }
+  }catch(e){
+    if(meta) meta.textContent = 'MISP load error: ' + e;
+  }
+}
+
+function renderCellWithClickableIps(td, rawValues, fallbackText){
+  const values = Array.isArray(rawValues) ? rawValues : [];
+  const ips = values.filter(isIPv4);
+  td.className = 'wrap-cell';
+  if(!ips.length){
+    const full = String(fallbackText || '');
+    td.textContent = full.length > 200 ? full.slice(0,200) + '…' : full;
+    td.title = full;
+    return;
+  }
+  td.innerHTML = '';
+  td.title = ips.join(' | ');
+  ips.forEach((ip, idx)=>{
+    const a = document.createElement('a');
+    a.href = '#';
+    a.textContent = ip;
+    a.onclick = (e)=>{
+      e.preventDefault();
+      openQueryForValue(ip);
+    };
+    td.appendChild(a);
+    if(idx < ips.length - 1){
+      td.appendChild(document.createTextNode(' | '));
+    }
+  });
+}
 
 const uiOverview = {
   configured: 0,
@@ -721,6 +1653,10 @@ async function loadAlertSettings(){
     document.getElementById('misp_key_front').value = alerts.api_key || '';
     document.getElementById('push_event_id_front').value = alerts.push_event_id || '';
     document.getElementById('vt_api_key_front').value = alerts.vt_api_key || '';
+    const botnetEventEl = document.getElementById('ipIntelMispEventId');
+    if(botnetEventEl && !String(botnetEventEl.value || '').trim() && alerts.push_event_id){
+      botnetEventEl.value = String(alerts.push_event_id);
+    }
     setAlertSettingsStatus('Loaded', 'ok');
   }catch(e){
     setAlertSettingsStatus('Load failed', 'err');
@@ -1133,8 +2069,10 @@ async function refreshResults(){
         const tdDomain = document.createElement('td'); tdDomain.textContent = d;
         const tdType = document.createElement('td'); tdType.textContent = info.type || 'A';
         const tdSrv = document.createElement('td'); tdSrv.textContent = srv;
-        const tdVals = document.createElement('td'); tdVals.textContent = fullVals.length > 200 ? fullVals.slice(0,200) + '…' : fullVals; tdVals.title = fullVals; tdVals.className = 'wrap-cell';
-        const tdDecoded = document.createElement('td'); tdDecoded.textContent = fullDecoded.length > 200 ? fullDecoded.slice(0,200) + '…' : fullDecoded; tdDecoded.title = fullDecoded; tdDecoded.className = 'wrap-cell';
+        const tdVals = document.createElement('td');
+        const tdDecoded = document.createElement('td');
+        renderCellWithClickableIps(tdVals, info.values || [], fullVals);
+        renderCellWithClickableIps(tdDecoded, info.decoded_ips || [], fullDecoded);
         const tdMethod = document.createElement('td');
         if(info.type === 'TXT' && info.txt_decode){
           tdMethod.textContent = info.txt_decode;
@@ -1188,7 +2126,8 @@ async function refreshResults(){
             vtr.className = 'verify-row'; 
             vtr.dataset.domain = d;
             const vtd = document.createElement('td'); 
-            vtd.colSpan = 9;
+            // Match Current Status table column count exactly.
+            vtd.colSpan = 8;
             vtd.textContent = 'Verifying '+d+'...'; 
             vtr.appendChild(vtd);
             tr.parentNode.insertBefore(vtr, tr.nextSibling);
@@ -1325,43 +2264,7 @@ async function loadHistory(domain){
 
 document.getElementById('doQuery').onclick = async ()=>{
   const v = document.getElementById('queryValue').value.trim();
-  if(!v){ alert('Enter search value'); return; }
-  // try IP first via /ip, then fallback to scanning /results/history via backend? use /ip for IPs only
-  const ipPattern = /^(\d{1,3}\.){3}\d{1,3}$/;
-  if(ipPattern.test(v)){
-    const r = await fetch('/ip?ip='+encodeURIComponent(v));
-    const j = await r.json();
-    document.getElementById('queryResult').textContent = JSON.stringify(j, null, 2);
-  } else {
-    // search value across history/current by fetching /results + /history client-side (simple approach)
-    const r1 = await fetch('/results'); const res = await r1.json();
-    const matches = [];
-    for(const d of Object.keys(res.results||{})){
-      const srvMap = res.results[d];
-      for(const s of Object.keys(srvMap)){
-        const info = srvMap[s];
-        if((info.values||[]).some(x=>x.includes(v))){
-          matches.push({domain:d, server:s, type:info.type, ts:info.ts, values:info.values});
-        }
-      }
-    }
-    // also check histories
-    const r2 = await fetch('/history?domain=ALL'); // not implemented server-side to return all; instead fetch each domain
-    // fallback: fetch history per domain from results list
-    const histMatches = [];
-    for(const d of Object.keys(res.results||{})){
-      const hresp = await fetch('/history?domain='+encodeURIComponent(d));
-      const hj = await hresp.json();
-      (hj.history||[]).forEach(ev=>{
-        if(ev.new && (ev.new.values||[]).some(x=>x.includes(v)) || ev.old && (ev.old.values||[]).some(x=>x.includes(v))){
-          histMatches.push({domain:d, server:ev.server, ts:ev.ts, old:ev.old, new:ev.new});
-        } else if(ev.values && (ev.values||[]).some(x=>x.includes(v))){
-          histMatches.push({domain:d, server:ev.server, ts:ev.ts, values:ev.values});
-        }
-      });
-    }
-    document.getElementById('queryResult').textContent = JSON.stringify({current:matches, history:histMatches}, null, 2);
-  }
+  await runQuery(v);
 };
 
 async function refreshIPs(){
@@ -1386,7 +2289,13 @@ async function refreshIPs(){
     arr.forEach(it=>{
       if(typeof it !== 'object') return;
       const tr = document.createElement('tr');
-      const tdIp = document.createElement('td'); tdIp.textContent = it.ip || '';
+      const tdIp = document.createElement('td');
+      tdIp.textContent = it.ip || '';
+      if(isIPv4(it.ip)){
+        tdIp.style.cursor = 'pointer';
+        tdIp.title = 'Open in Query';
+        tdIp.onclick = ()=> openQueryForValue(it.ip);
+      }
       const tdDomains = document.createElement('td'); tdDomains.textContent = (it.domains||[]).join(', ');
       const tdCount = document.createElement('td'); tdCount.textContent = it.count || 0;
       const tdTs = document.createElement('td'); tdTs.textContent = it.last_ts ? new Date(it.last_ts*1000).toISOString() : '-';
@@ -1459,7 +2368,13 @@ async function refreshValidIPs(){
     updateOverviewPanel();
     validOnly.forEach(it=>{
       const tr = document.createElement('tr');
-      const tdIp = document.createElement('td'); tdIp.textContent = it.ip || '';
+      const tdIp = document.createElement('td');
+      tdIp.textContent = it.ip || '';
+      if(isIPv4(it.ip)){
+        tdIp.style.cursor = 'pointer';
+        tdIp.title = 'Open in Query';
+        tdIp.onclick = ()=> openQueryForValue(it.ip);
+      }
       const tdDomains = document.createElement('td'); tdDomains.textContent = (it.domains||[]).join(', ');
       const tdCount = document.createElement('td'); tdCount.textContent = it.count || 0;
       const tdTs = document.createElement('td'); tdTs.textContent = it.last_ts ? new Date(it.last_ts*1000).toISOString() : '-';
@@ -1506,6 +2421,11 @@ async function refreshValidIPs(){
   // periodic refresh — skip work if paused to avoid wiping user's view
   setInterval(()=>{ if(!isPaused()) refreshResults(); }, 5000);
   setInterval(()=>{ if(!isPaused()) refreshIPs(); }, 5000);
+  setInterval(()=>{
+    const sec = document.getElementById('domainanalysis');
+    if(!sec) return;
+    if(sec.classList.contains('active')) refreshDomainAnalysis();
+  }, 10000);
 
 // initialize dynamic decoders and valid IPs refresh hook
 window.addEventListener('load', ()=>{
@@ -1542,6 +2462,34 @@ window.addEventListener('load', ()=>{
   const includeVtEl = document.getElementById('ips_include_vt');
   if(includeVtEl){
     includeVtEl.addEventListener('change', ()=>{ refreshIPs(); });
+  }
+  const domainAnalysisRefreshBtn = document.getElementById('refreshDomainAnalysisBtn');
+  if(domainAnalysisRefreshBtn){
+    domainAnalysisRefreshBtn.addEventListener('click', ()=> refreshDomainAnalysis());
+  }
+  const includeDomainVtEl = document.getElementById('domain_analysis_include_vt');
+  if(includeDomainVtEl){
+    includeDomainVtEl.addEventListener('change', ()=> refreshDomainAnalysis());
+  }
+  const domainFilterEl = document.getElementById('domainAnalysisDomainSelect');
+  if(domainFilterEl){
+    domainFilterEl.addEventListener('change', ()=> applyDomainAnalysisFilter());
+  }
+  const clearDomainFilterBtn = document.getElementById('clearDomainAnalysisFilterBtn');
+  if(clearDomainFilterBtn){
+    clearDomainFilterBtn.addEventListener('click', ()=>{
+      const sel = document.getElementById('domainAnalysisDomainSelect');
+      if(sel) sel.value = '';
+      applyDomainAnalysisFilter();
+    });
+  }
+  const runIpIntelBtn = document.getElementById('runIpIntelBtn');
+  if(runIpIntelBtn){
+    runIpIntelBtn.addEventListener('click', ()=> analyzeIpIntel());
+  }
+  const loadIpIntelMispBtn = document.getElementById('loadIpIntelMispBtn');
+  if(loadIpIntelMispBtn){
+    loadIpIntelMispBtn.addEventListener('click', ()=> loadIpIntelFromMisp(true));
   }
   // initial load of valid ips
   refreshValidIPs(parseInt(document.getElementById('valid_since').value) || 0);

@@ -13,6 +13,8 @@ import copy
 import configparser
 import ipaddress
 import binascii
+import datetime
+import threading
 try:
     from pymisp import PyMISP, MISPEvent, MISPAttribute, MISPObject, MISPUser, MISPSighting
 except Exception:
@@ -39,6 +41,155 @@ json_data = {
 
 # Runtime MISP client injected by alerts.py. Keep None until initialized.
 misp = None
+_SIGHTING_BATCH_LOCK = threading.Lock()
+
+
+def _sighting_batch_file():
+    return os.environ.get(
+        'MISP_SIGHTING_BATCH_FILE',
+        os.path.join(os.path.dirname(__file__), 'misp_sighting_batch.json')
+    )
+
+
+def _load_sighting_batch_state():
+    try:
+        with open(_sighting_batch_file(), 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    events = data.get('events')
+    if not isinstance(events, dict):
+        events = {}
+    return {'events': events}
+
+
+def _save_sighting_batch_state(data):
+    fp = _sighting_batch_file()
+    tmp = fp + '.tmp'
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, fp)
+    except Exception:
+        pass
+
+
+def _ensure_batch_event(data, event_id):
+    events = data.setdefault('events', {})
+    eid = str(event_id)
+    ev = events.setdefault(eid, {})
+    pending = ev.get('pending')
+    if not isinstance(pending, list):
+        pending = []
+    ev['pending'] = pending
+    if not isinstance(ev.get('last_flush_date'), str):
+        ev['last_flush_date'] = ''
+    return ev
+
+
+def _normalize_batch_ips(ip_values):
+    out = []
+    seen = set()
+    for ip in ip_values or []:
+        s = str(ip or '').strip()
+        if not s or not is_valid_ip(s):
+            continue
+        if s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
+def enqueue_sightings(event_id, ip_values):
+    """Queue candidate sighting IPs for daily batch processing."""
+    event_id = str(event_id).strip()
+    if not event_id:
+        return 0
+    ips = _normalize_batch_ips(ip_values)
+    if not ips:
+        return 0
+    with _SIGHTING_BATCH_LOCK:
+        st = _load_sighting_batch_state()
+        ev = _ensure_batch_event(st, event_id)
+        pending_set = set(ev.get('pending', []))
+        for ip in ips:
+            if ip not in pending_set:
+                ev['pending'].append(ip)
+                pending_set.add(ip)
+        _save_sighting_batch_state(st)
+        return len(ev.get('pending', []))
+
+
+def remove_queued_sightings(event_id, ip_values):
+    """Remove queued sighting candidates (used when IOC attribute is deleted)."""
+    event_id = str(event_id).strip()
+    if not event_id:
+        return 0
+    targets = set(_normalize_batch_ips(ip_values))
+    if not targets:
+        return 0
+    with _SIGHTING_BATCH_LOCK:
+        st = _load_sighting_batch_state()
+        ev = _ensure_batch_event(st, event_id)
+        before = len(ev.get('pending', []))
+        ev['pending'] = [ip for ip in ev.get('pending', []) if ip not in targets]
+        removed = before - len(ev.get('pending', []))
+        _save_sighting_batch_state(st)
+    return max(0, removed)
+
+
+def flush_sightings_batch(event_id, force=False):
+    """Flush queued sightings once per UTC day (or force immediately)."""
+    if misp is None:
+        print("MISP client is not initialized; cannot flush sighting batch.")
+        return False
+    if MISPSighting is None:
+        print("PyMISP is not available; cannot flush sighting batch.")
+        return False
+
+    event_id = str(event_id).strip()
+    if not event_id:
+        return False
+
+    today = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')
+    with _SIGHTING_BATCH_LOCK:
+        st = _load_sighting_batch_state()
+        ev = _ensure_batch_event(st, event_id)
+        pending = list(ev.get('pending', []))
+        last_flush = ev.get('last_flush_date', '')
+        if not pending:
+            return True
+        if (not force) and last_flush == today:
+            return False
+
+    succeeded = []
+    for ip in pending:
+        try:
+            ok = update_sighting_by_value(event_id, ip)
+        except Exception:
+            ok = False
+        if ok:
+            succeeded.append(ip)
+
+    with _SIGHTING_BATCH_LOCK:
+        st = _load_sighting_batch_state()
+        ev = _ensure_batch_event(st, event_id)
+        current = list(ev.get('pending', []))
+        if succeeded:
+            succ = set(succeeded)
+            current = [ip for ip in current if ip not in succ]
+        ev['pending'] = current
+        ev['last_flush_date'] = today
+        _save_sighting_batch_state(st)
+
+    print(
+        f"Sighting batch flush event={event_id} attempted={len(pending)} "
+        f"succeeded={len(succeeded)} remaining={len(current)}"
+    )
+    return True
 
 
 
@@ -121,6 +272,7 @@ def add_unique_ips(event_id, ip_list):
             attributes = []
         existing_ips = get_existing_ips(attributes)
         added_count = 0
+        sighting_candidates = []
         
         for ip, comment in ip_list:
             if is_valid_ip(ip) == False :
@@ -139,7 +291,18 @@ def add_unique_ips(event_id, ip_list):
                 # Add the IP to the set after adding to avoid re-adding in the same run
                 existing_ips.add(ip)
             else :  
-                update_sighting_by_value(event_id,ip)
+                sighting_candidates.append(ip)
+
+        if sighting_candidates:
+            try:
+                queued_total = enqueue_sightings(event_id, sighting_candidates)
+                flushed = flush_sightings_batch(event_id, force=False)
+                print(
+                    f"Sighting queue updated for event {event_id}: "
+                    f"queued_total={queued_total}, flushed_today={bool(flushed)}"
+                )
+            except Exception as e:
+                print(f"Error queuing/flushing sighting batch: {e}")
                     
 
         print(f"Added {added_count} new IP addresses to event {event_id}.")
@@ -207,14 +370,22 @@ def remove_ips(event_id, ip_list):
 
     ok = True
     removed_count = 0
+    removed_values = []
     for attr_id, value in to_delete:
         try:
             misp.delete_attribute(attr_id)
             removed_count += 1
+            removed_values.append(value)
             print(f"Removed attribute id={attr_id} value={value}")
         except Exception as e:
             ok = False
             print(f"Error removing attribute {value} ({attr_id}): {e}")
+
+    if removed_values:
+        try:
+            remove_queued_sightings(event_id, removed_values)
+        except Exception as e:
+            print(f"Error removing queued sightings: {e}")
 
     print(f"Removed {removed_count} IP attributes from event {event_id}.")
     return ok
