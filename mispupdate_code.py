@@ -1,32 +1,15 @@
 #!/bin/python3
-import dns.resolver
-import time
-import requests
 import json
-import re
-import base64
 import os
 import ipaddress
-import socket
-import struct
-import copy
 import configparser
-import ipaddress
-import binascii
 import datetime
 import threading
 try:
-    from pymisp import PyMISP, MISPEvent, MISPAttribute, MISPObject, MISPUser, MISPSighting
+    from pymisp import MISPAttribute, MISPSighting
 except Exception:
-    PyMISP = None
-    MISPEvent = None
     MISPAttribute = None
-    MISPObject = None
-    MISPUser = None
     MISPSighting = None
-
-
-from typing import Union
 
 workflow_url = "https://X"
 headers = {
@@ -274,14 +257,29 @@ def add_unique_ips(event_id, ip_list):
         added_count = 0
         sighting_candidates = []
         
-        for ip, comment in ip_list:
-            if is_valid_ip(ip) == False :
+        for item in ip_list or []:
+            ip = ''
+            comment = 'unknown'
+            source_type = 'TXT'
+            if isinstance(item, (list, tuple)):
+                if len(item) > 0:
+                    ip = str(item[0] or '').strip()
+                if len(item) > 1:
+                    comment = str(item[1] or '').strip() or 'unknown'
+                if len(item) > 2:
+                    source_type = str(item[2] or '').strip().upper() or 'TXT'
+            else:
+                ip = str(item or '').strip()
+            if not ip:
+                continue
+            if is_valid_ip(ip) == False:
                 continue
             if ip not in existing_ips:
                 attribute = MISPAttribute()
                 attribute.type = 'ip-src'
                 attribute.value = ip
-                comment = 'NST-2-2 '+comment
+                code_prefix = 'NST-2-1' if source_type == 'A' else 'NST-2-2'
+                comment = f"{code_prefix} {comment}".strip()
                 attribute.comment = comment
                 try:
                     misp.add_attribute(event_id, attribute)

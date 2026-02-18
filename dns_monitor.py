@@ -8,13 +8,12 @@ import argparse
 import sys
 import signal
 import threading
-import logging
 import os
 
 from dns_query import query_dns
 from txt_decoder import decode_txt_hidden_ips, register_custom_decoder
 from a_decoder import decode_a_hidden_ips
-from config_manager import read_config, normalize_domains, write_config
+from config_manager import read_config, normalize_domains
 from history_manager import load_history_files, persist_history_entry, ensure_history_dir
 from http_server import ThreadingHTTPServer, make_handler
 from alerts import (
@@ -53,7 +52,7 @@ def _collect_active_ip_map(current_results, allowed_domains=None):
     return out
 
 
-def _mark_query_failure(fail_counts, key, threshold=3):
+def _mark_query_failure(fail_counts, key):
     """Increment failure count for a key and return the new count."""
     try:
         count = int(fail_counts.get(key, 0)) + 1
@@ -91,6 +90,119 @@ def _drop_snapshot_for_failed_target(current_results, history, name, srv, ts=Non
         except Exception:
             pass
     return removed
+
+
+def _build_initial_new_ip_tuples(rtype, domain, values=None, decoded_ips=None):
+    """Build new-IP alert tuples for the first observed snapshot."""
+    if not domain:
+        return []
+    if str(rtype or '').upper() == 'TXT':
+        ips = sorted(set(decoded_ips or []))
+    elif str(rtype or '').upper() == 'A':
+        ips = sorted(set(values or []))
+    else:
+        ips = []
+    src = str(rtype or '').upper()
+    return [(ip, domain, src) for ip in ips if str(ip or '').strip()]
+
+
+def _build_changed_new_ip_tuples(
+    rtype,
+    domain,
+    prev_values=None,
+    new_values=None,
+    prev_decoded_ips=None,
+    new_decoded_ips=None,
+):
+    """Build newly-added IP alert tuples between previous and new snapshot."""
+    if not domain:
+        return []
+    r = str(rtype or '').upper()
+    if r == 'TXT':
+        added = sorted(set(new_decoded_ips or []) - set(prev_decoded_ips or []))
+    elif r == 'A':
+        added = sorted(set(new_values or []) - set(prev_values or []))
+    else:
+        added = []
+    return [(ip, domain, r) for ip in added if str(ip or '').strip()]
+
+
+def _update_nxdomain_lifecycle(
+    history,
+    name,
+    query_total,
+    success_count,
+    nxdomain_count,
+    error_count,
+    ts_now
+):
+    """Update per-domain NXDOMAIN lifecycle metadata.
+
+    Lifecycle rules:
+    - Any successful answer in the cycle clears active NXDOMAIN lifecycle.
+    - NXDOMAIN lifecycle activates only when all responses are NXDOMAIN or error
+      and there is at least one NXDOMAIN.
+    - Pure transport failures are tracked separately and do not activate NXDOMAIN.
+    """
+    if not name:
+        return False
+    hist_obj = history.setdefault(name, {'meta': {}, 'events': [], 'current': {}})
+    meta = hist_obj.setdefault('meta', {})
+    changed = False
+
+    total = int(query_total or 0)
+    succ = int(success_count or 0)
+    nx = int(nxdomain_count or 0)
+    err = int(error_count or 0)
+
+    meta['dns_cycle_total'] = total
+    meta['dns_cycle_success_count'] = succ
+    meta['dns_cycle_nxdomain_count'] = nx
+    meta['dns_cycle_error_count'] = err
+
+    all_failed = total > 0 and err >= total
+    no_success = succ <= 0
+    nxdomain_all_or_error = total > 0 and no_success and nx > 0 and (nx + err) >= total
+
+    if nx > 0 and not meta.get('nxdomain_first_seen'):
+        meta['nxdomain_first_seen'] = int(ts_now)
+        changed = True
+
+    if succ > 0:
+        if meta.get('nxdomain_active'):
+            meta['nxdomain_active'] = False
+            changed = True
+        if meta.get('nxdomain_since'):
+            meta.pop('nxdomain_since', None)
+            changed = True
+        if meta.get('dns_error_only_active'):
+            meta['dns_error_only_active'] = False
+            changed = True
+        if changed:
+            meta['nxdomain_cleared_ts'] = int(ts_now)
+        meta['dns_last_success_ts'] = int(ts_now)
+        return changed
+
+    if nxdomain_all_or_error:
+        if not meta.get('nxdomain_active'):
+            meta['nxdomain_active'] = True
+            changed = True
+        if not meta.get('nxdomain_since'):
+            meta['nxdomain_since'] = int(ts_now)
+            changed = True
+        if meta.get('dns_error_only_active'):
+            meta['dns_error_only_active'] = False
+            changed = True
+    elif all_failed:
+        if not meta.get('dns_error_only_active'):
+            meta['dns_error_only_active'] = True
+            changed = True
+    else:
+        if meta.get('dns_error_only_active'):
+            meta['dns_error_only_active'] = False
+            changed = True
+
+    return changed
 
 
 def main():
@@ -301,12 +413,32 @@ def main():
             a_decode_active = str(a_decode or '').strip().lower() not in ('', 'none')
             if not name:
                 continue
+            domain_query_total = 0
+            domain_success_count = 0
+            domain_nxdomain_count = 0
+            domain_error_count = 0
             svr_list = target_servers_override or servers
             for srv in svr_list:
+                domain_query_total += 1
                 fail_key = (name, srv, rtype)
-                queried_vals = query_dns(srv, name, rtype=rtype)
-                if queried_vals is None:
-                    fail_count = _mark_query_failure(query_fail_counts, fail_key, threshold=3)
+                qret = query_dns(srv, name, rtype=rtype, with_meta=True)
+                if isinstance(qret, dict):
+                    queried_vals = qret.get('values', []) if isinstance(qret.get('values'), list) else []
+                    qstatus = str(qret.get('status') or 'error').lower()
+                else:
+                    queried_vals = qret if isinstance(qret, list) else []
+                    qstatus = 'ok' if isinstance(qret, list) else 'error'
+
+                if qstatus == 'nxdomain':
+                    domain_nxdomain_count += 1
+                    print(f"[NOTICE] DNS {srv} returned NXDOMAIN for {name} ({rtype})")
+                elif qstatus in ('ok', 'nodata'):
+                    domain_success_count += 1
+                elif qstatus == 'error':
+                    domain_error_count += 1
+
+                if qstatus == 'error':
+                    fail_count = _mark_query_failure(query_fail_counts, fail_key)
                     print(f"[ERROR] DNS {srv} query failed for {name} ({rtype})")
                     # Drop stale snapshot after consecutive failures.
                     if fail_count >= 3:
@@ -382,11 +514,13 @@ def main():
                     persist_history_entry(history_dir, name, hist_obj)
                     # initial observation for a newly tracked domain/server can still contain new IOC IPs
                     try:
-                        if rtype == 'TXT' and decoded:
-                            tuples = [(ip, name) for ip in sorted(set(decoded))]
-                            alert_new_ips(tuples)
-                        elif rtype == 'A' and a_decode_active and result_vals:
-                            tuples = [(ip, name) for ip in sorted(set(result_vals))]
+                        tuples = _build_initial_new_ip_tuples(
+                            rtype,
+                            name,
+                            values=result_vals,
+                            decoded_ips=decoded,
+                        )
+                        if tuples:
                             alert_new_ips(tuples)
                     except Exception:
                         pass
@@ -427,29 +561,38 @@ def main():
                         persist_history_entry(history_dir, name, hist_obj)
                         # If a decoder produced derived IPs, alert only on newly added ones.
                         try:
-                            if rtype == 'TXT':
-                                old_decoded = set(prev.get('decoded_ips') or [])
-                                new_decoded = set(decoded or [])
-                                added = list(new_decoded - old_decoded)
-                                if added:
-                                    tuples = [(ip, name) for ip in added]
-                                    try:
-                                        alert_new_ips(tuples)
-                                    except Exception:
-                                        pass
-                            elif rtype == 'A' and a_decode_active:
-                                old_vals = set(prev.get('values') or [])
-                                new_vals = set(result_vals or [])
-                                added = list(new_vals - old_vals)
-                                if added:
-                                    tuples = [(ip, name) for ip in sorted(added)]
-                                    try:
-                                        alert_new_ips(tuples)
-                                    except Exception:
-                                        pass
+                            tuples = _build_changed_new_ip_tuples(
+                                rtype,
+                                name,
+                                prev_values=prev.get('values'),
+                                new_values=result_vals,
+                                prev_decoded_ips=prev.get('decoded_ips'),
+                                new_decoded_ips=decoded,
+                            )
+                            if tuples:
+                                alert_new_ips(tuples)
                         except Exception:
                             pass
                     # else unchanged
+
+            # Update per-domain NXDOMAIN lifecycle metadata once per domain cycle.
+            try:
+                ts_cycle = int(time.time())
+                lifecycle_changed = _update_nxdomain_lifecycle(
+                    history,
+                    name,
+                    domain_query_total,
+                    domain_success_count,
+                    domain_nxdomain_count,
+                    domain_error_count,
+                    ts_cycle
+                )
+                if lifecycle_changed:
+                    hist_obj = history.get(name)
+                    if isinstance(hist_obj, dict):
+                        persist_history_entry(history_dir, name, hist_obj)
+            except Exception:
+                pass
 
         # Reconcile active IP set only after a full configured-domain scan.
         full_domain_scan = not (force_req and 'domains' in force_req)

@@ -163,27 +163,32 @@ def _send_teams(message: str, title: str = 'C2 TXT Alert'):
 
 
 def _normalize_ip_tuples(ip_tuples):
-    """Return deduplicated (ip, label) tuples."""
+    """Return deduplicated (ip, label, source_type) tuples."""
     out = []
     seen = set()
     for item in ip_tuples or []:
         ip = ''
         label = 'unknown'
+        source_type = 'TXT'
         if isinstance(item, (list, tuple)):
             if len(item) > 0:
                 ip = str(item[0] or '').strip()
             if len(item) > 1:
                 label = str(item[1] or '').strip() or 'unknown'
+            if len(item) > 2:
+                source_type = str(item[2] or '').strip().upper() or 'TXT'
         else:
             ip = str(item or '').strip()
         if not ip:
             continue
-        key = (ip, label)
+        if source_type not in ('TXT', 'A'):
+            source_type = 'TXT'
+        key = (ip, label, source_type)
         if key in seen:
             continue
         seen.add(key)
-        out.append((ip, label))
-    return sorted(out, key=lambda x: (x[0], x[1]))
+        out.append((ip, label, source_type))
+    return sorted(out, key=lambda x: (x[0], x[1], x[2]))
 
 
 def _build_alert_body(action: str, ip_tuples):
@@ -197,7 +202,7 @@ def _build_alert_body(action: str, ip_tuples):
         f"Count: {len(entries)}",
         "Items:",
     ]
-    for ip, label in entries:
+    for ip, label, _source_type in entries:
         lines.append(f"- {ip} | source={label}")
     return "\n".join(lines)
 
@@ -205,7 +210,7 @@ def _build_alert_body(action: str, ip_tuples):
 def alert_new_ips(ip_tuples: List[Tuple[str, str]]):
     """Alert about newly discovered C2 IPs.
 
-    ip_tuples: list of (ip, label/domain)
+    ip_tuples: list of (ip, label/domain[, source_type])
     Behavior:
       - Sends a Teams webhook (best-effort)
       - Calls mispupdate_code.add_unique_ips(event_id, ip_tuples) if event configured
@@ -238,7 +243,7 @@ def alert_new_ips(ip_tuples: List[Tuple[str, str]]):
 def alert_removed_ips(ip_tuples: List[Tuple[str, str]]):
     """Alert about removed C2 IPs.
 
-    ip_tuples: list of (ip, label/domain)
+    ip_tuples: list of (ip, label/domain[, source_type])
     Behavior:
       - Sends a Teams webhook (best-effort)
       - Calls mispupdate_code.remove_ips(event_id, ip_tuples) if event configured
