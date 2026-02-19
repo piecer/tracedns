@@ -10,12 +10,19 @@ import os
 import time
 from urllib.parse import parse_qs, urlparse
 
-from a_decoder import A_DECODE_METHODS
+from a_decoder import A_DECODE_METHODS, decode_a_hidden_ips
 from config_manager import normalize_domains, read_config, write_config
-from txt_decoder import TXT_DECODE_METHODS, analyze_domain_decoding
+from dns_query import query_dns
+from txt_decoder import TXT_DECODE_METHODS, analyze_domain_decoding, decode_txt_hidden_ips
 
 try:
-    from vt_lookup import get_ip_report, begin_cache_batch, end_cache_batch
+    from vt_lookup import (
+        get_ip_report,
+        begin_cache_batch,
+        end_cache_batch,
+        set_cache_ttl_days,
+        get_cache_ttl_days,
+    )
 except Exception:
     get_ip_report = None
 
@@ -24,6 +31,12 @@ except Exception:
 
     def end_cache_batch(flush=True):
         return False
+
+    def set_cache_ttl_days(days):
+        return None
+
+    def get_cache_ttl_days():
+        return 1
 
 
 ALLOWED_STATIC_FILES = {
@@ -69,25 +82,105 @@ def attach_api_handlers(
                 cfg['alerts'] = shared_config.get('alerts')
         self._send_json(cfg)
     
-    def _handle_results(self):
+    def _handle_results(self, qs=None):
         try:
-            data = {}
+            qs = qs or {}
+
+            def _qs_bool(name, default=False):
+                vals = qs.get(name)
+                if not vals:
+                    return bool(default)
+                raw = str(vals[0]).strip().lower()
+                if raw in ('1', 'true', 'yes', 'on', 'y'):
+                    return True
+                if raw in ('0', 'false', 'no', 'off', 'n'):
+                    return False
+                return bool(default)
+
+            agg_only = _qs_bool('aggregate', default=False)
+            include_raw = _qs_bool('include_raw', default=(not agg_only))
+
+            data = {} if include_raw else None
+            data_agg = {}
             for d, m in current_results.items():
-                data[d] = {}
+                if include_raw:
+                    data[d] = {}
+                agg_entry = {
+                    'record_types': set(),
+                    'values': set(),
+                    'decoded_ips': set(),
+                    'servers': set(),
+                    'ts': 0,
+                    'txt_decodes': set(),
+                    'a_decodes': set(),
+                    'a_xor_keys': set(),
+                }
                 for srv, info in m.items():
-                    entry = {
-                        'type': info.get('type'),
-                        'values': list(info.get('values', [])),
-                        'decoded_ips': list(info.get('decoded_ips', [])),
-                        'ts': info.get('ts')
-                    }
-                    if info.get('type') == 'TXT' and info.get('txt_decode'):
-                        entry['txt_decode'] = info.get('txt_decode')
-                    if info.get('type') == 'A' and info.get('a_decode'):
-                        entry['a_decode'] = info.get('a_decode')
-                    if info.get('type') == 'A' and info.get('a_xor_key'):
-                        entry['a_xor_key'] = info.get('a_xor_key')
-                    data[d][srv] = entry
+                    rtype = str(info.get('type') or 'A').upper()
+                    values = [str(v) for v in (info.get('values', []) or []) if str(v or '').strip()]
+                    decoded_ips = [str(v) for v in (info.get('decoded_ips', []) or []) if str(v or '').strip()]
+                    entry = None
+                    if include_raw:
+                        entry = {
+                            'type': rtype,
+                            'values': values,
+                            'decoded_ips': decoded_ips,
+                            'ts': info.get('ts')
+                        }
+                    if rtype == 'TXT' and info.get('txt_decode'):
+                        if entry is not None:
+                            entry['txt_decode'] = info.get('txt_decode')
+                        agg_entry['txt_decodes'].add(str(info.get('txt_decode')))
+                    if rtype == 'A' and info.get('a_decode'):
+                        if entry is not None:
+                            entry['a_decode'] = info.get('a_decode')
+                        agg_entry['a_decodes'].add(str(info.get('a_decode')))
+                    if rtype == 'A' and info.get('a_xor_key'):
+                        if entry is not None:
+                            entry['a_xor_key'] = info.get('a_xor_key')
+                        agg_entry['a_xor_keys'].add(str(info.get('a_xor_key')))
+                    if include_raw:
+                        data[d][srv] = entry
+
+                    agg_entry['record_types'].add(rtype)
+                    agg_entry['values'].update(values)
+                    agg_entry['decoded_ips'].update(decoded_ips)
+                    agg_entry['servers'].add(str(srv))
+                    try:
+                        agg_entry['ts'] = max(int(agg_entry['ts']), int(info.get('ts') or 0))
+                    except Exception:
+                        pass
+
+                record_types = sorted(list(agg_entry['record_types']))
+                if len(record_types) == 1:
+                    domain_type = record_types[0]
+                elif not record_types:
+                    domain_type = 'A'
+                else:
+                    domain_type = 'MIXED'
+
+                method_parts = []
+                if agg_entry['txt_decodes']:
+                    method_parts.append('TXT:' + ','.join(sorted(agg_entry['txt_decodes'])))
+                if agg_entry['a_decodes']:
+                    a_method = 'A:' + ','.join(sorted(agg_entry['a_decodes']))
+                    if agg_entry['a_xor_keys']:
+                        a_method += f" ({','.join(sorted(agg_entry['a_xor_keys']))})"
+                    method_parts.append(a_method)
+
+                data_agg[d] = {
+                    'type': domain_type,
+                    'record_types': record_types,
+                    'values': sorted(list(agg_entry['values'])),
+                    'decoded_ips': sorted(list(agg_entry['decoded_ips'])),
+                    'servers': sorted(list(agg_entry['servers'])),
+                    'server_count': len(agg_entry['servers']),
+                    'ts': int(agg_entry['ts'] or 0),
+                    'txt_decodes': sorted(list(agg_entry['txt_decodes'])),
+                    'a_decodes': sorted(list(agg_entry['a_decodes'])),
+                    'a_xor_keys': sorted(list(agg_entry['a_xor_keys'])),
+                    'method_summary': ' / '.join(method_parts) if method_parts else '-',
+                }
     
             domain_meta = {}
             for d, h in (history or {}).items():
@@ -103,7 +196,10 @@ def attach_api_handlers(
                     'nxdomain_cleared_ts': int(meta.get('nxdomain_cleared_ts') or 0) if meta.get('nxdomain_cleared_ts') else 0,
                 }
     
-            self._send_json({'results': data, 'domain_meta': domain_meta})
+            payload = {'results_agg': data_agg, 'domain_meta': domain_meta}
+            if include_raw:
+                payload['results'] = data
+            self._send_json(payload)
         except Exception as e:
             self._send_json({'error': str(e)}, 500)
     
@@ -145,7 +241,23 @@ def attach_api_handlers(
             if alerts is None and config_path:
                 cfg = read_config(config_path) or {}
                 alerts = cfg.get('alerts', {})
-            self._send_json({'settings': {'alerts': alerts or {}}})
+            alerts_out = dict(alerts or {})
+            ttl_days_current = get_cache_ttl_days()
+            try:
+                ttl_days_value = int(str(alerts_out.get('vt_cache_ttl_days')).strip())
+                if ttl_days_value < 1:
+                    raise ValueError('invalid ttl')
+            except Exception:
+                ttl_days_value = int(ttl_days_current or 1)
+            alerts_out['vt_cache_ttl_days'] = ttl_days_value
+            raw_remove = alerts_out.get('misp_remove_on_absent', False)
+            if isinstance(raw_remove, bool):
+                alerts_out['misp_remove_on_absent'] = raw_remove
+            else:
+                alerts_out['misp_remove_on_absent'] = str(raw_remove).strip().lower() in (
+                    '1', 'true', 'yes', 'on', 'y'
+                )
+            self._send_json({'settings': {'alerts': alerts_out}})
         except Exception as e:
             self._send_json({'error': str(e)}, 500)
     
@@ -184,6 +296,32 @@ def attach_api_handlers(
                     pass
         except Exception:
             return self._send_json({'error': 'vt_api_key validation error'}, 400)
+
+        # Validate VT cache TTL (days)
+        try:
+            ttl_raw = alerts.get('vt_cache_ttl_days')
+            if ttl_raw in (None, ''):
+                ttl_days = get_cache_ttl_days()
+            else:
+                ttl_days = int(str(ttl_raw).strip())
+            if ttl_days < 1 or ttl_days > 3650:
+                return self._send_json({'error': 'vt_cache_ttl_days must be between 1 and 3650'}, 400)
+            alerts['vt_cache_ttl_days'] = int(ttl_days)
+            try:
+                set_cache_ttl_days(ttl_days)
+            except Exception:
+                pass
+        except Exception:
+            return self._send_json({'error': 'invalid vt_cache_ttl_days'}, 400)
+
+        # Normalize MISP remove option (default: False / keep attributes).
+        raw_remove = alerts.get('misp_remove_on_absent', False)
+        if isinstance(raw_remove, bool):
+            alerts['misp_remove_on_absent'] = raw_remove
+        else:
+            alerts['misp_remove_on_absent'] = str(raw_remove).strip().lower() in (
+                '1', 'true', 'yes', 'on', 'y'
+            )
     
         with config_lock:
             shared_config['alerts'] = alerts
@@ -513,6 +651,234 @@ def attach_api_handlers(
             self._send_json({'domains': out, 'include_vt': include_vt})
         except Exception as e:
             self._send_json({'error': str(e)}, 500)
+
+    def _handle_domain_precheck(self):
+        """Validate one domain before adding it to config."""
+        length = int(self.headers.get('Content-Length', '0'))
+        body = self.rfile.read(length) if length > 0 else b''
+        try:
+            data = json.loads(body.decode('utf-8')) if body else {}
+        except Exception:
+            return self._send_json({'error': 'invalid json'}, 400)
+
+        import ipaddress as _ip
+
+        def _is_ipv4(value):
+            try:
+                addr = _ip.ip_address(str(value or '').strip())
+                return bool(addr.version == 4)
+            except Exception:
+                return False
+
+        domain = str(data.get('domain') or '').strip().rstrip('.')
+        if not domain:
+            return self._send_json({'error': 'domain required'}, 400)
+
+        requested_type = str(data.get('type') or 'AUTO').strip().upper()
+        if requested_type not in ('AUTO', 'A', 'TXT'):
+            return self._send_json({'error': 'type must be one of AUTO/A/TXT'}, 400)
+
+        txt_decode = str(data.get('txt_decode') or 'cafebabe_xor_base64').strip() or 'cafebabe_xor_base64'
+        a_decode = str(data.get('a_decode') or 'none').strip() or 'none'
+        a_xor_key = str(data.get('a_xor_key') or '').strip()
+        a_decode_active = a_decode.lower() not in ('', 'none')
+        if requested_type in ('AUTO', 'TXT') and txt_decode not in TXT_DECODE_METHODS:
+            return self._send_json({'error': f'unknown txt_decode: {txt_decode}'}, 400)
+        if requested_type in ('AUTO', 'A') and a_decode_active and a_decode not in A_DECODE_METHODS:
+            return self._send_json({'error': f'unknown a_decode: {a_decode}'}, 400)
+
+        include_vt_raw = data.get('include_vt', True)
+        if isinstance(include_vt_raw, str):
+            include_vt = include_vt_raw.strip().lower() not in ('0', 'false', 'off', 'no', 'n')
+        else:
+            include_vt = bool(include_vt_raw)
+
+        req_servers = data.get('servers')
+        if isinstance(req_servers, list):
+            servers = [str(x).strip() for x in req_servers if str(x).strip()]
+        elif isinstance(req_servers, str):
+            servers = [s.strip() for s in req_servers.split(',') if s.strip()]
+        else:
+            with config_lock:
+                servers = [str(x).strip() for x in (shared_config.get('servers', []) or []) if str(x).strip()]
+        if not servers:
+            servers = ['8.8.8.8', '1.1.1.1']
+
+        probe_types = ['TXT', 'A'] if requested_type == 'AUTO' else [requested_type]
+        type_scores = {t: 0 for t in probe_types}
+        type_value_counts = {t: 0 for t in probe_types}
+        type_managed_counts = {t: 0 for t in probe_types}
+        type_resolved_ip_sets = {t: set() for t in probe_types}
+        type_managed_ip_sets = {t: set() for t in probe_types}
+        detected_types = set()
+        by_server = []
+
+        for srv in servers:
+            for rtype in probe_types:
+                qret = query_dns(srv, domain, rtype=rtype, with_meta=True)
+                if isinstance(qret, dict):
+                    vals = qret.get('values') if isinstance(qret.get('values'), list) else []
+                    qstatus = str(qret.get('status') or 'error').lower()
+                else:
+                    vals = qret if isinstance(qret, list) else []
+                    qstatus = 'ok' if isinstance(qret, list) else 'error'
+                values = sorted({str(v).strip() for v in vals if str(v).strip()})
+                managed_ips = []
+                method = '-'
+
+                if rtype == 'TXT':
+                    method = f"TXT:{txt_decode}"
+                    try:
+                        managed_ips = decode_txt_hidden_ips(values, method=txt_decode, domain=domain) or []
+                    except Exception:
+                        managed_ips = []
+                elif rtype == 'A':
+                    if a_decode_active:
+                        method = f"A:{a_decode}" + (f" ({a_xor_key})" if a_xor_key else '')
+                        try:
+                            managed_ips = decode_a_hidden_ips(values, method=a_decode, key_hex=a_xor_key, domain=domain) or []
+                        except Exception:
+                            managed_ips = []
+                    else:
+                        method = "A:none"
+                        managed_ips = list(values)
+
+                managed_ips = sorted({str(v).strip() for v in managed_ips if _is_ipv4(v)})
+
+                score = 0
+                if qstatus == 'ok':
+                    score += 3 if values else 1
+                elif qstatus == 'nxdomain':
+                    score -= 2
+                elif qstatus == 'error':
+                    score -= 1
+                if managed_ips:
+                    score += 2
+                type_scores[rtype] = type_scores.get(rtype, 0) + score
+                type_value_counts[rtype] = type_value_counts.get(rtype, 0) + len(values)
+                type_managed_counts[rtype] = type_managed_counts.get(rtype, 0) + len(managed_ips)
+
+                if qstatus == 'ok' and values:
+                    detected_types.add(rtype)
+                if rtype == 'A':
+                    for ip in values:
+                        if _is_ipv4(ip):
+                            type_resolved_ip_sets[rtype].add(ip)
+                for ip in managed_ips:
+                    type_managed_ip_sets[rtype].add(ip)
+
+                by_server.append({
+                    'server': srv,
+                    'type': rtype,
+                    'status': qstatus,
+                    'values': values,
+                    'managed_ips': managed_ips,
+                    'method': method,
+                })
+
+        if requested_type == 'AUTO':
+            ranked_types = sorted(
+                probe_types,
+                key=lambda t: (
+                    int(type_scores.get(t, 0)),
+                    int(type_managed_counts.get(t, 0)),
+                    int(type_value_counts.get(t, 0)),
+                    1 if t == 'A' else 0
+                ),
+                reverse=True
+            )
+            selected_type = ranked_types[0] if ranked_types else 'A'
+        else:
+            selected_type = requested_type
+
+        resolved_ips = sorted(type_resolved_ip_sets.get(selected_type, set()))
+        managed_ips = sorted(type_managed_ip_sets.get(selected_type, set()))
+
+        role_map = {}
+        for ip in resolved_ips:
+            role_map.setdefault(ip, set()).add('resolved')
+        for ip in managed_ips:
+            role_map.setdefault(ip, set()).add('managed')
+
+        vt_enabled = bool(include_vt and get_ip_report)
+        vt_unavailable_reason = None
+        if include_vt and not get_ip_report:
+            vt_unavailable_reason = 'vt_lookup_not_available'
+
+        ip_rows = []
+        vt_batch_started = False
+        if vt_enabled:
+            begin_cache_batch()
+            vt_batch_started = True
+        try:
+            for ip in sorted(role_map.keys()):
+                vt = None
+                if vt_enabled:
+                    try:
+                        rep = get_ip_report(ip)
+                    except Exception:
+                        rep = None
+                    if isinstance(rep, dict):
+                        vt = {
+                            'asn': rep.get('asn'),
+                            'as_owner': rep.get('as_owner'),
+                            'country': rep.get('country'),
+                            'malicious': int(rep.get('malicious', 0) or 0),
+                            'suspicious': int(rep.get('suspicious', 0) or 0),
+                        }
+                ip_rows.append({
+                    'ip': ip,
+                    'role': '+'.join(sorted(list(role_map.get(ip) or []))),
+                    'vt': vt,
+                })
+        finally:
+            if vt_batch_started:
+                end_cache_batch(flush=True)
+
+        domain_obj = {'name': domain, 'type': selected_type}
+        if selected_type == 'TXT':
+            if txt_decode:
+                domain_obj['txt_decode'] = txt_decode
+        elif selected_type == 'A':
+            if a_decode_active:
+                domain_obj['a_decode'] = a_decode
+            if a_xor_key:
+                if 'a_decode' not in domain_obj:
+                    domain_obj['a_decode'] = 'xor32_ipv4'
+                domain_obj['a_xor_key'] = a_xor_key
+
+        notes = []
+        if requested_type == 'AUTO':
+            notes.append(f"Auto-selected type: {selected_type}")
+        if selected_type == 'A' and a_decode_active:
+            notes.append("A decode enabled: managed IPs are transformed IPs only.")
+        if selected_type == 'TXT' and not managed_ips:
+            notes.append("TXT values were found but decoder did not produce IPv4 outputs.")
+        if not managed_ips and not resolved_ips:
+            notes.append("No IPv4 candidate found from current DNS responses.")
+        if vt_unavailable_reason:
+            notes.append("VT lookup module is unavailable in this runtime.")
+
+        can_add = bool(managed_ips or resolved_ips or detected_types)
+
+        return self._send_json({
+            'status': 'ok',
+            'domain': domain,
+            'requested_type': requested_type,
+            'selected_type': selected_type,
+            'detected_types': sorted(list(detected_types)),
+            'servers': servers,
+            'include_vt': include_vt,
+            'vt_enabled': vt_enabled,
+            'vt_unavailable_reason': vt_unavailable_reason,
+            'resolved_ips': resolved_ips,
+            'managed_ips': managed_ips,
+            'by_server': by_server,
+            'ip_rows': ip_rows,
+            'domain_object': domain_obj,
+            'notes': notes,
+            'can_add': can_add,
+        })
     
     def _handle_ip_list_analysis(self):
         """Analyze an arbitrary IP list (VT/AS/Country summaries + heuristics)."""
@@ -549,6 +915,16 @@ def attach_api_handlers(
             vt_lookup_budget = 0
         if vt_lookup_budget > 5000:
             vt_lookup_budget = 5000
+
+        raw_vt_workers = data.get('vt_workers', 8)
+        try:
+            vt_workers = int(raw_vt_workers)
+        except Exception:
+            vt_workers = 8
+        if vt_workers < 1:
+            vt_workers = 1
+        if vt_workers > 32:
+            vt_workers = 32
     
         import re as _re
         import ipaddress as _ip
@@ -639,31 +1015,68 @@ def attach_api_handlers(
         vt_missing_count = 0
         vt_lookup_attempted = 0
         vt_budget_limited = False
-    
+
         vt_batch_started = False
         if vt_enabled:
             begin_cache_batch()
             vt_batch_started = True
         try:
-            for idx, ip in enumerate(valid_ips):
-                rep = None
-                if vt_enabled:
-                    use_cache_only = idx >= vt_lookup_budget
-                    if use_cache_only:
+            vt_reports = {}
+            if vt_enabled:
+                vt_lookup_ips = []
+                vt_cache_only_ips = []
+                for idx, ip in enumerate(valid_ips):
+                    if idx >= vt_lookup_budget:
                         vt_budget_limited = True
+                        vt_cache_only_ips.append(ip)
                     else:
-                        vt_lookup_attempted += 1
+                        vt_lookup_ips.append(ip)
+                vt_lookup_attempted = len(vt_lookup_ips)
+
+                # Use cache-only path for budget-exceeded tail first.
+                for ip in vt_cache_only_ips:
                     try:
-                        if use_cache_only:
-                            try:
-                                rep = get_ip_report(ip, cache_only=True)
-                            except TypeError:
-                                # Backward compatibility with older vt_lookup signature.
-                                rep = None
-                        else:
-                            rep = get_ip_report(ip)
+                        try:
+                            vt_reports[ip] = get_ip_report(ip, cache_only=True)
+                        except TypeError:
+                            # Backward compatibility with older vt_lookup signature.
+                            vt_reports[ip] = None
                     except Exception:
-                        rep = None
+                        vt_reports[ip] = None
+
+                # Parallelize live VT lookups (IO-bound) for faster large-list analysis.
+                if vt_lookup_ips:
+                    if vt_workers <= 1 or len(vt_lookup_ips) <= 1:
+                        for ip in vt_lookup_ips:
+                            try:
+                                vt_reports[ip] = get_ip_report(ip)
+                            except Exception:
+                                vt_reports[ip] = None
+                    else:
+                        try:
+                            import concurrent.futures as _cf
+                            with _cf.ThreadPoolExecutor(max_workers=vt_workers) as executor:
+                                future_map = {executor.submit(get_ip_report, ip): ip for ip in vt_lookup_ips}
+                                for fut in _cf.as_completed(future_map):
+                                    ip = future_map.get(fut)
+                                    if not ip:
+                                        continue
+                                    try:
+                                        vt_reports[ip] = fut.result()
+                                    except Exception:
+                                        vt_reports[ip] = None
+                        except Exception:
+                            # Fallback to sequential mode if thread-pool path fails.
+                            for ip in vt_lookup_ips:
+                                if ip in vt_reports:
+                                    continue
+                                try:
+                                    vt_reports[ip] = get_ip_report(ip)
+                                except Exception:
+                                    vt_reports[ip] = None
+
+            for ip in valid_ips:
+                rep = vt_reports.get(ip) if vt_enabled else None
                 if vt_enabled and not isinstance(rep, dict):
                     vt_missing_count += 1
     
@@ -927,6 +1340,7 @@ def attach_api_handlers(
             'vt_missing_count': vt_missing_count,
             'vt_lookup_budget': vt_lookup_budget,
             'vt_lookup_attempted': vt_lookup_attempted,
+            'vt_workers': vt_workers,
             'ips_total_count': rows_total,
             'ips_displayed_count': len(shown_rows),
             'ips_truncated': rows_truncated,
@@ -1185,7 +1599,7 @@ def attach_api_handlers(
         if parsed.path == '/config':
             return self._handle_config()
         if parsed.path == '/results':
-            return self._handle_results()
+            return self._handle_results(qs)
         if parsed.path == '/decoders':
             return self._handle_decoders()
         if parsed.path == '/settings':
@@ -1248,6 +1662,9 @@ def attach_api_handlers(
     def do_POST(self):
         """Handle POST requests (simple routing)."""
         parsed = urlparse(self.path)
+
+        if parsed.path == '/domain-precheck':
+            return self._handle_domain_precheck()
         
         if parsed.path == '/config':
             length = int(self.headers.get('Content-Length', '0'))
@@ -1260,6 +1677,9 @@ def attach_api_handlers(
             with config_lock:
                 # Handle domains update: preserve existing decoder settings
                 if 'domains' in data:
+                    def _canon_domain_name(value):
+                        return str(value or '').strip().rstrip('.').lower()
+
                     new_domains_raw = data['domains']
                     # Get current domains for reference (to preserve decoder options)
                     current_domains = shared_config.get('domains', [])
@@ -1291,9 +1711,40 @@ def attach_api_handlers(
                     if removed_names:
                         purge_removed_domains_state(current_results, history, history_dir, removed_names)
                         print(f"[DEBUG] /config POST: Purged removed domain state: {removed_names}")
-    
+
                     shared_config['domains'] = new_domains_normalized
                     print(f"[DEBUG] /config POST: Updated domains to {[d['name'] for d in new_domains_normalized]}")
+
+                    # Safety purge: remove any orphan in-memory/disk state not present in current config.
+                    # This prevents stale history/current rows from surviving due naming mismatches.
+                    configured_canon = {
+                        _canon_domain_name(d.get('name', ''))
+                        for d in new_domains_normalized
+                        if d.get('name')
+                    }
+                    orphan_names = set()
+                    try:
+                        if isinstance(current_results, dict):
+                            for nm in list(current_results.keys()):
+                                if _canon_domain_name(nm) not in configured_canon:
+                                    orphan_names.add(str(nm))
+                    except Exception:
+                        pass
+                    try:
+                        if isinstance(history, dict):
+                            for nm in list(history.keys()):
+                                if _canon_domain_name(nm) not in configured_canon:
+                                    orphan_names.add(str(nm))
+                    except Exception:
+                        pass
+                    if orphan_names:
+                        purge_removed_domains_state(
+                            current_results,
+                            history,
+                            history_dir,
+                            sorted(orphan_names)
+                        )
+                        print(f"[DEBUG] /config POST: Purged orphan domain state: {sorted(orphan_names)}")
                 
                 if 'servers' in data:
                     sv = data['servers']
@@ -1742,6 +2193,7 @@ def attach_api_handlers(
     handler_cls._gather_ip_map = _gather_ip_map
     handler_cls._handle_domains = _handle_domains
     handler_cls._handle_domain_analysis = _handle_domain_analysis
+    handler_cls._handle_domain_precheck = _handle_domain_precheck
     handler_cls._handle_ip_list_analysis = _handle_ip_list_analysis
     handler_cls._handle_misp_event_ips = _handle_misp_event_ips
     handler_cls._handle_ips = _handle_ips

@@ -52,6 +52,36 @@ def _collect_active_ip_map(current_results, allowed_domains=None):
     return out
 
 
+def _collect_domain_managed_ips(current_results, domain, rtype=None):
+    """Collect the current managed IP set for one domain across all DNS servers."""
+    name = str(domain or '').strip()
+    if not name:
+        return set()
+    server_map = current_results.get(name, {})
+    if not isinstance(server_map, dict):
+        return set()
+
+    prefer = str(rtype or '').upper()
+    out = set()
+    for _srv, snap in server_map.items():
+        if not isinstance(snap, dict):
+            continue
+        snap_type = str(snap.get('type', '')).upper()
+        use_type = prefer or snap_type
+        if use_type == 'TXT':
+            vals = snap.get('decoded_ips', []) or []
+        elif use_type == 'A':
+            # A-type with post-process enabled stores transformed IPs in values.
+            vals = snap.get('values', []) or []
+        else:
+            vals = []
+        for ip in vals:
+            s = str(ip or '').strip()
+            if s:
+                out.add(s)
+    return out
+
+
 def _mark_query_failure(fail_counts, key):
     """Increment failure count for a key and return the new count."""
     try:
@@ -303,6 +333,14 @@ def main():
                     set_api_key(vt_key)
             except Exception:
                 pass
+            # Apply VT cache TTL (days) to runtime module.
+            try:
+                ttl_days = alerts_cfg.get('vt_cache_ttl_days')
+                if ttl_days not in (None, ''):
+                    from vt_lookup import set_cache_ttl_days
+                    set_cache_ttl_days(ttl_days)
+            except Exception:
+                pass
     except Exception:
         shared_config['alerts'] = {}
         alerts_cfg = {}
@@ -413,6 +451,7 @@ def main():
             a_decode_active = str(a_decode or '').strip().lower() not in ('', 'none')
             if not name:
                 continue
+            domain_prev_managed_ips = _collect_domain_managed_ips(current_results, name, rtype=rtype)
             domain_query_total = 0
             domain_success_count = 0
             domain_nxdomain_count = 0
@@ -512,18 +551,6 @@ def main():
                     print(f"[INIT] {name} ({rtype}) @ {srv} -> {result_vals} decoded:{decoded}")
                     # persist so restarts can reuse
                     persist_history_entry(history_dir, name, hist_obj)
-                    # initial observation for a newly tracked domain/server can still contain new IOC IPs
-                    try:
-                        tuples = _build_initial_new_ip_tuples(
-                            rtype,
-                            name,
-                            values=result_vals,
-                            decoded_ips=decoded,
-                        )
-                        if tuples:
-                            alert_new_ips(tuples)
-                    except Exception:
-                        pass
                 else:
                     if (
                         prev.get('values') != result_vals
@@ -559,20 +586,6 @@ def main():
                         current_results[name][srv] = snap_update
                         print(f"[NOTICE] {name} ({rtype}) @ {srv} changed: {prev.get('values')} -> {result_vals} decoded:{decoded}")
                         persist_history_entry(history_dir, name, hist_obj)
-                        # If a decoder produced derived IPs, alert only on newly added ones.
-                        try:
-                            tuples = _build_changed_new_ip_tuples(
-                                rtype,
-                                name,
-                                prev_values=prev.get('values'),
-                                new_values=result_vals,
-                                prev_decoded_ips=prev.get('decoded_ips'),
-                                new_decoded_ips=decoded,
-                            )
-                            if tuples:
-                                alert_new_ips(tuples)
-                        except Exception:
-                            pass
                     # else unchanged
 
             # Update per-domain NXDOMAIN lifecycle metadata once per domain cycle.
@@ -591,6 +604,16 @@ def main():
                     hist_obj = history.get(name)
                     if isinstance(hist_obj, dict):
                         persist_history_entry(history_dir, name, hist_obj)
+            except Exception:
+                pass
+
+            # Domain-level alerting: aggregate all DNS server results and send once per domain cycle.
+            try:
+                domain_now_managed_ips = _collect_domain_managed_ips(current_results, name, rtype=rtype)
+                added_ips = sorted(domain_now_managed_ips - domain_prev_managed_ips)
+                if added_ips:
+                    tuples = [(ip, name, rtype) for ip in added_ips]
+                    alert_new_ips(tuples)
             except Exception:
                 pass
 

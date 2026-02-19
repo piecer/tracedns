@@ -405,6 +405,64 @@ tbody tr:hover{background:#f0f8fb;}
   background:rgba(196,61,43,0.08);
   border-color:rgba(196,61,43,0.35);
 }
+.settings-inline-row{
+  display:grid;
+  grid-template-columns:minmax(0, 1fr) minmax(180px, 240px);
+  gap:10px;
+  align-items:end;
+}
+.domain-verify-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));
+  gap:10px;
+  align-items:end;
+}
+#domainVerifySummary{
+  font-family:var(--font-mono);
+  font-size:.82rem;
+  white-space:pre-wrap;
+  word-break:break-word;
+}
+#domainVerifyServerTable td,
+#domainVerifyIpTable td{
+  white-space:normal;
+  overflow:visible;
+  text-overflow:clip;
+}
+.verify-status-badge{
+  display:inline-flex;
+  align-items:center;
+  border-radius:999px;
+  padding:2px 8px;
+  font-size:.72rem;
+  font-weight:800;
+  border:1px solid #d4e3eb;
+  background:#f7fbfe;
+  color:#315061;
+}
+.verify-status-ok{
+  background:#edf8f1;
+  border-color:#bfe0cb;
+  color:#1f6a3a;
+}
+.verify-status-nxdomain{
+  background:#fff3dd;
+  border-color:#ebc890;
+  color:#7a4a00;
+}
+.verify-status-nodata{
+  background:#fff8e8;
+  border-color:#f2d59b;
+  color:#8a5900;
+}
+.verify-status-error{
+  background:#fdecec;
+  border-color:#efb4b4;
+  color:#8f2f2f;
+}
+.settings-inline-row label{
+  margin-bottom:0;
+}
 .nxdomain-legend{
   display:inline-flex;
   align-items:center;
@@ -547,4 +605,6 @@ tbody tr:hover{background:#f0f8fb;}
   .overview-grid{grid-template-columns:1fr;}
   .metric-value{font-size:1.05rem;}
   th,td{font-size:.78rem;}
+  .settings-inline-row{grid-template-columns:1fr;}
+  .domain-verify-grid{grid-template-columns:1fr;}
 }

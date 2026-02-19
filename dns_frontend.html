@@ -22,6 +22,7 @@
 </header>
 <nav>
   <button id="menuSettings">Settings</button>
+  <button id="menuDomainVerify">Domain Verify</button>
   <button id="menuStatus" class="active">Status</button>
   <button id="menuQuery">Query</button>
   <button id="menuDomainAnalysis">Domain Analysis</button>
@@ -134,9 +135,18 @@
     <label for="push_event_id_front">Push Event ID (MISP)
       <input id="push_event_id_front" type="text" placeholder="12345" />
     </label>
-    <label for="vt_api_key_front">VirusTotal API Key
-      <input id="vt_api_key_front" type="password" placeholder="Your VirusTotal API key" />
+    <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-weight:700;color:#334c5e;">
+      <input id="misp_remove_on_absent_front" type="checkbox" style="width:auto;margin:0;" />
+      Remove MISP attributes when IP disappears from DNS results
     </label>
+    <div class="settings-inline-row">
+      <label for="vt_api_key_front">VirusTotal API Key
+        <input id="vt_api_key_front" type="password" placeholder="Your VirusTotal API key" />
+      </label>
+      <label for="vt_cache_ttl_days_front">VT Cache TTL (days)
+        <input id="vt_cache_ttl_days_front" type="number" min="1" max="3650" step="1" placeholder="1" />
+      </label>
+    </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center;">
       <button id="loadAlertSettingsBtn">Load Alert Settings</button>
       <button id="saveAlertSettingsBtn">Save Alert Settings</button>
@@ -144,6 +154,53 @@
     </div>
   </div>
   <pre id="log"></pre>
+</div>
+
+<div id="domainverify" class="section">
+  <h3>🧪 Domain Verify &amp; Add</h3>
+  <p style="color:#5b6a77;margin-bottom:10px;">Validate DNS behavior first, review type/IP/VT results, then add to monitoring config.</p>
+  <div class="domain-verify-grid">
+    <label>Domain
+      <input id="verifyDomainName" type="text" placeholder="example.com" />
+    </label>
+    <label>Record Type
+      <select id="verifyDomainType">
+        <option value="AUTO">Auto detect (A/TXT)</option>
+        <option value="A">A</option>
+        <option value="TXT">TXT</option>
+      </select>
+    </label>
+    <label>TXT Decode
+      <select id="verifyTxtDecode"></select>
+    </label>
+    <label>A Decode
+      <select id="verifyADecode"></select>
+    </label>
+    <label>A XOR Key
+      <input id="verifyAXorKey" type="text" placeholder="E7708E59 or 0xE7708E59" />
+    </label>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:30px;font-weight:700;color:#334c5e;">
+      <input id="verifyIncludeVt" type="checkbox" checked style="width:auto;margin:0;" />
+      Include VT score
+    </label>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 10px;">
+    <button id="runDomainVerifyBtn">🔬 Validate Domain</button>
+    <button id="addVerifiedDomainBtn">➕ Add Verified Domain</button>
+    <button id="clearDomainVerifyBtn">🧹 Clear</button>
+    <span id="domainVerifyStatus" class="settings-status"></span>
+  </div>
+  <div id="domainVerifySummary" style="background:#f8f9fa;padding:12px;border:1px solid #d7e4eb;border-radius:10px;margin-bottom:10px;">No validation result yet.</div>
+  <h4>DNS Server Results</h4>
+  <table id="domainVerifyServerTable">
+    <thead><tr><th>DNS Server</th><th>Query Type</th><th>Status</th><th>Values</th><th>Managed IPs</th><th>Method</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <h4>IP VT Summary</h4>
+  <table id="domainVerifyIpTable">
+    <thead><tr><th>IP</th><th>Role</th><th>VT (M/S)</th><th>ASN</th><th>AS Owner</th><th>Country</th></tr></thead>
+    <tbody></tbody>
+  </table>
 </div>
 
 <div id="status" class="section">
@@ -155,7 +212,7 @@
   </div>
   <div id="statusVerifyResult" style="background:#f8f9fa;padding:15px;max-height:240px;overflow:auto;margin-bottom:15px;font-family:monospace;border-radius:8px;border:2px solid #e9ecef;display:none;"></div>
   <table id="resultsTable">
-    <thead><tr><th>Domain</th><th>Type</th><th>Server</th><th>Values</th><th>Decoded IPs</th><th>Method</th><th>Last Seen</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Domain</th><th>Type</th><th>Values</th><th>Decoded IPs</th><th>Method</th><th>DNS Servers</th><th>Last Seen</th><th>Actions</th></tr></thead>
     <tbody></tbody>
   </table>
   <h4>Analyzer</h4>
@@ -199,9 +256,13 @@
       </select>
     </label>
     <button id="clearDomainAnalysisFilterBtn">Show All</button>
+    <button id="selectNonResolvingDomainsBtn">Select Non-resolving</button>
+    <button id="clearSelectedDomainsBtn">Clear Selection</button>
+    <button id="removeSelectedDomainsBtn">🗑️ Remove Selected</button>
+    <span id="domainRemoveStatus" class="settings-status"></span>
   </div>
   <table id="domainDomainStatsTable">
-    <thead><tr><th>Domain</th><th>Resolved IPs</th><th>Decoded IPs</th><th>Unique AS</th><th>Unique Countries</th><th>Top AS</th><th>Top Country</th><th>Last Seen</th><th>View</th></tr></thead>
+    <thead><tr><th>Domain</th><th>Status</th><th>Resolved IPs</th><th>Decoded IPs</th><th>Unique AS</th><th>Unique Countries</th><th>Top AS</th><th>Top Country</th><th>Last Seen</th><th>Select</th><th>Actions</th></tr></thead>
     <tbody></tbody>
   </table>
   <div class="domain-summary-grid">
@@ -251,6 +312,10 @@
     <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
       VT lookup budget
       <input id="ipIntelVtBudget" type="number" min="0" max="5000" value="1200" style="width:96px;margin-top:0;" />
+    </label>
+    <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
+      VT workers
+      <input id="ipIntelVtWorkers" type="number" min="1" max="32" value="8" style="width:84px;margin-top:0;" />
     </label>
     <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
       MISP Event ID

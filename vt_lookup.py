@@ -21,7 +21,8 @@ import urllib.error
 from contextlib import contextmanager
 
 CACHE_FILE = os.path.join(os.path.dirname(__file__), 'vt_cache.json')
-CACHE_TTL = int(os.environ.get('VT_CACHE_TTL_SECONDS', str(60 * 60 * 24)))  # default 24h
+_DEFAULT_CACHE_TTL_SECONDS = int(os.environ.get('VT_CACHE_TTL_SECONDS', str(60 * 60 * 24)))
+CACHE_TTL = _DEFAULT_CACHE_TTL_SECONDS  # default 24h
 API_KEY_ENV = 'VIRUSTOTAL_API_KEY'
 
 # Global API key holder (can be set via set_api_key() or environment variable)
@@ -51,6 +52,32 @@ def set_api_key(api_key):
         _GLOBAL_API_KEY = api_key.strip()
     else:
         _GLOBAL_API_KEY = None
+
+
+def set_cache_ttl_days(days):
+    """Set VT cache TTL using day units. Returns normalized days or None."""
+    global CACHE_TTL
+    try:
+        d = int(str(days).strip())
+    except Exception:
+        return None
+    if d < 1:
+        return None
+    if d > 3650:
+        d = 3650
+    CACHE_TTL = int(d * 86400)
+    return d
+
+
+def get_cache_ttl_days():
+    """Return current VT cache TTL in whole days (minimum 1)."""
+    try:
+        secs = int(CACHE_TTL)
+    except Exception:
+        secs = int(_DEFAULT_CACHE_TTL_SECONDS)
+    if secs <= 0:
+        return 1
+    return max(1, int((secs + 86399) // 86400))
 
 
 def _save_cache_locked():

@@ -48,7 +48,7 @@ Key items in `dns_config.json`:
 - `servers`: DNS servers to query
 - `interval`: polling interval (seconds)
 - `custom_decoders`: array of custom decoder objects persisted by the UI
-- `alerts`: object containing `teams_webhook`, `misp_url`, `misp_api_key`, `vt_api_key`, etc.
+- `alerts`: object containing `teams_webhook`, `misp_url`, `api_key`, `push_event_id`, `vt_api_key`, `vt_cache_ttl_days`, and optional `misp_remove_on_absent` (default `false`).
 
 Per-domain decoder fields:
 

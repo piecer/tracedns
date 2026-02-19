@@ -1,5 +1,6 @@
 const SECTION_BUTTON_MAP = {
   settings: 'menuSettings',
+  domainverify: 'menuDomainVerify',
   status: 'menuStatus',
   query: 'menuQuery',
   domainanalysis: 'menuDomainAnalysis',
@@ -8,19 +9,49 @@ const SECTION_BUTTON_MAP = {
   validips: 'menuValidIPs'
 };
 
+function getActiveSectionId(){
+  const el = document.querySelector('.section.active');
+  return el ? el.id : '';
+}
+
+function triggerSectionRefresh(name){
+  if(name === 'domainverify'){
+    initDomainVerifyUi();
+    return;
+  }
+  if(name === 'status'){
+    refreshResults();
+    return;
+  }
+  if(name === 'ips'){
+    refreshIPs();
+    return;
+  }
+  if(name === 'validips'){
+    const since = parseInt((document.getElementById('valid_since') || {}).value, 10) || 0;
+    refreshValidIPs(since);
+    return;
+  }
+  if(name === 'domainanalysis'){
+    refreshDomainAnalysis();
+  }
+}
+
 function showSection(name){
-  ['settings','status','query','domainanalysis','ipintel','ips','validips'].forEach(id=>document.getElementById(id).classList.remove('active'));
+  ['settings','domainverify','status','query','domainanalysis','ipintel','ips','validips'].forEach(id=>document.getElementById(id).classList.remove('active'));
   document.getElementById(name).classList.add('active');
   Object.keys(SECTION_BUTTON_MAP).forEach(sec=>{
     const btn = document.getElementById(SECTION_BUTTON_MAP[sec]);
     if(!btn) return;
     btn.classList.toggle('active', sec === name);
   });
+  triggerSectionRefresh(name);
 }
 document.getElementById('menuSettings').onclick = ()=> showSection('settings');
+document.getElementById('menuDomainVerify').onclick = ()=> showSection('domainverify');
 document.getElementById('menuStatus').onclick = ()=> showSection('status');
 document.getElementById('menuQuery').onclick = ()=> showSection('query');
-document.getElementById('menuDomainAnalysis').onclick = ()=> { showSection('domainanalysis'); refreshDomainAnalysis(); };
+document.getElementById('menuDomainAnalysis').onclick = ()=> showSection('domainanalysis');
 document.getElementById('menuIpIntel').onclick = ()=> showSection('ipintel');
 document.getElementById('menuIPs').onclick = ()=> showSection('ips');
 document.getElementById('menuValidIPs').onclick = ()=> showSection('validips');
@@ -29,6 +60,8 @@ function log(msg){ document.getElementById('log').textContent += msg + "\n"; }
 const IPV4_PATTERN = /^(\d{1,3}\.){3}\d{1,3}$/;
 window.DOMAIN_ANALYSIS_CACHE = [];
 window.DOMAIN_ANALYSIS_INCLUDE_VT = true;
+window.DOMAIN_ANALYSIS_SELECTED_REMOVE = window.DOMAIN_ANALYSIS_SELECTED_REMOVE || new Set();
+window.DOMAIN_VERIFY_LAST = null;
 
 function isIPv4(value){
   const s = String(value || '').trim();
@@ -107,6 +140,36 @@ function getDomainLifecycleStatus(domainObj){
   return {label: 'Normal', cls: 'normal'};
 }
 
+function isDomainNonResolving(domainObj){
+  if(!domainObj || typeof domainObj !== 'object') return true;
+  if(domainObj.nxdomain_active) return true;
+  if(domainObj.dns_error_only_active) return true;
+  if(domainObj.resolving === false) return true;
+  return false;
+}
+
+function getDomainAnalysisSelectionSet(){
+  if(!(window.DOMAIN_ANALYSIS_SELECTED_REMOVE instanceof Set)){
+    window.DOMAIN_ANALYSIS_SELECTED_REMOVE = new Set();
+  }
+  return window.DOMAIN_ANALYSIS_SELECTED_REMOVE;
+}
+
+function setDomainRemoveStatus(message, kind){
+  const el = document.getElementById('domainRemoveStatus');
+  if(!el) return;
+  el.textContent = message || '';
+  el.classList.remove('ok', 'err');
+  if(kind === 'ok') el.classList.add('ok');
+  if(kind === 'err') el.classList.add('err');
+  if(message){
+    setTimeout(()=>{
+      el.textContent = '';
+      el.classList.remove('ok', 'err');
+    }, 3200);
+  }
+}
+
 function openQueryForValue(value){
   const v = String(value || '').trim();
   if(!v) return;
@@ -114,6 +177,358 @@ function openQueryForValue(value){
   if(q) q.value = v;
   showSection('query');
   runQuery(v);
+}
+
+function setDomainVerifyStatus(message, kind){
+  const el = document.getElementById('domainVerifyStatus');
+  if(!el) return;
+  el.textContent = message || '';
+  el.classList.remove('ok', 'err');
+  if(kind === 'ok') el.classList.add('ok');
+  if(kind === 'err') el.classList.add('err');
+}
+
+function normalizeDomainName(domain){
+  return String(domain || '').trim().replace(/\.$/, '').toLowerCase();
+}
+
+function buildDecoderNameList(baseList, customList, includeNoneFirst){
+  const out = [];
+  const seen = new Set();
+  if(includeNoneFirst){
+    out.push('none');
+    seen.add('none');
+  }
+  const pushName = (name)=>{
+    const n = String(name || '').trim();
+    if(!n || seen.has(n)) return;
+    seen.add(n);
+    out.push(n);
+  };
+  (Array.isArray(baseList) ? baseList : []).forEach(pushName);
+  (Array.isArray(customList) ? customList : []).forEach(item=>{
+    const n = (item && item.name) ? String(item.name).trim() : '';
+    pushName(n);
+  });
+  return out;
+}
+
+function fillSelectWithOptions(selectEl, options, selectedValue, placeholderLabel){
+  if(!selectEl) return;
+  const prev = String(selectedValue || selectEl.value || '').trim();
+  selectEl.innerHTML = '';
+  if(placeholderLabel){
+    const p = document.createElement('option');
+    p.value = '';
+    p.textContent = placeholderLabel;
+    selectEl.appendChild(p);
+  }
+  (Array.isArray(options) ? options : []).forEach(opt=>{
+    const value = String(opt || '').trim();
+    if(!value) return;
+    const o = document.createElement('option');
+    o.value = value;
+    o.textContent = value === 'none' ? 'None' : value;
+    selectEl.appendChild(o);
+  });
+  if(prev){
+    const hasPrev = Array.from(selectEl.options).some(o=>o.value === prev);
+    if(hasPrev){
+      selectEl.value = prev;
+      return;
+    }
+  }
+  if(includeOption(selectEl, 'none')) selectEl.value = 'none';
+}
+
+function includeOption(selectEl, value){
+  return !!Array.from((selectEl && selectEl.options) || []).find(o=>o.value === value);
+}
+
+function syncDomainVerifyDecoderOptions(){
+  const txtFallback = ['cafebabe_xor_base64','plain_base64','btea_variant','xor_ipstring_base64_fixedkey'];
+  const aFallback = ['none','xor32_ipv4'];
+  const txtNames = buildDecoderNameList(
+    (window.DECODERS && window.DECODERS.length) ? window.DECODERS : txtFallback,
+    (window.CUSTOM_DECODERS || []).filter(c => String((c && c.decoder_type) || 'TXT').toUpperCase() === 'TXT'),
+    false
+  );
+  const aNamesRaw = buildDecoderNameList(
+    (window.A_DECODERS && window.A_DECODERS.length) ? window.A_DECODERS : aFallback,
+    (window.CUSTOM_A_DECODERS || []).filter(c => String((c && c.decoder_type) || 'A').toUpperCase() === 'A'),
+    false
+  );
+  const aNames = ['none'].concat(aNamesRaw.filter(x=>x !== 'none'));
+
+  const txtSel = document.getElementById('verifyTxtDecode');
+  const aSel = document.getElementById('verifyADecode');
+  fillSelectWithOptions(txtSel, txtNames, (txtSel || {}).value || 'cafebabe_xor_base64');
+  fillSelectWithOptions(aSel, aNames, (aSel || {}).value || 'none');
+  if(aSel && !aSel.value) aSel.value = 'none';
+}
+
+function updateDomainVerifyInputMode(){
+  const typeEl = document.getElementById('verifyDomainType');
+  const txtEl = document.getElementById('verifyTxtDecode');
+  const aEl = document.getElementById('verifyADecode');
+  const xorEl = document.getElementById('verifyAXorKey');
+  if(!typeEl || !txtEl || !aEl || !xorEl) return;
+  const t = String(typeEl.value || 'AUTO').toUpperCase();
+  const isAOnly = t === 'A';
+  const isTxtOnly = t === 'TXT';
+  txtEl.disabled = isAOnly;
+  aEl.disabled = isTxtOnly;
+  xorEl.disabled = isTxtOnly;
+}
+
+function initDomainVerifyUi(){
+  syncDomainVerifyDecoderOptions();
+  updateDomainVerifyInputMode();
+}
+
+function toVerifyStatusClass(status){
+  const s = String(status || '').toLowerCase();
+  if(s === 'ok') return 'verify-status-ok';
+  if(s === 'nxdomain') return 'verify-status-nxdomain';
+  if(s === 'nodata') return 'verify-status-nodata';
+  return 'verify-status-error';
+}
+
+function renderDomainVerifySummary(result){
+  const el = document.getElementById('domainVerifySummary');
+  if(!el) return;
+  if(!result || result.error){
+    el.textContent = result && result.error ? `Error: ${result.error}` : 'No validation result.';
+    return;
+  }
+  const notes = Array.isArray(result.notes) ? result.notes : [];
+  const detected = Array.isArray(result.detected_types) ? result.detected_types : [];
+  const selectedType = String(result.selected_type || '').toUpperCase() || '-';
+  const managedIps = Array.isArray(result.managed_ips) ? result.managed_ips : [];
+  const resolvedIps = Array.isArray(result.resolved_ips) ? result.resolved_ips : [];
+  const lines = [
+    `Domain: ${result.domain || '-'}`,
+    `Requested Type: ${result.requested_type || '-'}`,
+    `Detected Types: ${detected.length ? detected.join(', ') : '-'}`,
+    `Selected Type: ${selectedType}`,
+    `Resolved IPs: ${resolvedIps.length}`,
+    `Managed IPs: ${managedIps.length}`,
+    `Add Payload: ${JSON.stringify(result.domain_object || {}, null, 0)}`,
+  ];
+  if(notes.length){
+    lines.push(`Notes: ${notes.join(' | ')}`);
+  }
+  el.textContent = lines.join('\n');
+}
+
+function renderDomainVerifyServerTable(result){
+  const body = document.querySelector('#domainVerifyServerTable tbody');
+  if(!body) return;
+  body.innerHTML = '';
+  const rows = Array.isArray(result && result.by_server) ? result.by_server : [];
+  if(!rows.length){
+    setSummaryMessage(body, 6, 'No server-level result.');
+    return;
+  }
+  rows.forEach(row=>{
+    const tr = document.createElement('tr');
+    const tdSrv = document.createElement('td');
+    tdSrv.textContent = row.server || '-';
+    const tdType = document.createElement('td');
+    tdType.textContent = String(row.type || '-').toUpperCase();
+    const tdStatus = document.createElement('td');
+    const statusBadge = document.createElement('span');
+    statusBadge.className = `verify-status-badge ${toVerifyStatusClass(row.status)}`;
+    statusBadge.textContent = String(row.status || 'error').toUpperCase();
+    tdStatus.appendChild(statusBadge);
+    const tdVals = document.createElement('td');
+    tdVals.className = 'wrap-cell';
+    const values = Array.isArray(row.values) ? row.values : [];
+    tdVals.textContent = formatListPreview(values, 4);
+    tdVals.title = values.join(', ');
+    const tdManaged = document.createElement('td');
+    renderCellWithClickableIps(tdManaged, Array.isArray(row.managed_ips) ? row.managed_ips : [], formatListPreview(row.managed_ips || [], 4), 6);
+    const tdMethod = document.createElement('td');
+    tdMethod.className = 'wrap-cell';
+    tdMethod.textContent = row.method || '-';
+    tdMethod.title = row.method || '-';
+    tr.appendChild(tdSrv);
+    tr.appendChild(tdType);
+    tr.appendChild(tdStatus);
+    tr.appendChild(tdVals);
+    tr.appendChild(tdManaged);
+    tr.appendChild(tdMethod);
+    body.appendChild(tr);
+  });
+}
+
+function renderDomainVerifyIpTable(result){
+  const body = document.querySelector('#domainVerifyIpTable tbody');
+  if(!body) return;
+  body.innerHTML = '';
+  const rows = Array.isArray(result && result.ip_rows) ? result.ip_rows : [];
+  if(!rows.length){
+    setSummaryMessage(body, 6, 'No IP rows.');
+    return;
+  }
+  rows.forEach(row=>{
+    const tr = document.createElement('tr');
+    const tdIp = document.createElement('td');
+    tdIp.textContent = row.ip || '-';
+    if(isIPv4(row.ip)){
+      tdIp.style.cursor = 'pointer';
+      tdIp.title = 'Open in Query';
+      tdIp.onclick = ()=> openQueryForValue(row.ip);
+    }
+    const tdRole = document.createElement('td');
+    tdRole.textContent = row.role || '-';
+    const tdVt = document.createElement('td');
+    const tdAsn = document.createElement('td');
+    const tdOwner = document.createElement('td');
+    const tdCountry = document.createElement('td');
+    const vt = row.vt || null;
+    if(vt){
+      const m = Number(vt.malicious || 0);
+      const s = Number(vt.suspicious || 0);
+      const badge = document.createElement('span');
+      badge.className = 'vt-badge';
+      if(m > 0) badge.classList.add('high');
+      else if(s > 0) badge.classList.add('mid');
+      badge.textContent = `${m}/${s}`;
+      tdVt.appendChild(badge);
+      tdAsn.textContent = String(vt.asn || '-');
+      tdOwner.textContent = String(vt.as_owner || '-');
+      tdCountry.textContent = String(vt.country || '-');
+    } else {
+      tdVt.textContent = (result && result.include_vt) ? '-' : 'VT off';
+      tdAsn.textContent = '-';
+      tdOwner.textContent = '-';
+      tdCountry.textContent = '-';
+    }
+    tr.appendChild(tdIp);
+    tr.appendChild(tdRole);
+    tr.appendChild(tdVt);
+    tr.appendChild(tdAsn);
+    tr.appendChild(tdOwner);
+    tr.appendChild(tdCountry);
+    body.appendChild(tr);
+  });
+}
+
+function clearDomainVerifyResult(){
+  window.DOMAIN_VERIFY_LAST = null;
+  setDomainVerifyStatus('', '');
+  renderDomainVerifySummary(null);
+  renderDomainVerifyServerTable({by_server: []});
+  renderDomainVerifyIpTable({ip_rows: []});
+}
+
+async function runDomainVerify(){
+  const domain = String((document.getElementById('verifyDomainName') || {}).value || '').trim();
+  if(!domain){
+    setDomainVerifyStatus('Domain is required', 'err');
+    return;
+  }
+  initDomainVerifyUi();
+  const type = String((document.getElementById('verifyDomainType') || {}).value || 'AUTO').toUpperCase();
+  const txtDecode = String((document.getElementById('verifyTxtDecode') || {}).value || '').trim();
+  const aDecode = String((document.getElementById('verifyADecode') || {}).value || 'none').trim();
+  const aXorKey = String((document.getElementById('verifyAXorKey') || {}).value || '').trim();
+  const includeVt = !!((document.getElementById('verifyIncludeVt') || {}).checked);
+
+  setDomainVerifyStatus('Validating...', '');
+  try{
+    const r = await fetch('/domain-precheck', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        domain: domain,
+        type: type,
+        txt_decode: txtDecode,
+        a_decode: aDecode,
+        a_xor_key: aXorKey,
+        include_vt: includeVt
+      })
+    });
+    const j = await r.json();
+    if(!r.ok || !j || j.error){
+      const msg = (j && j.error) ? j.error : `Validation failed (${r.status})`;
+      setDomainVerifyStatus(msg, 'err');
+      window.DOMAIN_VERIFY_LAST = null;
+      renderDomainVerifySummary({error: msg});
+      renderDomainVerifyServerTable({by_server: []});
+      renderDomainVerifyIpTable({ip_rows: []});
+      return;
+    }
+    window.DOMAIN_VERIFY_LAST = j;
+    renderDomainVerifySummary(j);
+    renderDomainVerifyServerTable(j);
+    renderDomainVerifyIpTable(j);
+    setDomainVerifyStatus(j.can_add === false ? 'Validation complete (no addable IP)' : 'Validation complete', j.can_add === false ? 'err' : 'ok');
+  }catch(e){
+    const msg = `Validation error: ${e}`;
+    setDomainVerifyStatus(msg, 'err');
+    window.DOMAIN_VERIFY_LAST = null;
+    renderDomainVerifySummary({error: msg});
+    renderDomainVerifyServerTable({by_server: []});
+    renderDomainVerifyIpTable({ip_rows: []});
+  }
+}
+
+async function addVerifiedDomainToConfig(){
+  const state = window.DOMAIN_VERIFY_LAST || {};
+  const domainObj = state.domain_object;
+  if(!domainObj || !domainObj.name){
+    setDomainVerifyStatus('Validate first, then add', 'err');
+    return;
+  }
+  if(state.can_add === false){
+    setDomainVerifyStatus('Validation has no resolvable result to add', 'err');
+    return;
+  }
+  try{
+    const cfgResp = await fetch('/config');
+    const cfgJson = await cfgResp.json();
+    if(!cfgResp.ok || !cfgJson){
+      setDomainVerifyStatus('Failed to load config', 'err');
+      return;
+    }
+    const existing = Array.isArray(cfgJson.domains) ? cfgJson.domains : [];
+    const normTarget = normalizeDomainName(domainObj.name);
+    const normalizedDomains = existing.map(item=>{
+      if(typeof item === 'string'){
+        return {name: item, type: 'A'};
+      }
+      return (item && typeof item === 'object') ? {...item} : null;
+    }).filter(Boolean);
+
+    const idx = normalizedDomains.findIndex(d=> normalizeDomainName(d.name) === normTarget);
+    if(idx >= 0){
+      normalizedDomains[idx] = {...domainObj};
+    } else {
+      normalizedDomains.push({...domainObj});
+    }
+    const payload = {
+      domains: normalizedDomains,
+      servers: Array.isArray(cfgJson.servers) ? cfgJson.servers : [],
+      interval: Number(cfgJson.interval || 60)
+    };
+    const saveResp = await fetch('/config', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const saveJson = await saveResp.json();
+    if(!saveResp.ok || !saveJson || saveJson.error){
+      throw new Error((saveJson && saveJson.error) ? saveJson.error : `save failed (${saveResp.status})`);
+    }
+    setDomainVerifyStatus(idx >= 0 ? 'Updated existing domain' : 'Added domain', 'ok');
+    loadCfg();
+    uiOverview.configured = normalizedDomains.length;
+    updateOverviewPanel();
+  }catch(e){
+    setDomainVerifyStatus(`Add failed: ${e}`, 'err');
+  }
 }
 
 async function runQuery(v){
@@ -125,21 +540,30 @@ async function runQuery(v){
     document.getElementById('queryResult').textContent = JSON.stringify(j, null, 2);
     return;
   }
-  // search value across history/current by fetching /results + /history client-side (simple approach)
-  const r1 = await fetch('/results'); const res = await r1.json();
+  // search value across history/current by fetching aggregated results + /history client-side
+  const r1 = await fetch('/results?aggregate=1'); const res = await r1.json();
+  const agg = (res && res.results_agg && typeof res.results_agg === 'object')
+    ? res.results_agg
+    : {};
   const matches = [];
-  for(const d of Object.keys(res.results||{})){
-    const srvMap = res.results[d];
-    for(const s of Object.keys(srvMap)){
-      const info = srvMap[s];
-      if((info.values||[]).some(x=>x.includes(value))){
-        matches.push({domain:d, server:s, type:info.type, ts:info.ts, values:info.values});
-      }
+  for(const d of Object.keys(agg || {})){
+    const info = agg[d] || {};
+    const vals = Array.isArray(info.values) ? info.values : [];
+    const dec = Array.isArray(info.decoded_ips) ? info.decoded_ips : [];
+    if(vals.some(x=>String(x || '').includes(value)) || dec.some(x=>String(x || '').includes(value))){
+      matches.push({
+        domain: d,
+        type: info.type || 'A',
+        ts: info.ts || 0,
+        servers: info.servers || [],
+        values: vals,
+        decoded_ips: dec
+      });
     }
   }
   // fallback: fetch history per domain from results list
   const histMatches = [];
-  for(const d of Object.keys(res.results||{})){
+  for(const d of Object.keys(agg || {})){
     const hresp = await fetch('/history?domain='+encodeURIComponent(d));
     const hj = await hresp.json();
     const histObj = hj && hj.history ? hj.history : {};
@@ -257,13 +681,18 @@ function renderDomainStatsTable(allDomains, selectedDomain){
   if(!tbody) return;
   tbody.innerHTML = '';
   const arr = Array.isArray(allDomains) ? allDomains.slice() : [];
+  const selectedSet = getDomainAnalysisSelectionSet();
   if(!arr.length){
-    setSummaryMessage(tbody, 9, 'No domains available');
+    setSummaryMessage(tbody, 11, 'No domains available');
     return;
   }
   arr.sort((a,b)=>String((a && a.domain) || '').localeCompare(String((b && b.domain) || '')));
   arr.forEach(d=>{
     const name = String((d && d.domain) || '');
+    const nonResolving = isDomainNonResolving(d || {});
+    const statusObj = getDomainLifecycleStatus(d || {});
+    const statusLabel = statusObj.label === 'Normal' && nonResolving ? 'No-data' : statusObj.label;
+    const statusCls = statusObj.label === 'Normal' && nonResolving ? 'error' : statusObj.cls;
     const tsText = formatUnixTsLocal(d && d.last_ts);
     const st = getDomainStatsEntry(d);
     const tr = document.createElement('tr');
@@ -275,26 +704,69 @@ function renderDomainStatsTable(allDomains, selectedDomain){
     if(d && d.dns_error_only_active){
       c1.title = `All DNS servers failed in last cycle (${name})`;
     }
-    const c2 = document.createElement('td'); c2.textContent = String(st.resolvedCount);
-    const c3 = document.createElement('td'); c3.textContent = String(st.decodedCount);
-    const c4 = document.createElement('td'); c4.textContent = String(st.asCount);
-    const c5 = document.createElement('td'); c5.textContent = String(st.countryCount);
-    const c6 = document.createElement('td'); c6.textContent = st.topAs;
-    const c7 = document.createElement('td'); c7.textContent = st.topCountry;
-    const c8 = document.createElement('td'); c8.textContent = tsText;
-    const c9 = document.createElement('td');
-    const btn = document.createElement('button');
-    btn.style.margin = '0';
-    btn.textContent = (selectedDomain && name === selectedDomain) ? 'Viewing' : 'View';
-    btn.onclick = ()=>{
+    const c2 = document.createElement('td');
+    const statusBadge = document.createElement('span');
+    statusBadge.className = `domain-state-badge ${statusCls}`;
+    statusBadge.textContent = statusLabel;
+    c2.appendChild(statusBadge);
+
+    const c3 = document.createElement('td'); c3.textContent = String(st.resolvedCount);
+    const c4 = document.createElement('td'); c4.textContent = String(st.decodedCount);
+    const c5 = document.createElement('td'); c5.textContent = String(st.asCount);
+    const c6 = document.createElement('td'); c6.textContent = String(st.countryCount);
+    const c7 = document.createElement('td'); c7.textContent = st.topAs;
+    const c8 = document.createElement('td'); c8.textContent = st.topCountry;
+    const c9 = document.createElement('td'); c9.textContent = tsText;
+
+    const c10 = document.createElement('td');
+    const chk = document.createElement('input');
+    chk.type = 'checkbox';
+    chk.style.width = 'auto';
+    chk.style.margin = '0';
+    chk.disabled = !nonResolving;
+    chk.checked = nonResolving && selectedSet.has(name);
+    chk.title = nonResolving ? 'Select for bulk remove' : 'Only non-resolving domains can be selected';
+    chk.onchange = ()=>{
+      if(chk.checked) selectedSet.add(name);
+      else selectedSet.delete(name);
+      applyDomainAnalysisFilter();
+    };
+    c10.appendChild(chk);
+
+    const c11 = document.createElement('td');
+    const btnView = document.createElement('button');
+    btnView.style.margin = '0';
+    btnView.textContent = (selectedDomain && name === selectedDomain) ? 'Viewing' : 'View';
+    btnView.onclick = ()=>{
       const sel = document.getElementById('domainAnalysisDomainSelect');
       if(sel){
         sel.value = name;
       }
       applyDomainAnalysisFilter();
     };
-    c9.appendChild(btn);
-    tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3); tr.appendChild(c4); tr.appendChild(c5); tr.appendChild(c6); tr.appendChild(c7); tr.appendChild(c8); tr.appendChild(c9);
+    c11.appendChild(btnView);
+
+    const btnRemove = document.createElement('button');
+    btnRemove.style.margin = '0 0 0 6px';
+    btnRemove.textContent = d && d.nxdomain_active ? 'Remove NX' : 'Remove';
+    btnRemove.disabled = !nonResolving;
+    btnRemove.title = nonResolving ? `Remove ${name} from monitoring config` : 'Only non-resolving domains can be removed here';
+    btnRemove.onclick = async ()=>{
+      await removeDomainsFromConfig([name], `${name} removed`);
+    };
+    c11.appendChild(btnRemove);
+
+    tr.appendChild(c1);
+    tr.appendChild(c2);
+    tr.appendChild(c3);
+    tr.appendChild(c4);
+    tr.appendChild(c5);
+    tr.appendChild(c6);
+    tr.appendChild(c7);
+    tr.appendChild(c8);
+    tr.appendChild(c9);
+    tr.appendChild(c10);
+    tr.appendChild(c11);
     tbody.appendChild(tr);
   });
 }
@@ -561,8 +1033,9 @@ function renderDomainAnalysisTable(domains, includeVT, totalDomainsCount){
 
   const summary = renderDomainAnalysisSummaries(arr, includeVT);
   const selected = String((document.getElementById('domainAnalysisDomainSelect') || {}).value || '');
+  const selectedRemoveCount = getDomainAnalysisSelectionSet().size;
   if(meta){
-    meta.textContent = `${arr.length}/${Math.max(0, Number(totalDomainsCount || arr.length))} domains / ${ipRowsCount} IP rows / AS ${summary.asGroups} / Countries ${summary.countries} / AS×Country ${summary.intersections} / NXDOMAIN ${nxdomainActiveCount} / Error-only ${errorOnlyCount}${selected ? ` / Filter: ${selected}` : ''}`;
+    meta.textContent = `${arr.length}/${Math.max(0, Number(totalDomainsCount || arr.length))} domains / ${ipRowsCount} IP rows / AS ${summary.asGroups} / Countries ${summary.countries} / AS×Country ${summary.intersections} / NXDOMAIN ${nxdomainActiveCount} / Error-only ${errorOnlyCount} / Selected ${selectedRemoveCount}${selected ? ` / Filter: ${selected}` : ''}`;
   }
   touchOverviewTs();
 }
@@ -576,6 +1049,113 @@ function applyDomainAnalysisFilter(){
   renderDomainAnalysisTable(filtered, includeVT, allDomains.length);
 }
 
+function pruneDomainAnalysisSelection(){
+  const set = getDomainAnalysisSelectionSet();
+  const validNames = new Set(
+    (Array.isArray(window.DOMAIN_ANALYSIS_CACHE) ? window.DOMAIN_ANALYSIS_CACHE : [])
+      .map(d=>String((d && d.domain) || '').trim())
+      .filter(Boolean)
+  );
+  const keep = new Set();
+  set.forEach(name=>{
+    if(validNames.has(name)) keep.add(name);
+  });
+  window.DOMAIN_ANALYSIS_SELECTED_REMOVE = keep;
+}
+
+async function removeDomainsFromConfig(domainNames, successMessage){
+  const names = Array.from(new Set((domainNames || []).map(v=>String(v || '').trim()).filter(Boolean)));
+  if(!names.length){
+    setDomainRemoveStatus('No domains selected', 'err');
+    return false;
+  }
+
+  const confirmed = window.confirm(`Remove ${names.length} domain(s) from monitoring?\n\n${names.join('\n')}`);
+  if(!confirmed){
+    return false;
+  }
+
+  try{
+    const cfgResp = await fetch('/config');
+    if(!cfgResp.ok) throw new Error('config load failed');
+    const cfg = await cfgResp.json();
+    const currentDomains = Array.isArray(cfg.domains) ? cfg.domains : [];
+    const removeSet = new Set(names);
+    const nextDomains = currentDomains.filter(item=>{
+      const name = typeof item === 'string'
+        ? String(item || '').trim()
+        : String((item && item.name) || '').trim();
+      return name && !removeSet.has(name);
+    });
+    const removedCount = currentDomains.length - nextDomains.length;
+    if(removedCount <= 0){
+      setDomainRemoveStatus('No matching domains found in config', 'err');
+      return false;
+    }
+
+    const saveResp = await fetch('/config', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({domains: nextDomains})
+    });
+    const saveJson = await saveResp.json();
+    if(!(saveResp.ok && saveJson && saveJson.status === 'ok')){
+      throw new Error((saveJson && saveJson.error) ? saveJson.error : 'config save failed');
+    }
+
+    const sel = getDomainAnalysisSelectionSet();
+    names.forEach(n=>sel.delete(n));
+    await Promise.allSettled([refreshDomainAnalysis(), loadCfg(), refreshResults(), refreshIPs(), refreshValidIPs()]);
+    setDomainRemoveStatus(successMessage || `Removed ${removedCount} domain(s)`, 'ok');
+    return true;
+  }catch(e){
+    setDomainRemoveStatus(`Remove failed: ${e}`, 'err');
+    return false;
+  }
+}
+
+function selectNonResolvingDomainsForBulk(){
+  const set = getDomainAnalysisSelectionSet();
+  const allDomains = Array.isArray(window.DOMAIN_ANALYSIS_CACHE) ? window.DOMAIN_ANALYSIS_CACHE : [];
+  let added = 0;
+  allDomains.forEach(d=>{
+    const name = String((d && d.domain) || '').trim();
+    if(!name) return;
+    if(!isDomainNonResolving(d)) return;
+    if(!set.has(name)){
+      set.add(name);
+      added += 1;
+    }
+  });
+  applyDomainAnalysisFilter();
+  setDomainRemoveStatus(added > 0 ? `Selected ${set.size} non-resolving domain(s)` : 'No non-resolving domains to select', added > 0 ? 'ok' : 'err');
+}
+
+function clearSelectedDomainsForBulk(){
+  window.DOMAIN_ANALYSIS_SELECTED_REMOVE = new Set();
+  applyDomainAnalysisFilter();
+  setDomainRemoveStatus('Selection cleared', 'ok');
+}
+
+async function removeSelectedNonResolvingDomains(){
+  const set = getDomainAnalysisSelectionSet();
+  const selectedNames = Array.from(set);
+  if(!selectedNames.length){
+    setDomainRemoveStatus('No selected domains', 'err');
+    return;
+  }
+  const domainMap = new Map(
+    (Array.isArray(window.DOMAIN_ANALYSIS_CACHE) ? window.DOMAIN_ANALYSIS_CACHE : [])
+      .map(d=>[String((d && d.domain) || '').trim(), d])
+  );
+  const nonResolvingSelected = selectedNames.filter(name=>isDomainNonResolving(domainMap.get(name)));
+  if(!nonResolvingSelected.length){
+    setDomainRemoveStatus('Selected domains are not non-resolving', 'err');
+    return;
+  }
+  await removeDomainsFromConfig(nonResolvingSelected, `Removed ${nonResolvingSelected.length} selected non-resolving domain(s)`);
+}
+
 async function refreshDomainAnalysis(){
   try{
     const includeVT = !!(document.getElementById('domain_analysis_include_vt') && document.getElementById('domain_analysis_include_vt').checked);
@@ -587,6 +1167,7 @@ async function refreshDomainAnalysis(){
     const j = await r.json();
     window.DOMAIN_ANALYSIS_CACHE = Array.isArray(j.domains) ? j.domains : [];
     window.DOMAIN_ANALYSIS_INCLUDE_VT = includeVT;
+    pruneDomainAnalysisSelection();
     populateDomainAnalysisFilter(window.DOMAIN_ANALYSIS_CACHE);
     applyDomainAnalysisFilter();
   }catch(e){
@@ -599,6 +1180,7 @@ async function analyzeIpIntel(){
   const includeVT = !!(document.getElementById('ipIntelIncludeVt') && document.getElementById('ipIntelIncludeVt').checked);
   const rowLimit = parseBoundedInt((document.getElementById('ipIntelRowLimit') || {}).value, 1500, 100, 5000);
   const vtBudget = parseBoundedInt((document.getElementById('ipIntelVtBudget') || {}).value, 1200, 0, 5000);
+  const vtWorkers = parseBoundedInt((document.getElementById('ipIntelVtWorkers') || {}).value, 8, 1, 32);
   const meta = document.getElementById('ipIntelMeta');
   const hintsBox = document.getElementById('ipIntelHintsBox');
   const invalidBox = document.getElementById('ipIntelInvalidBox');
@@ -622,7 +1204,8 @@ async function analyzeIpIntel(){
         ips: raw,
         include_vt: includeVT,
         row_limit: rowLimit,
-        vt_lookup_budget: vtBudget
+        vt_lookup_budget: vtBudget,
+        vt_workers: vtWorkers
       })
     });
     const j = await r.json();
@@ -650,6 +1233,7 @@ async function analyzeIpIntel(){
     const ipsLimited = !!(j && j.ips_truncated);
     const vtBudgetInfo = Number((j && j.vt_lookup_budget) || vtBudget || 0);
     const vtAttemptedInfo = Number((j && j.vt_lookup_attempted) || 0);
+    const vtWorkersInfo = Number((j && j.vt_workers) || vtWorkers || 1);
 
     if(meta){
       let txt = `submitted ${j.submitted_count || 0} / valid ${j.valid_count || 0} / invalid ${j.invalid_count || 0} / displayed ${ipsShown}/${ipsTotal}`;
@@ -657,7 +1241,7 @@ async function analyzeIpIntel(){
         txt += ' (row-limited)';
       }
       if(includeVT){
-        txt += ` / VT budget ${vtBudgetInfo} (attempted ${vtAttemptedInfo})`;
+        txt += ` / VT budget ${vtBudgetInfo} (attempted ${vtAttemptedInfo}, workers ${vtWorkersInfo})`;
       }
       meta.textContent = txt;
     }
@@ -841,9 +1425,10 @@ async function loadIpIntelFromMisp(autoAnalyze){
   }
 }
 
-function renderCellWithClickableIps(td, rawValues, fallbackText){
-  const values = Array.isArray(rawValues) ? rawValues : [];
+function renderCellWithClickableIps(td, rawValues, fallbackText, maxDisplayItems){
+  const values = Array.isArray(rawValues) ? Array.from(new Set(rawValues.map(v=>String(v || '').trim()).filter(Boolean))) : [];
   const ips = values.filter(isIPv4);
+  const limit = parseBoundedInt(maxDisplayItems, 12, 3, 50);
   td.className = 'wrap-cell';
   if(!ips.length){
     const full = String(fallbackText || '');
@@ -851,9 +1436,10 @@ function renderCellWithClickableIps(td, rawValues, fallbackText){
     td.title = full;
     return;
   }
+  const shown = ips.slice(0, limit);
   td.innerHTML = '';
   td.title = ips.join(' | ');
-  ips.forEach((ip, idx)=>{
+  shown.forEach((ip, idx)=>{
     const a = document.createElement('a');
     a.href = '#';
     a.textContent = ip;
@@ -862,10 +1448,13 @@ function renderCellWithClickableIps(td, rawValues, fallbackText){
       openQueryForValue(ip);
     };
     td.appendChild(a);
-    if(idx < ips.length - 1){
+    if(idx < shown.length - 1){
       td.appendChild(document.createTextNode(' | '));
     }
   });
+  if(ips.length > shown.length){
+    td.appendChild(document.createTextNode(` +${ips.length - shown.length}`));
+  }
 }
 
 const uiOverview = {
@@ -876,6 +1465,12 @@ const uiOverview = {
   validIps: 0,
   lastRefreshLocal: '-'
 };
+let refreshResultsInFlight = false;
+let refreshIPsInFlight = false;
+let refreshValidIPsInFlight = false;
+let lastStatusRenderFingerprint = '';
+let lastAllIpsRenderFingerprint = '';
+let lastValidIpsRenderFingerprint = '';
 
 function updateOverviewPanel(){
   const set = (id, value)=>{
@@ -920,6 +1515,16 @@ async function loadAlertSettings(){
     document.getElementById('misp_key_front').value = alerts.api_key || '';
     document.getElementById('push_event_id_front').value = alerts.push_event_id || '';
     document.getElementById('vt_api_key_front').value = alerts.vt_api_key || '';
+    const removeOnAbsentEl = document.getElementById('misp_remove_on_absent_front');
+    if(removeOnAbsentEl){
+      removeOnAbsentEl.checked = !!alerts.misp_remove_on_absent;
+    }
+    const vtTtlInput = document.getElementById('vt_cache_ttl_days_front');
+    if(vtTtlInput){
+      const vtTtlDays = parseBoundedInt(alerts.vt_cache_ttl_days, 1, 1, 3650);
+      vtTtlInput.value = String(vtTtlDays);
+      vtTtlInput.dataset.current = String(vtTtlDays);
+    }
     const botnetEventEl = document.getElementById('ipIntelMispEventId');
     if(botnetEventEl && !String(botnetEventEl.value || '').trim() && alerts.push_event_id){
       botnetEventEl.value = String(alerts.push_event_id);
@@ -931,12 +1536,17 @@ async function loadAlertSettings(){
 }
 
 async function saveAlertSettings(){
+  const vtTtlEl = document.getElementById('vt_cache_ttl_days_front');
+  const currentTtl = parseBoundedInt((vtTtlEl && vtTtlEl.dataset ? vtTtlEl.dataset.current : ''), 1, 1, 3650);
+  const vtTtlDays = parseBoundedInt((vtTtlEl || {}).value, currentTtl, 1, 3650);
   const alerts = {
     teams_webhook: document.getElementById('teams_webhook_front').value.trim(),
     misp_url: document.getElementById('misp_url_front').value.trim(),
     api_key: document.getElementById('misp_key_front').value.trim(),
     push_event_id: document.getElementById('push_event_id_front').value.trim(),
-    vt_api_key: document.getElementById('vt_api_key_front').value.trim()
+    misp_remove_on_absent: !!((document.getElementById('misp_remove_on_absent_front') || {}).checked),
+    vt_api_key: document.getElementById('vt_api_key_front').value.trim(),
+    vt_cache_ttl_days: vtTtlDays
   };
   try{
     const r = await fetch('/settings', {
@@ -947,6 +1557,10 @@ async function saveAlertSettings(){
     const j = await r.json();
     if(!(r.ok && j && j.status === 'ok')){
       throw new Error((j && j.error) ? j.error : 'save failed');
+    }
+    if(vtTtlEl){
+      vtTtlEl.value = String(vtTtlDays);
+      vtTtlEl.dataset.current = String(vtTtlDays);
     }
     setAlertSettingsStatus('Saved', 'ok');
   }catch(e){
@@ -1234,11 +1848,14 @@ document.getElementById('verifyBtn').onclick = async ()=>{
 document.getElementById('statusVerifyBtn').onclick = async ()=>{
   const allDomains = [];
   const table = document.getElementById('resultsTable');
-  if(table && table.rows){
-    for(let i=1; i<table.rows.length; i++){
-      const domain = table.rows[i].cells[0].textContent.trim();
+  if(table){
+    const rows = table.querySelectorAll('tbody tr');
+    rows.forEach(row=>{
+      if(row.classList && row.classList.contains('verify-row')) return;
+      const domain = String(row.dataset && row.dataset.domain ? row.dataset.domain : '').trim()
+        || String((row.cells && row.cells[0] && row.cells[0].textContent) || '').trim();
       if(domain && !allDomains.includes(domain)) allDomains.push(domain);
-    }
+    });
   }
   if(allDomains.length===0){ log('No domains in status table to verify'); return; }
   const el = document.getElementById('statusVerifyResult');
@@ -1297,211 +1914,343 @@ function renderVerifyResult(j, elementId){
   });
 }
 
+function aggregateResultsByDomain(results){
+  const out = {};
+  Object.keys(results || {}).forEach(domain=>{
+    const srvMap = results[domain];
+    if(!srvMap || typeof srvMap !== 'object') return;
+    const acc = {
+      record_types: new Set(),
+      values: new Set(),
+      decoded_ips: new Set(),
+      servers: new Set(),
+      txt_decodes: new Set(),
+      a_decodes: new Set(),
+      a_xor_keys: new Set(),
+      ts: 0
+    };
+    Object.keys(srvMap).forEach(server=>{
+      const info = srvMap[server];
+      if(!info || typeof info !== 'object') return;
+      const rtype = String(info.type || 'A').toUpperCase();
+      acc.record_types.add(rtype);
+      acc.servers.add(String(server));
+      (Array.isArray(info.values) ? info.values : []).forEach(v=>{
+        const s = String(v || '').trim();
+        if(s) acc.values.add(s);
+      });
+      (Array.isArray(info.decoded_ips) ? info.decoded_ips : []).forEach(v=>{
+        const s = String(v || '').trim();
+        if(s) acc.decoded_ips.add(s);
+      });
+      if(rtype === 'TXT' && info.txt_decode) acc.txt_decodes.add(String(info.txt_decode));
+      if(rtype === 'A' && info.a_decode) acc.a_decodes.add(String(info.a_decode));
+      if(rtype === 'A' && info.a_xor_key) acc.a_xor_keys.add(String(info.a_xor_key));
+      const ts = Number(info.ts || 0);
+      if(Number.isFinite(ts) && ts > acc.ts) acc.ts = ts;
+    });
+
+    const recordTypes = Array.from(acc.record_types).sort();
+    let outType = 'A';
+    if(recordTypes.length === 1){
+      outType = recordTypes[0];
+    } else if(recordTypes.length > 1){
+      outType = 'MIXED';
+    }
+    const methodParts = [];
+    if(acc.txt_decodes.size) methodParts.push(`TXT:${Array.from(acc.txt_decodes).sort().join(',')}`);
+    if(acc.a_decodes.size){
+      let aTxt = `A:${Array.from(acc.a_decodes).sort().join(',')}`;
+      if(acc.a_xor_keys.size) aTxt += ` (${Array.from(acc.a_xor_keys).sort().join(',')})`;
+      methodParts.push(aTxt);
+    }
+    out[domain] = {
+      type: outType,
+      record_types: recordTypes,
+      values: Array.from(acc.values).sort(),
+      decoded_ips: Array.from(acc.decoded_ips).sort(),
+      servers: Array.from(acc.servers).sort(),
+      server_count: acc.servers.size,
+      ts: acc.ts || 0,
+      method_summary: methodParts.length ? methodParts.join(' / ') : '-',
+      txt_decodes: Array.from(acc.txt_decodes).sort(),
+      a_decodes: Array.from(acc.a_decodes).sort(),
+      a_xor_keys: Array.from(acc.a_xor_keys).sort()
+    };
+  });
+  return out;
+}
+
+function formatDnsServerSummary(servers){
+  const arr = Array.isArray(servers) ? servers.filter(Boolean) : [];
+  if(!arr.length) return '-';
+  if(arr.length <= 3) return arr.join(', ');
+  return `${arr.length} servers (${arr.slice(0, 3).join(', ')}...)`;
+}
+
+function buildStatusFingerprint(resultsAgg){
+  const keys = Object.keys(resultsAgg || {}).sort();
+  const parts = [];
+  keys.forEach(d=>{
+    const it = resultsAgg[d] || {};
+    parts.push([
+      d,
+      Number(it.ts || 0),
+      Array.isArray(it.values) ? it.values.length : 0,
+      Array.isArray(it.decoded_ips) ? it.decoded_ips.length : 0,
+      Array.isArray(it.servers) ? it.servers.length : 0,
+      String(it.method_summary || '')
+    ].join('|'));
+  });
+  return `${keys.length}#${parts.join('||')}`;
+}
+
+function buildIpsFingerprint(arr){
+  const list = Array.isArray(arr) ? arr : [];
+  let totalCount = 0;
+  let maxTs = 0;
+  const limit = 400;
+  const parts = [];
+  list.forEach((it, idx)=>{
+    const count = Number((it && it.count) || 0);
+    const ts = Number((it && it.last_ts) || 0);
+    totalCount += count;
+    if(ts > maxTs) maxTs = ts;
+    if(idx >= limit) return;
+    parts.push([
+      String((it && it.ip) || ''),
+      count,
+      ts,
+      Array.isArray(it && it.domains) ? it.domains.length : 0,
+      Number((it && ((it.vt || {}).malicious || 0)) || 0),
+      Number((it && ((it.vt || {}).suspicious || 0)) || 0),
+    ].join('|'));
+  });
+  return `${list.length}#${totalCount}#${maxTs}#${parts.join('||')}`;
+}
+
 async function refreshResults(){
+  if(refreshResultsInFlight) return;
+  refreshResultsInFlight = true;
   try{
-    const r = await fetch('/results'); 
-    if(!r.ok) {
+    const r = await fetch('/results?aggregate=1');
+    if(!r.ok){
       console.error('refreshResults: HTTP error', r.status);
       return;
     }
     const j = await r.json();
+    const resultsAgg = (j && j.results_agg && typeof j.results_agg === 'object')
+      ? j.results_agg
+      : {};
+    const domainMeta = (j && j.domain_meta && typeof j.domain_meta === 'object') ? j.domain_meta : {};
     const tbody = document.querySelector('#resultsTable tbody');
-    const results = j.results || {};
-    // build a map of existing rows keyed by domain||srv to preserve verify rows and avoid full re-render
-    const existing = {};
-    Array.from(tbody.querySelectorAll('tr')).forEach(r => {
-      if(r.classList && r.classList.contains('verify-row')) return;
-      const kd = r.dataset.domain || '';
-      const ks = r.dataset.server || '';
-      if(kd) existing[kd + '||' + ks] = r;
-    });
-
-    const newKeys = [];
-    let statusRows = 0;
+    const domains = Object.keys(resultsAgg).sort();
     const managedSet = new Set();
-    Object.keys(results).sort().forEach(d=>{
-      const srvMap = results[d];
-      if(typeof srvMap !== 'object') return;
-      Object.keys(srvMap).forEach(srv=>{
-        const info = srvMap[srv];
-        if(typeof info !== 'object') return;
-        statusRows += 1;
-        const rtype = (info.type || '').toUpperCase();
-        if(rtype === 'TXT'){
-          (info.decoded_ips || []).forEach(ip=>{ if(ip) managedSet.add(ip); });
-        } else if(rtype === 'A'){
-          (info.values || []).forEach(ip=>{ if(ip) managedSet.add(ip); });
-        }
-        const key = d + '||' + srv;
-        newKeys.push(key);
-        let tr = existing[key];
-        const fullVals = (info.values||[]).join(' | ');
-        const fullDecoded = (info.decoded_ips||[]).join(', ');
-        if(tr){
-          // update existing row in-place
-          tr.dataset.domain = d; tr.dataset.server = srv;
-          tr.innerHTML = '';
-        } else {
-          tr = document.createElement('tr');
-          tr.dataset.domain = d; tr.dataset.server = srv;
-        }
-        const tdDomain = document.createElement('td'); tdDomain.textContent = d;
-        const tdType = document.createElement('td'); tdType.textContent = info.type || 'A';
-        const tdSrv = document.createElement('td'); tdSrv.textContent = srv;
-        const tdVals = document.createElement('td');
-        const tdDecoded = document.createElement('td');
-        renderCellWithClickableIps(tdVals, info.values || [], fullVals);
-        renderCellWithClickableIps(tdDecoded, info.decoded_ips || [], fullDecoded);
-        const tdMethod = document.createElement('td');
-        if(info.type === 'TXT' && info.txt_decode){
-          tdMethod.textContent = info.txt_decode;
-        } else if(info.type === 'A' && info.a_decode){
-          tdMethod.textContent = info.a_xor_key ? `${info.a_decode} (${info.a_xor_key})` : info.a_decode;
-        } else {
-          tdMethod.textContent = '-';
-        }
-        const tdTs = document.createElement('td'); tdTs.textContent = formatUnixTsLocal(info.ts);
-        const tdActions = document.createElement('td');
-        
-        // History 버튼 (모든 레코드)
-        const histBtn = document.createElement('button'); 
-        histBtn.className = 'action-btn';
-        histBtn.textContent = 'History';
-        histBtn.title = 'View history for this domain';
-        histBtn.onclick = ()=> loadHistory(d);
-        tdActions.appendChild(histBtn);
-        
-        // TXT 레코드인 경우만 Analyze와 Verify 버튼 추가
-        if(info.type === 'TXT'){
-          // Analyze 버튼
-          const analyzeBtn = document.createElement('button'); 
-          analyzeBtn.className = 'action-btn';
-          analyzeBtn.textContent = 'Analyze';
-          analyzeBtn.title = 'Analyze TXT decoding methods';
-          analyzeBtn.onclick = async ()=>{
-            const sample = (info.values||[]).join('|');
-            try{ 
-              const r = await fetch('/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domain:d,txt:sample})}); 
-              const j = await r.json(); 
-              renderAnalyzeResult(j);
-            }catch(e){ 
-              document.getElementById('analyzeResult').textContent = 'Analyze error: '+e; 
-            }
-          };
-          tdActions.appendChild(analyzeBtn);
-          
-          // Verify 버튼
-          const verifyBtn = document.createElement('button'); 
-          verifyBtn.className = 'action-btn';
-          verifyBtn.textContent = 'Verify';
-          verifyBtn.title = 'Verify this domain\'s TXT records';
-          verifyBtn.onclick = async ()=>{
-            const next = tr.nextElementSibling;
-            if(next && next.classList && next.classList.contains('verify-row') && next.dataset && next.dataset.domain===d){ 
-              next.remove(); 
-              return; 
-            }
-            const vtr = document.createElement('tr'); 
-            vtr.className = 'verify-row'; 
-            vtr.dataset.domain = d;
-            const vtd = document.createElement('td'); 
-            // Match Current Status table column count exactly.
-            vtd.colSpan = 8;
-            vtd.textContent = 'Verifying '+d+'...'; 
-            vtr.appendChild(vtd);
-            tr.parentNode.insertBefore(vtr, tr.nextSibling);
-            try{ 
-              const r = await fetch('/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domains:[d]})}); 
-              const j = await r.json(); 
-              vtd.innerHTML=''; 
-              if(j && j.results && j.results[d]){ 
-                const data = j.results[d]; 
-                if(data.error){ 
-                  vtd.textContent = 'Error: '+data.error; 
-                } else { 
-                  const analysis = data.analysis||{}; 
-                  const keys = Object.keys(analysis).sort((a,b)=>(analysis[b].score||0)-(analysis[a].score||0)); 
-                  keys.forEach(k=>{ 
-                    const info = analysis[k]; 
-                    const h = document.createElement('div'); 
-                    h.style.fontWeight='600'; 
-                    h.style.marginTop='10px';
-                    h.textContent = `${k} — score=${info.score} raw=${info.raw_count}`; 
-                    vtd.appendChild(h); 
-                    const ips = info.detailed_ips||[]; 
-                    if(ips.length===0){ 
-                      const none=document.createElement('div'); 
-                      none.textContent='No decoded IPs'; 
-                      vtd.appendChild(none);
-                    } else{ 
-                      const tbl=document.createElement('table'); 
-                      tbl.style.width='100%'; 
-                      tbl.style.marginTop='6px'; 
-                      const thr=document.createElement('tr'); 
-                      thr.innerHTML='<th>IP</th><th>Valid</th><th>VT(malicious/suspicious)</th><th>Summary</th>'; 
-                      tbl.appendChild(thr); 
-                      ips.forEach(it=>{ 
-                        const trr=document.createElement('tr'); 
-                        const tdIp=document.createElement('td'); 
-                        tdIp.textContent=it.ip||''; 
-                        const tdV=document.createElement('td'); 
-                        tdV.textContent=it.valid?'YES':'NO'; 
-                        const tdVT=document.createElement('td'); 
-                        const tdSum=document.createElement('td'); 
-                        if(it.vt){ 
-                          tdVT.textContent=`${it.vt.malicious||0}/${it.vt.suspicious||0}`; 
-                          tdSum.textContent=`ASN:${it.vt.asn||''} ${it.vt.country||''}`; 
-                        } else { 
-                          tdVT.textContent='-'; 
-                          tdSum.textContent='-'; 
-                        } 
-                        trr.appendChild(tdIp); 
-                        trr.appendChild(tdV); 
-                        trr.appendChild(tdVT); 
-                        trr.appendChild(tdSum); 
-                        tbl.appendChild(trr); 
-                      }); 
-                      vtd.appendChild(tbl);
-                    } 
-                  }); 
-                } 
-              } else { 
-                vtd.textContent='No data returned'; 
-              } 
-            }catch(e){ 
-              vtd.textContent='Verify error: '+e; 
-            } 
-          };
-          tdActions.appendChild(verifyBtn);
-        }
-        
-        tr.appendChild(tdDomain); tr.appendChild(tdType); tr.appendChild(tdSrv); tr.appendChild(tdVals); tr.appendChild(tdDecoded); tr.appendChild(tdMethod); tr.appendChild(tdTs); tr.appendChild(tdActions);
 
-        // insert or move row into tbody in desired order
-        const existingRow = tbody.querySelector(`tr[data-domain="${d}"][data-server="${srv}"]`);
-        if(existingRow){
-          // replace in-place
-          existingRow.parentNode.replaceChild(tr, existingRow);
-        } else {
-          tbody.appendChild(tr);
-        }
+    domains.forEach(d=>{
+      const info = resultsAgg[d] || {};
+      const values = Array.isArray(info.values) ? info.values : [];
+      const decodedIps = Array.isArray(info.decoded_ips) ? info.decoded_ips : [];
+      const rowType = String(info.type || 'A').toUpperCase();
+      const managedIps = rowType === 'TXT' ? decodedIps : (rowType === 'A' ? values : values.concat(decodedIps));
+      managedIps.forEach(ip=>{
+        const s = String(ip || '').trim();
+        if(s) managedSet.add(s);
       });
     });
-    // remove any stale rows (and their verify rows) not present in newKeys
-    Array.from(tbody.querySelectorAll('tr')).forEach(r=>{
-      if(r.classList && r.classList.contains('verify-row')) return;
-      const key = (r.dataset.domain||'') + '||' + (r.dataset.server||'');
-      if(!newKeys.includes(key)){
-        // remove associated verify row if any
-        const next = r.nextElementSibling;
-        if(next && next.classList && next.classList.contains('verify-row') && next.dataset && next.dataset.domain===r.dataset.domain){ next.remove(); }
-        r.remove();
-      }
-    });
-    uiOverview.statusRows = statusRows;
+    uiOverview.statusRows = domains.length;
     uiOverview.managedIps = managedSet.size;
+
+    const statusFp = buildStatusFingerprint(resultsAgg);
+    if(statusFp === lastStatusRenderFingerprint){
+      touchOverviewTs();
+      return;
+    }
+    lastStatusRenderFingerprint = statusFp;
+
+    tbody.innerHTML = '';
+    if(!domains.length){
+      setSummaryMessage(tbody, 8, 'No current results');
+      touchOverviewTs();
+      return;
+    }
+
+    const frag = document.createDocumentFragment();
+    domains.forEach(d=>{
+      const info = resultsAgg[d] || {};
+      const values = Array.isArray(info.values) ? info.values : [];
+      const decodedIps = Array.isArray(info.decoded_ips) ? info.decoded_ips : [];
+      const servers = Array.isArray(info.servers) ? info.servers : [];
+      const recordTypes = Array.isArray(info.record_types) ? info.record_types.map(x=>String(x || '').toUpperCase()) : [];
+      const rowType = String(info.type || 'A').toUpperCase();
+      const hasTxt = rowType === 'TXT' || rowType === 'MIXED' || recordTypes.includes('TXT');
+
+      const tr = document.createElement('tr');
+      tr.dataset.domain = d;
+
+      const tdDomain = document.createElement('td');
+      tdDomain.textContent = d;
+      applyNxdomainLifecycleStyle(tdDomain, domainMeta[d], d);
+
+      const tdType = document.createElement('td');
+      tdType.textContent = rowType;
+
+      const tdVals = document.createElement('td');
+      renderCellWithClickableIps(tdVals, values, formatListPreview(values, 4), 10);
+
+      const tdDecoded = document.createElement('td');
+      renderCellWithClickableIps(tdDecoded, decodedIps, formatListPreview(decodedIps, 4), 10);
+
+      const tdMethod = document.createElement('td');
+      tdMethod.className = 'wrap-cell';
+      const methodSummary = String(info.method_summary || '').trim();
+      tdMethod.textContent = methodSummary || '-';
+      tdMethod.title = methodSummary || '-';
+
+      const tdServers = document.createElement('td');
+      tdServers.className = 'wrap-cell';
+      tdServers.textContent = formatDnsServerSummary(servers);
+      tdServers.title = servers.join(', ');
+
+      const tdTs = document.createElement('td');
+      tdTs.textContent = formatUnixTsLocal(info.ts);
+
+      const tdActions = document.createElement('td');
+
+      const histBtn = document.createElement('button');
+      histBtn.className = 'action-btn';
+      histBtn.textContent = 'History';
+      histBtn.title = 'View history for this domain';
+      histBtn.onclick = ()=> loadHistory(d);
+      tdActions.appendChild(histBtn);
+
+      if(hasTxt){
+        const sampleTxt = Array.from(new Set(values.map(v=>String(v || '').trim()).filter(Boolean))).slice(0, 20).join('|');
+
+        const analyzeBtn = document.createElement('button');
+        analyzeBtn.className = 'action-btn';
+        analyzeBtn.textContent = 'Analyze';
+        analyzeBtn.title = 'Analyze TXT decoding methods';
+        analyzeBtn.onclick = async ()=>{
+          try{
+            const rr = await fetch('/analyze', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({domain: d, txt: sampleTxt})
+            });
+            const jj = await rr.json();
+            renderAnalyzeResult(jj);
+          }catch(e){
+            document.getElementById('analyzeResult').textContent = 'Analyze error: ' + e;
+          }
+        };
+        tdActions.appendChild(analyzeBtn);
+
+        const verifyBtn = document.createElement('button');
+        verifyBtn.className = 'action-btn';
+        verifyBtn.textContent = 'Verify';
+        verifyBtn.title = 'Verify this domain\'s TXT records';
+        verifyBtn.onclick = async ()=>{
+          const next = tr.nextElementSibling;
+          if(next && next.classList && next.classList.contains('verify-row') && next.dataset && next.dataset.domain === d){
+            next.remove();
+            return;
+          }
+          const vtr = document.createElement('tr');
+          vtr.className = 'verify-row';
+          vtr.dataset.domain = d;
+          const vtd = document.createElement('td');
+          vtd.colSpan = 8;
+          vtd.textContent = 'Verifying ' + d + '...';
+          vtr.appendChild(vtd);
+          tr.parentNode.insertBefore(vtr, tr.nextSibling);
+          try{
+            const vr = await fetch('/verify', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({domains: [d]})
+            });
+            const vj = await vr.json();
+            vtd.innerHTML = '';
+            if(vj && vj.results && vj.results[d]){
+              const data = vj.results[d];
+              if(data.error){
+                vtd.textContent = 'Error: ' + data.error;
+              } else {
+                const analysis = data.analysis || {};
+                const keys = Object.keys(analysis).sort((a, b)=>(analysis[b].score || 0) - (analysis[a].score || 0));
+                keys.forEach(k=>{
+                  const infoRow = analysis[k];
+                  const h = document.createElement('div');
+                  h.style.fontWeight = '600';
+                  h.style.marginTop = '10px';
+                  h.textContent = `${k} — score=${infoRow.score} raw=${infoRow.raw_count}`;
+                  vtd.appendChild(h);
+                  const ips = infoRow.detailed_ips || [];
+                  if(!ips.length){
+                    const none = document.createElement('div');
+                    none.textContent = 'No decoded IPs';
+                    vtd.appendChild(none);
+                  } else {
+                    const tbl = document.createElement('table');
+                    tbl.style.width = '100%';
+                    tbl.style.marginTop = '6px';
+                    const thr = document.createElement('tr');
+                    thr.innerHTML = '<th>IP</th><th>Valid</th><th>VT(malicious/suspicious)</th><th>Summary</th>';
+                    tbl.appendChild(thr);
+                    ips.forEach(it=>{
+                      const trr = document.createElement('tr');
+                      const tdIp = document.createElement('td');
+                      tdIp.textContent = it.ip || '';
+                      const tdV = document.createElement('td');
+                      tdV.textContent = it.valid ? 'YES' : 'NO';
+                      const tdVT = document.createElement('td');
+                      const tdSum = document.createElement('td');
+                      if(it.vt){
+                        tdVT.textContent = `${it.vt.malicious || 0}/${it.vt.suspicious || 0}`;
+                        tdSum.textContent = `ASN:${it.vt.asn || ''} ${it.vt.country || ''}`;
+                      } else {
+                        tdVT.textContent = '-';
+                        tdSum.textContent = '-';
+                      }
+                      trr.appendChild(tdIp);
+                      trr.appendChild(tdV);
+                      trr.appendChild(tdVT);
+                      trr.appendChild(tdSum);
+                      tbl.appendChild(trr);
+                    });
+                    vtd.appendChild(tbl);
+                  }
+                });
+              }
+            } else {
+              vtd.textContent = 'No data returned';
+            }
+          }catch(e){
+            vtd.textContent = 'Verify error: ' + e;
+          }
+        };
+        tdActions.appendChild(verifyBtn);
+      }
+
+      tr.appendChild(tdDomain);
+      tr.appendChild(tdType);
+      tr.appendChild(tdVals);
+      tr.appendChild(tdDecoded);
+      tr.appendChild(tdMethod);
+      tr.appendChild(tdServers);
+      tr.appendChild(tdTs);
+      tr.appendChild(tdActions);
+      frag.appendChild(tr);
+    });
+
+    tbody.appendChild(frag);
     touchOverviewTs();
-  }catch(e){ console.log('refresh error', e); }
+  }catch(e){
+    console.log('refresh error', e);
+  }finally{
+    refreshResultsInFlight = false;
+  }
 }
 
 async function loadHistory(domain){
@@ -1547,6 +2296,8 @@ document.getElementById('doQuery').onclick = async ()=>{
 };
 
 async function refreshIPs(){
+  if(refreshIPsInFlight) return;
+  refreshIPsInFlight = true;
   try{
     const includeVT = !!(document.getElementById('ips_include_vt') && document.getElementById('ips_include_vt').checked);
     const r = await fetch('/ips' + (includeVT ? '?include_vt=1' : ''));
@@ -1556,15 +2307,21 @@ async function refreshIPs(){
     }
     const j = await r.json();
     const tbody = document.querySelector('#ipsTable tbody');
-    tbody.innerHTML = '';
     const arr = j.ips || [];
     if(!Array.isArray(arr)) {
       console.error('refreshIPs: ips is not an array', arr);
       return;
     }
+    const fp = `vt:${includeVT ? 1 : 0}|${buildIpsFingerprint(arr)}`;
     uiOverview.allIps = arr.length;
     uiOverview.validIps = arr.filter(it=>it && it.valid).length;
     updateOverviewPanel();
+    if(fp === lastAllIpsRenderFingerprint){
+      touchOverviewTs();
+      return;
+    }
+    lastAllIpsRenderFingerprint = fp;
+    tbody.innerHTML = '';
     arr.forEach(it=>{
       if(typeof it !== 'object') return;
       const tr = document.createElement('tr');
@@ -1600,6 +2357,7 @@ async function refreshIPs(){
     });
     touchOverviewTs();
   }catch(e){ console.log('refreshIPs error', e); }
+  finally{ refreshIPsInFlight = false; }
 }
 
 function renderAnalyzeResult(j){
@@ -1632,19 +2390,27 @@ function renderAnalyzeResult(j){
 }
 
 async function refreshValidIPs(){
+  if(refreshValidIPsInFlight) return;
+  refreshValidIPsInFlight = true;
   try{
     const r = await fetch('/ips');
     if(!r.ok){ console.error('refreshValidIPs HTTP', r.status); return; }
     const j = await r.json();
     const tbody = document.querySelector('#validIpsTable tbody');
-    tbody.innerHTML = '';
     const arr = j.ips || [];
     if(!Array.isArray(arr)) return;
     // display only syntactically valid IPs (backend also provides 'valid')
     const validOnly = arr.filter(it => it && it.valid);
+    const fp = `valid|${buildIpsFingerprint(validOnly)}`;
     uiOverview.allIps = arr.length;
     uiOverview.validIps = validOnly.length;
     updateOverviewPanel();
+    if(fp === lastValidIpsRenderFingerprint){
+      touchOverviewTs();
+      return;
+    }
+    lastValidIpsRenderFingerprint = fp;
+    tbody.innerHTML = '';
     validOnly.forEach(it=>{
       const tr = document.createElement('tr');
       const tdIp = document.createElement('td');
@@ -1663,6 +2429,7 @@ async function refreshValidIPs(){
     });
     touchOverviewTs();
   }catch(e){ console.log('refreshValidIPs error', e); }
+  finally{ refreshValidIPsInFlight = false; }
 }
 
   // Auto-refresh control
@@ -1689,7 +2456,7 @@ async function refreshValidIPs(){
     manualPause = !manualPause;
     this.textContent = manualPause ? '▶ Resume Auto-Refresh' : '⏸ Pause Auto-Refresh';
     updateRefreshStateBadge();
-    if(!manualPause){ refreshResults(); refreshIPs(); }
+    if(!manualPause){ triggerSectionRefresh(getActiveSectionId()); }
   };
 
   // pause when user hovers results table to allow inspection of long URLs
@@ -1697,9 +2464,22 @@ async function refreshValidIPs(){
   resultsTable.addEventListener('mouseenter', ()=>{ hoverPause = true; updateRefreshStateBadge(); });
   resultsTable.addEventListener('mouseleave', ()=>{ hoverPause = false; updateRefreshStateBadge(); });
 
-  // periodic refresh — skip work if paused to avoid wiping user's view
-  setInterval(()=>{ if(!isPaused()) refreshResults(); }, 5000);
-  setInterval(()=>{ if(!isPaused()) refreshIPs(); }, 5000);
+  // periodic refresh — only refresh active sections to reduce UI/backend load.
+  setInterval(()=>{
+    if(isPaused()) return;
+    if(getActiveSectionId() === 'status') refreshResults();
+  }, 7000);
+  setInterval(()=>{
+    if(isPaused()) return;
+    if(getActiveSectionId() === 'ips') refreshIPs();
+  }, 12000);
+  setInterval(()=>{
+    if(isPaused()) return;
+    if(getActiveSectionId() === 'validips'){
+      const s = parseInt((document.getElementById('valid_since') || {}).value, 10) || 0;
+      refreshValidIPs(s);
+    }
+  }, 15000);
   setInterval(()=>{
     const sec = document.getElementById('domainanalysis');
     if(!sec) return;
@@ -1726,12 +2506,37 @@ window.addEventListener('load', ()=>{
   }
   
   loadAlertSettings();
-  
-  try {
-    refreshResults();
-    refreshIPs();
-  } catch(e) {
-    console.error('Failed to refresh:', e);
+
+  const verifyTypeEl = document.getElementById('verifyDomainType');
+  if(verifyTypeEl){
+    verifyTypeEl.addEventListener('change', ()=> updateDomainVerifyInputMode());
+  }
+  const runDomainVerifyBtn = document.getElementById('runDomainVerifyBtn');
+  if(runDomainVerifyBtn){
+    runDomainVerifyBtn.addEventListener('click', ()=> runDomainVerify());
+  }
+  const addVerifiedDomainBtn = document.getElementById('addVerifiedDomainBtn');
+  if(addVerifiedDomainBtn){
+    addVerifiedDomainBtn.addEventListener('click', ()=> addVerifiedDomainToConfig());
+  }
+  const clearDomainVerifyBtn = document.getElementById('clearDomainVerifyBtn');
+  if(clearDomainVerifyBtn){
+    clearDomainVerifyBtn.addEventListener('click', ()=>{
+      const domainEl = document.getElementById('verifyDomainName');
+      const typeEl = document.getElementById('verifyDomainType');
+      const txtEl = document.getElementById('verifyTxtDecode');
+      const aEl = document.getElementById('verifyADecode');
+      const keyEl = document.getElementById('verifyAXorKey');
+      const includeVtEl = document.getElementById('verifyIncludeVt');
+      if(domainEl) domainEl.value = '';
+      if(typeEl) typeEl.value = 'AUTO';
+      if(txtEl && includeOption(txtEl, 'cafebabe_xor_base64')) txtEl.value = 'cafebabe_xor_base64';
+      if(aEl && includeOption(aEl, 'none')) aEl.value = 'none';
+      if(keyEl) keyEl.value = '';
+      if(includeVtEl) includeVtEl.checked = true;
+      updateDomainVerifyInputMode();
+      clearDomainVerifyResult();
+    });
   }
   
   document.getElementById('refreshValidBtn').onclick = ()=>{
@@ -1762,6 +2567,18 @@ window.addEventListener('load', ()=>{
       applyDomainAnalysisFilter();
     });
   }
+  const selectNonResolvingBtn = document.getElementById('selectNonResolvingDomainsBtn');
+  if(selectNonResolvingBtn){
+    selectNonResolvingBtn.addEventListener('click', ()=> selectNonResolvingDomainsForBulk());
+  }
+  const clearSelectedDomainsBtn = document.getElementById('clearSelectedDomainsBtn');
+  if(clearSelectedDomainsBtn){
+    clearSelectedDomainsBtn.addEventListener('click', ()=> clearSelectedDomainsForBulk());
+  }
+  const removeSelectedDomainsBtn = document.getElementById('removeSelectedDomainsBtn');
+  if(removeSelectedDomainsBtn){
+    removeSelectedDomainsBtn.addEventListener('click', ()=> removeSelectedNonResolvingDomains());
+  }
   const runIpIntelBtn = document.getElementById('runIpIntelBtn');
   if(runIpIntelBtn){
     runIpIntelBtn.addEventListener('click', ()=> analyzeIpIntel());
@@ -1770,8 +2587,6 @@ window.addEventListener('load', ()=>{
   if(loadIpIntelMispBtn){
     loadIpIntelMispBtn.addEventListener('click', ()=> loadIpIntelFromMisp(true));
   }
-  // initial load of valid ips
-  refreshValidIPs(parseInt(document.getElementById('valid_since').value) || 0);
   // custom decoder UI handlers
   function getCustomDecoderType(){
     return String((document.getElementById('custom_decoder_type') || {}).value || 'TXT').toUpperCase();
@@ -1890,5 +2705,9 @@ window.addEventListener('load', ()=>{
     refreshCustomSampleLabel();
   };
   // initialize decoder cache, custom list, and domain rows in correct order
-  refreshCustomDecoders().then(()=> loadCfg());
+  initDomainVerifyUi();
+  refreshCustomDecoders().then(()=>{
+    initDomainVerifyUi();
+    loadCfg();
+  });
 });

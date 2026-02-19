@@ -35,6 +35,7 @@ _initialized = False
 _cfg = {}
 _misp_event_id = None
 _teams_webhook = None
+_misp_remove_on_absent = False
 
 
 def _sanitize_webhook(url):
@@ -51,9 +52,10 @@ def _sanitize_webhook(url):
 
 
 def _reset_runtime():
-    global _misp_event_id, _teams_webhook
+    global _misp_event_id, _teams_webhook, _misp_remove_on_absent
     _misp_event_id = None
     _teams_webhook = None
+    _misp_remove_on_absent = False
     # Ensure downstream helper starts from a known state.
     try:
         mispupdate_code.misp = None
@@ -61,13 +63,34 @@ def _reset_runtime():
         pass
 
 
-def _apply_alert_values(misp_url=None, misp_key=None, push_event_id=None, teams_webhook=None):
+def _to_bool(value, default=False):
+    """Normalize loose bool-like config values."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return bool(default)
+    s = str(value).strip().lower()
+    if s in ('1', 'true', 'yes', 'on', 'y'):
+        return True
+    if s in ('0', 'false', 'no', 'off', 'n', ''):
+        return False
+    return bool(default)
+
+
+def _apply_alert_values(
+    misp_url=None,
+    misp_key=None,
+    push_event_id=None,
+    teams_webhook=None,
+    misp_remove_on_absent=None,
+):
     """Apply alert settings to in-memory runtime (best effort)."""
-    global _initialized, _misp_event_id, _teams_webhook
+    global _initialized, _misp_event_id, _teams_webhook, _misp_remove_on_absent
 
     _reset_runtime()
 
     _teams_webhook = _sanitize_webhook(teams_webhook)
+    _misp_remove_on_absent = _to_bool(misp_remove_on_absent, default=False)
 
     try:
         pev = str(push_event_id or '').strip()
@@ -116,7 +139,9 @@ def init_from_config(path='config.ini'):
         'misp_url': cfg.get('global', 'misp_url', fallback=''),
         'api_key': cfg.get('global', 'api_key', fallback=''),
         'push_event_id': cfg.get('global', 'push_event_id', fallback=''),
-        'teams_webhook': cfg.get('global', 'teams_webhook', fallback='')
+        'teams_webhook': cfg.get('global', 'teams_webhook', fallback=''),
+        # Default false: keep MISP attributes even when domain-side IP disappears.
+        'misp_remove_on_absent': cfg.get('global', 'misp_remove_on_absent', fallback='false'),
     }
 
     _apply_alert_values(
@@ -124,6 +149,7 @@ def init_from_config(path='config.ini'):
         misp_key=_cfg.get('api_key'),
         push_event_id=_cfg.get('push_event_id'),
         teams_webhook=_cfg.get('teams_webhook'),
+        misp_remove_on_absent=_cfg.get('misp_remove_on_absent'),
     )
     return bool(_teams_webhook or _misp_event_id or getattr(mispupdate_code, 'misp', None))
 
@@ -143,6 +169,7 @@ def init_from_alerts(alerts: dict):
         misp_key=alerts.get('api_key'),
         push_event_id=alerts.get('push_event_id'),
         teams_webhook=alerts.get('teams_webhook'),
+        misp_remove_on_absent=alerts.get('misp_remove_on_absent', False),
     )
     return bool(_teams_webhook or _misp_event_id or getattr(mispupdate_code, 'misp', None))
 
@@ -257,6 +284,10 @@ def alert_removed_ips(ip_tuples: List[Tuple[str, str]]):
     body = _build_alert_body('Removed', entries)
 
     _send_teams(body, title='C2 IOC Remove Alert')
+
+    if not _misp_remove_on_absent:
+        logger.info("MISP delete disabled by config; keeping existing attributes in event.")
+        return
 
     if _misp_event_id and hasattr(mispupdate_code, 'remove_ips'):
         misp_client = getattr(mispupdate_code, 'misp', None)
