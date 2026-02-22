@@ -2817,6 +2817,8 @@ async function analyzeIpRelationships(){
   const vtWorkers = parseBoundedInt((document.getElementById('ipIntelVtWorkers') || {}).value, 8, 1, 32);
   const minShared = parseBoundedInt((document.getElementById('ipRelMinShared') || {}).value, 1, 1, 50);
   const topPairs = parseBoundedInt((document.getElementById('ipRelTopPairs') || {}).value, 50, 1, 5000);
+  const windowDays = parseBoundedInt((document.getElementById('ipRelWindowDays') || {}).value, 0, 0, 3650);
+  const domainSampleLimit = parseBoundedInt((document.getElementById('ipRelDomainSampleLimit') || {}).value, 5, 1, 50);
 
   const meta = document.getElementById('ipRelMeta');
   const pairsBody = document.querySelector('#ipRelPairsTable tbody');
@@ -2824,14 +2826,14 @@ async function analyzeIpRelationships(){
 
   if(!raw){
     if(meta) meta.textContent = 'Input IP list first';
-    if(pairsBody) setSummaryMessage(pairsBody, 4, 'No data');
-    if(clustersBody) setSummaryMessage(clustersBody, 5, 'No data');
+    if(pairsBody) setSummaryMessage(pairsBody, 5, 'No data');
+    if(clustersBody) setSummaryMessage(clustersBody, 6, 'No data');
     return;
   }
 
   if(meta) meta.textContent = 'Analyzing relationships...';
-  if(pairsBody) setSummaryMessage(pairsBody, 4, 'Loading...');
-  if(clustersBody) setSummaryMessage(clustersBody, 5, 'Loading...');
+  if(pairsBody) setSummaryMessage(pairsBody, 5, 'Loading...');
+  if(clustersBody) setSummaryMessage(clustersBody, 6, 'Loading...');
 
   try{
     const r = await fetch('/ip-relationship-analysis', {
@@ -2841,6 +2843,8 @@ async function analyzeIpRelationships(){
         ips: raw,
         min_shared_domains: minShared,
         top_pairs: topPairs,
+        time_window_days: windowDays,
+        domain_sample_limit: domainSampleLimit,
         include_vt: includeVT,
         vt_budget: Math.min(vtBudget, 5000),
         vt_workers: vtWorkers
@@ -2849,8 +2853,8 @@ async function analyzeIpRelationships(){
     const j = await r.json();
     if(!r.ok || !j || j.status !== 'ok'){
       if(meta) meta.textContent = `Relationship analysis failed: ${(j && j.error) ? j.error : 'HTTP '+r.status}`;
-      if(pairsBody) setSummaryMessage(pairsBody, 4, 'No data');
-      if(clustersBody) setSummaryMessage(clustersBody, 5, 'No data');
+      if(pairsBody) setSummaryMessage(pairsBody, 5, 'No data');
+      if(clustersBody) setSummaryMessage(clustersBody, 6, 'No data');
       return;
     }
 
@@ -2858,6 +2862,10 @@ async function analyzeIpRelationships(){
       const pairCount = Number(j.pair_count || 0);
       const clusterCount = Array.isArray(j.clusters) ? j.clusters.length : 0;
       let txt = `valid ${j.valid_count || 0} / pairs ${pairCount} / clusters ${clusterCount}`;
+      if(Number(j.time_window_days || 0) > 0){
+        txt += ` / window ${j.time_window_days}d`;
+        if(j.window_valid_count != null) txt += ` (in-window ${j.window_valid_count})`;
+      }
       if(j.vt_enabled){
         txt += ` / VT attempted ${j.vt_attempted || 0} (budget ${j.vt_budget || 0}, workers ${j.vt_workers || 0})`;
       }
@@ -2868,7 +2876,7 @@ async function analyzeIpRelationships(){
       pairsBody.innerHTML = '';
       const pairs = Array.isArray(j.pairs) ? j.pairs : [];
       if(!pairs.length){
-        setSummaryMessage(pairsBody, 4, 'No related pairs found (try lowering min shared domains)');
+        setSummaryMessage(pairsBody, 5, 'No related pairs found (try lowering min shared domains)');
       } else {
         pairs.forEach(it=>{
           const tr = document.createElement('tr');
@@ -2895,8 +2903,13 @@ async function analyzeIpRelationships(){
 
           const tdS = document.createElement('td'); tdS.textContent = String(sd);
           const tdJ = document.createElement('td'); tdJ.textContent = jac.toFixed(3);
+          const tdD = document.createElement('td');
+          const doms = Array.isArray(it.shared_domains_sample) ? it.shared_domains_sample : [];
+          tdD.className = 'wrap-cell';
+          tdD.textContent = doms.join(', ') || '-';
+          tdD.title = doms.join(', ');
 
-          tr.appendChild(tdA); tr.appendChild(tdB); tr.appendChild(tdS); tr.appendChild(tdJ);
+          tr.appendChild(tdA); tr.appendChild(tdB); tr.appendChild(tdS); tr.appendChild(tdJ); tr.appendChild(tdD);
           pairsBody.appendChild(tr);
         });
       }
@@ -2906,12 +2919,13 @@ async function analyzeIpRelationships(){
       clustersBody.innerHTML = '';
       const clusters = Array.isArray(j.clusters) ? j.clusters : [];
       if(!clusters.length){
-        setSummaryMessage(clustersBody, 5, 'No clusters');
+        setSummaryMessage(clustersBody, 6, 'No clusters');
       } else {
         clusters.forEach((c, idx)=>{
           const tr = document.createElement('tr');
           const ips = Array.isArray(c.ips) ? c.ips : [];
           const sample = ips.slice(0, 12).join(' | ');
+          const doms = Array.isArray(c.domains_sample) ? c.domains_sample : [];
           const vt = c.vt_summary || null;
           const vtTxt = vt
             ? `M:${vt.malicious_total || 0} S:${vt.suspicious_total || 0} topASN:${(vt.top_asn||[]).map(x=>x[0]+'('+x[1]+')').join(', ')} topC:${(vt.top_country||[]).map(x=>x[0]+'('+x[1]+')').join(', ')}`
@@ -2925,12 +2939,26 @@ async function analyzeIpRelationships(){
           tdIps.textContent = sample || '-';
           tdIps.title = ips.join(' | ');
 
+          const tdDom = document.createElement('td');
+          tdDom.className = 'wrap-cell';
+          tdDom.textContent = doms.join(', ') || '-';
+          tdDom.title = doms.join(', ');
+
           const tdVt = document.createElement('td');
           tdVt.className = 'wrap-cell';
           tdVt.textContent = vtTxt;
           tdVt.title = vtTxt;
 
-          tr.appendChild(tdId); tr.appendChild(tdSz); tr.appendChild(tdDc); tr.appendChild(tdIps); tr.appendChild(tdVt);
+          // Click cluster row -> filter IP Intel input to this cluster and run ipIntel
+          tr.style.cursor = 'pointer';
+          tr.title = 'Click to analyze this cluster in Per-IP Details';
+          tr.onclick = async ()=>{
+            const ta = document.getElementById('ipIntelInput');
+            if(ta) ta.value = ips.join('\n');
+            await analyzeIpIntel();
+          };
+
+          tr.appendChild(tdId); tr.appendChild(tdSz); tr.appendChild(tdDc); tr.appendChild(tdIps); tr.appendChild(tdDom); tr.appendChild(tdVt);
           clustersBody.appendChild(tr);
         });
       }

@@ -342,16 +342,24 @@
         Top pairs
         <input id="ipRelTopPairs" type="number" min="1" max="5000" value="50" style="width:96px;margin-top:0;" />
       </label>
+      <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
+        Window (days)
+        <input id="ipRelWindowDays" type="number" min="0" max="3650" value="0" style="width:92px;margin-top:0;" />
+      </label>
+      <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
+        Domain sample
+        <input id="ipRelDomainSampleLimit" type="number" min="1" max="50" value="5" style="width:86px;margin-top:0;" />
+      </label>
       <span id="ipRelMeta" style="font-size:.78rem;color:#5b6a77;">-</span>
     </div>
     <h4 style="margin-top:12px;">Top Related IP Pairs</h4>
     <table id="ipRelPairsTable">
-      <thead><tr><th>IP A</th><th>IP B</th><th>Shared Domains</th><th>Jaccard</th></tr></thead>
+      <thead><tr><th>IP A</th><th>IP B</th><th>Shared Domains</th><th>Jaccard</th><th>Shared domain sample</th></tr></thead>
       <tbody></tbody>
     </table>
     <h4 style="margin-top:12px;">Clusters</h4>
     <table id="ipRelClustersTable">
-      <thead><tr><th>Cluster</th><th>Size</th><th>Domain Count</th><th>IPs (sample)</th><th>VT Summary</th></tr></thead>
+      <thead><tr><th>Cluster</th><th>Size</th><th>Domain Count</th><th>IPs (sample)</th><th>Domains (sample)</th><th>VT Summary</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>

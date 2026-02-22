@@ -102,6 +102,8 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn):
 
     min_shared = _to_int('min_shared_domains', 1, 1, 999999)
     top_pairs = _to_int('top_pairs', 50, 1, 5000)
+    time_window_days = _to_int('time_window_days', 0, 0, 3650)
+    domain_sample_limit = _to_int('domain_sample_limit', 5, 1, 50)
 
     include_vt = bool(data.get('include_vt', False))
     vt_workers = _to_int('vt_workers', 8, 1, 32)
@@ -126,11 +128,24 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn):
             'last_ts': int(ent.get('last_ts') or 0),
         })
 
-    # Build domain -> list(ips) restricted to input set
-    input_set = set(valid_ips)
+    # Apply time window (approximation): filter out IPs whose last_ts is older than cutoff.
+    cutoff_ts = 0
+    if time_window_days and int(time_window_days) > 0:
+        cutoff_ts = int(time.time()) - (int(time_window_days) * 86400)
+
+    window_valid_ips: List[str] = []
+    for ip in valid_ips:
+        ent = ip_map.get(ip) or {}
+        last_ts = int(ent.get('last_ts') or 0)
+        if cutoff_ts and last_ts and last_ts < cutoff_ts:
+            continue
+        window_valid_ips.append(ip)
+
+    # Build domain -> list(ips) restricted to input set (and windowed set when enabled)
+    input_set = set(window_valid_ips)
     domain_to_ips: Dict[str, List[str]] = {}
     ip_to_domains: Dict[str, set] = {}
-    for ip in valid_ips:
+    for ip in window_valid_ips:
         doms = set((ip_map.get(ip) or {}).get('domains') or [])
         ip_to_domains[ip] = doms
         for d in doms:
@@ -155,18 +170,20 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn):
         db = ip_to_domains.get(b, set())
         union = len(da | db) if da or db else 0
         jacc = (shared / union) if union else 0.0
+        shared_domains = sorted(list(da & db))
         pairs.append({
             'a': a,
             'b': b,
             'shared_domains': int(shared),
             'jaccard': float(jacc),
+            'shared_domains_sample': shared_domains[:domain_sample_limit],
         })
 
     pairs.sort(key=lambda x: (-x['shared_domains'], -x['jaccard'], x['a'], x['b']))
     top_pairs_list = pairs[:top_pairs]
 
     # Clustering using union-find on shared>=min_shared
-    parent: Dict[str, str] = {ip: ip for ip in valid_ips}
+    parent: Dict[str, str] = {ip: ip for ip in window_valid_ips}
 
     def find(x):
         while parent.get(x) != x:
@@ -184,7 +201,7 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn):
             union(it['a'], it['b'])
 
     clusters: Dict[str, List[str]] = {}
-    for ip in valid_ips:
+    for ip in window_valid_ips:
         clusters.setdefault(find(ip), []).append(ip)
 
     cluster_list = []
@@ -198,7 +215,7 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn):
             'size': len(ips_sorted),
             'ips': ips_sorted,
             'domain_count': len(dom_union),
-            'domains_sample': sorted(list(dom_union))[:20],
+            'domains_sample': sorted(list(dom_union))[:domain_sample_limit],
         })
 
     cluster_list.sort(key=lambda x: (-x['size'], -x['domain_count'], x['cluster_id']))
@@ -280,10 +297,14 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn):
         'status': 'ok',
         'submitted_count': len(valid_ips) + len(invalid),
         'valid_count': len(valid_ips),
+        'window_valid_count': len(window_valid_ips),
         'invalid_count': len(invalid),
         'invalid_inputs': invalid[:200],
         'min_shared_domains': min_shared,
         'top_pairs': top_pairs,
+        'time_window_days': int(time_window_days),
+        'cutoff_ts': int(cutoff_ts or 0),
+        'domain_sample_limit': int(domain_sample_limit),
         'observed': observed,
         'pair_count': len(pairs),
         'pairs': top_pairs_list,
@@ -292,4 +313,5 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn):
         'vt_attempted': vt_attempted,
         'vt_budget': vt_budget,
         'vt_workers': vt_workers,
+        'window_note': 'Time window is approximated by per-IP last_seen timestamp; per-domain timestamps are not tracked.',
     })
