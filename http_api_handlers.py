@@ -23,6 +23,7 @@ from http_api.basic_handlers import handle_decoders as _handle_decoders_basic
 from http_api.utils import send_json as _send_json_basic
 from http_api.settings_handlers import handle_settings_get as _handle_settings_get_basic
 from http_api.settings_handlers import handle_settings_post as _handle_settings_post_basic
+from http_api.relationship_handlers import handle_ip_relationship_analysis as _handle_ip_relationship_analysis
 
 
 try:
@@ -1731,6 +1732,9 @@ def attach_api_handlers(
     
         if parsed.path == '/ip-list-analysis':
             return self._handle_ip_list_analysis()
+
+        if parsed.path == '/ip-relationship-analysis':
+            return _handle_ip_relationship_analysis(self, gather_ip_map_fn=self._gather_ip_map)
     
         if parsed.path == '/misp/event-ips':
             return self._handle_misp_event_ips()

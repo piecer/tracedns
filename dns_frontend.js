@@ -2676,6 +2676,10 @@ window.addEventListener('load', ()=>{
   if(runIpIntelBtn){
     runIpIntelBtn.addEventListener('click', ()=> analyzeIpIntel());
   }
+  const runIpRelBtn = document.getElementById('runIpRelationshipBtn');
+  if(runIpRelBtn){
+    runIpRelBtn.addEventListener('click', ()=> analyzeIpRelationships());
+  }
   const loadIpIntelMispBtn = document.getElementById('loadIpIntelMispBtn');
   if(loadIpIntelMispBtn){
     loadIpIntelMispBtn.addEventListener('click', ()=> loadIpIntelFromMisp(true));
@@ -2804,3 +2808,136 @@ window.addEventListener('load', ()=>{
     loadCfg();
   });
 });
+
+// --- Relationship analysis (input IP list) ---
+async function analyzeIpRelationships(){
+  const raw = String((document.getElementById('ipIntelInput') || {}).value || '').trim();
+  const includeVT = !!(document.getElementById('ipIntelIncludeVt') && document.getElementById('ipIntelIncludeVt').checked);
+  const vtBudget = parseBoundedInt((document.getElementById('ipIntelVtBudget') || {}).value, 1200, 0, 5000);
+  const vtWorkers = parseBoundedInt((document.getElementById('ipIntelVtWorkers') || {}).value, 8, 1, 32);
+  const minShared = parseBoundedInt((document.getElementById('ipRelMinShared') || {}).value, 1, 1, 50);
+  const topPairs = parseBoundedInt((document.getElementById('ipRelTopPairs') || {}).value, 50, 1, 5000);
+
+  const meta = document.getElementById('ipRelMeta');
+  const pairsBody = document.querySelector('#ipRelPairsTable tbody');
+  const clustersBody = document.querySelector('#ipRelClustersTable tbody');
+
+  if(!raw){
+    if(meta) meta.textContent = 'Input IP list first';
+    if(pairsBody) setSummaryMessage(pairsBody, 4, 'No data');
+    if(clustersBody) setSummaryMessage(clustersBody, 5, 'No data');
+    return;
+  }
+
+  if(meta) meta.textContent = 'Analyzing relationships...';
+  if(pairsBody) setSummaryMessage(pairsBody, 4, 'Loading...');
+  if(clustersBody) setSummaryMessage(clustersBody, 5, 'Loading...');
+
+  try{
+    const r = await fetch('/ip-relationship-analysis', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        ips: raw,
+        min_shared_domains: minShared,
+        top_pairs: topPairs,
+        include_vt: includeVT,
+        vt_budget: Math.min(vtBudget, 5000),
+        vt_workers: vtWorkers
+      })
+    });
+    const j = await r.json();
+    if(!r.ok || !j || j.status !== 'ok'){
+      if(meta) meta.textContent = `Relationship analysis failed: ${(j && j.error) ? j.error : 'HTTP '+r.status}`;
+      if(pairsBody) setSummaryMessage(pairsBody, 4, 'No data');
+      if(clustersBody) setSummaryMessage(clustersBody, 5, 'No data');
+      return;
+    }
+
+    if(meta){
+      const pairCount = Number(j.pair_count || 0);
+      const clusterCount = Array.isArray(j.clusters) ? j.clusters.length : 0;
+      let txt = `valid ${j.valid_count || 0} / pairs ${pairCount} / clusters ${clusterCount}`;
+      if(j.vt_enabled){
+        txt += ` / VT attempted ${j.vt_attempted || 0} (budget ${j.vt_budget || 0}, workers ${j.vt_workers || 0})`;
+      }
+      meta.textContent = txt;
+    }
+
+    if(pairsBody){
+      pairsBody.innerHTML = '';
+      const pairs = Array.isArray(j.pairs) ? j.pairs : [];
+      if(!pairs.length){
+        setSummaryMessage(pairsBody, 4, 'No related pairs found (try lowering min shared domains)');
+      } else {
+        pairs.forEach(it=>{
+          const tr = document.createElement('tr');
+          const a = String((it && it.a) || '');
+          const b = String((it && it.b) || '');
+          const sd = Number((it && it.shared_domains) || 0);
+          const jac = Number((it && it.jaccard) || 0);
+
+          const tdA = document.createElement('td');
+          tdA.textContent = a;
+          if(isIPv4(a)){
+            tdA.style.cursor = 'pointer';
+            tdA.title = 'Open in Query';
+            tdA.onclick = ()=> openQueryForValue(a);
+          }
+
+          const tdB = document.createElement('td');
+          tdB.textContent = b;
+          if(isIPv4(b)){
+            tdB.style.cursor = 'pointer';
+            tdB.title = 'Open in Query';
+            tdB.onclick = ()=> openQueryForValue(b);
+          }
+
+          const tdS = document.createElement('td'); tdS.textContent = String(sd);
+          const tdJ = document.createElement('td'); tdJ.textContent = jac.toFixed(3);
+
+          tr.appendChild(tdA); tr.appendChild(tdB); tr.appendChild(tdS); tr.appendChild(tdJ);
+          pairsBody.appendChild(tr);
+        });
+      }
+    }
+
+    if(clustersBody){
+      clustersBody.innerHTML = '';
+      const clusters = Array.isArray(j.clusters) ? j.clusters : [];
+      if(!clusters.length){
+        setSummaryMessage(clustersBody, 5, 'No clusters');
+      } else {
+        clusters.forEach((c, idx)=>{
+          const tr = document.createElement('tr');
+          const ips = Array.isArray(c.ips) ? c.ips : [];
+          const sample = ips.slice(0, 12).join(' | ');
+          const vt = c.vt_summary || null;
+          const vtTxt = vt
+            ? `M:${vt.malicious_total || 0} S:${vt.suspicious_total || 0} topASN:${(vt.top_asn||[]).map(x=>x[0]+'('+x[1]+')').join(', ')} topC:${(vt.top_country||[]).map(x=>x[0]+'('+x[1]+')').join(', ')}`
+            : (j.vt_enabled ? '-' : 'VT off');
+
+          const tdId = document.createElement('td'); tdId.textContent = String(idx + 1);
+          const tdSz = document.createElement('td'); tdSz.textContent = String(c.size || ips.length || 0);
+          const tdDc = document.createElement('td'); tdDc.textContent = String(c.domain_count || 0);
+          const tdIps = document.createElement('td');
+          tdIps.className = 'wrap-cell';
+          tdIps.textContent = sample || '-';
+          tdIps.title = ips.join(' | ');
+
+          const tdVt = document.createElement('td');
+          tdVt.className = 'wrap-cell';
+          tdVt.textContent = vtTxt;
+          tdVt.title = vtTxt;
+
+          tr.appendChild(tdId); tr.appendChild(tdSz); tr.appendChild(tdDc); tr.appendChild(tdIps); tr.appendChild(tdVt);
+          clustersBody.appendChild(tr);
+        });
+      }
+    }
+
+    touchOverviewTs();
+  }catch(e){
+    if(meta) meta.textContent = 'Relationship analysis error: ' + e;
+  }
+}

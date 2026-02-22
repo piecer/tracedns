@@ -323,12 +323,38 @@
     </label>
     <button id="loadIpIntelMispBtn">📥 Load from MISP</button>
     <button id="runIpIntelBtn">🔍 Analyze IP List</button>
+    <button id="runIpRelationshipBtn">🧬 Relationships</button>
     <span id="ipIntelMeta" style="font-size:.78rem;color:#5b6a77;"></span>
   </div>
   <p style="font-size:.78rem;color:#5b6a77;margin:2px 0 10px;">Supports up to 10,000 valid IPs. Per-IP rows are intentionally limited for browser stability.</p>
 
   <h4>Estimated Characteristics</h4>
   <div id="ipIntelHintsBox" style="background:#f8f9fa;padding:12px;border:1px solid #d7e4eb;border-radius:10px;margin-bottom:10px;"></div>
+
+  <div class="summary-card" style="margin-bottom:12px;">
+    <h4>Relationship Summary (input IPs)</h4>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+      <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
+        Min shared domains
+        <input id="ipRelMinShared" type="number" min="1" max="50" value="1" style="width:86px;margin-top:0;" />
+      </label>
+      <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
+        Top pairs
+        <input id="ipRelTopPairs" type="number" min="1" max="5000" value="50" style="width:96px;margin-top:0;" />
+      </label>
+      <span id="ipRelMeta" style="font-size:.78rem;color:#5b6a77;">-</span>
+    </div>
+    <h4 style="margin-top:12px;">Top Related IP Pairs</h4>
+    <table id="ipRelPairsTable">
+      <thead><tr><th>IP A</th><th>IP B</th><th>Shared Domains</th><th>Jaccard</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <h4 style="margin-top:12px;">Clusters</h4>
+    <table id="ipRelClustersTable">
+      <thead><tr><th>Cluster</th><th>Size</th><th>Domain Count</th><th>IPs (sample)</th><th>VT Summary</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
 
   <div class="domain-summary-grid">
     <div class="summary-card">
