@@ -5,6 +5,10 @@
 import os
 import json
 import sys
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 
 def ensure_history_dir(path):
@@ -17,7 +21,7 @@ def ensure_history_dir(path):
     try:
         os.makedirs(path, exist_ok=True)
     except Exception as e:
-        print(f"[WARN] cannot create history dir {path}: {e}", file=sys.stderr)
+        logger.warning("cannot create history dir %s: %s", path, e)
 
 
 def load_history_files(history_dir):
@@ -96,4 +100,4 @@ def persist_history_entry(history_dir, domain, history_obj):
         with open(fn, 'w', encoding='utf-8') as f:
             json.dump(to_write, f, indent=2, ensure_ascii=False)
     except Exception as e:
-        print(f"[WARN] cannot persist history for {domain}: {e}", file=sys.stderr)
+        logger.warning("cannot persist history for %s: %s", domain, e)

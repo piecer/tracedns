@@ -22,6 +22,7 @@ from history_manager import ensure_history_dir, load_history_files
 from http_server import ThreadingHTTPServer, make_handler
 from monitor.engine import reconcile_removed_ips, run_full_cycle
 from monitor.state_utils import collect_active_ip_map
+from monitor.stores import ConfigStore
 from txt_decoder import register_custom_decoder
 
 
@@ -99,6 +100,7 @@ def main():
         'interval': max(1, int(interval0)),
         'max_workers': max(1, int(max_workers0)),
     }
+    cfg_store = ConfigStore(shared_config, config_lock)
 
     # restore custom TXT decoders from file config (if any)
     file_custom = file_cfg.get('custom_decoders', []) if isinstance(file_cfg, dict) else []
@@ -224,30 +226,26 @@ def main():
     query_fail_counts = {}
 
     while running:
-        with config_lock:
-            domains = normalize_domains(shared_config.get('domains', []))
-            servers = list(shared_config.get('servers', []))
-            interval = int(shared_config.get('interval') or 60)
-            max_workers = int(shared_config.get('max_workers') or 8)
-            force_req = shared_config.pop('_force_resolve', None)
+        snap = cfg_store.snapshot()
+        domains = normalize_domains(snap.domains)
 
         active_ip_map_now = run_full_cycle(
             domains_raw=domains,
-            servers=servers,
+            servers=snap.servers,
             current_results=current_results,
             history=history,
             history_dir=history_dir,
             query_fail_counts=query_fail_counts,
-            max_workers=max_workers,
-            force_req=force_req,
+            max_workers=snap.max_workers,
+            force_req=snap.force_req,
         )
 
         # reconcile removed IPs only for full scans
-        if not (force_req and 'domains' in force_req):
+        if not (snap.force_req and 'domains' in (snap.force_req or {})):
             active_ip_map_prev = reconcile_removed_ips(active_ip_map_prev, active_ip_map_now)
 
         # sleep ticks
-        for _ in range(max(1, interval)):
+        for _ in range(max(1, snap.interval)):
             if not running:
                 break
             time.sleep(1)
