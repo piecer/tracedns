@@ -434,6 +434,11 @@ function renderDomainVerifyDecoderTable(result){
     const tdS = document.createElement('td'); tdS.textContent = String(row.score != null ? row.score : '-');
     const tdC = document.createElement('td'); tdC.textContent = String(row.ip_count || 0);
 
+    const tdAn = document.createElement('td');
+    const an = Number(row.anomaly_score || 0);
+    tdAn.textContent = String(an || 0);
+    tdAn.title = 'Composite anomaly score (higher = more suspicious signals)';
+
     const tdVT = document.createElement('td');
     if(row.vt_summary){
       const m = Number(row.vt_summary.malicious_total || 0);
@@ -444,6 +449,10 @@ function renderDomainVerifyDecoderTable(result){
       else if(s > 0) badge.classList.add('mid');
       badge.textContent = `${m}/${s}`;
       tdVT.appendChild(badge);
+      // more context in title
+      const mr = (row.vt_summary.malicious_ratio != null) ? String(row.vt_summary.malicious_ratio) : '-';
+      const sr = (row.vt_summary.suspicious_ratio != null) ? String(row.vt_summary.suspicious_ratio) : '-';
+      tdVT.title = `malicious_ratio=${mr} suspicious_ratio=${sr} unique_asn=${row.vt_summary.unique_asn || 0} unique_country=${row.vt_summary.unique_country || 0}`;
     } else {
       tdVT.textContent = (result && result.include_vt) ? '-' : 'VT off';
     }
@@ -495,6 +504,7 @@ function renderDomainVerifyDecoderTable(result){
     tr.appendChild(tdN);
     tr.appendChild(tdS);
     tr.appendChild(tdC);
+    tr.appendChild(tdAn);
     tr.appendChild(tdVT);
     tr.appendChild(tdAs);
     tr.appendChild(tdCo);

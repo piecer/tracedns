@@ -647,44 +647,145 @@ def attach_api_handlers(
                         if isinstance(items, dict):
                             ranked = sorted(items.items(), key=lambda kv: (-(kv[1] or {}).get('score', 0), kv[0]))
                             ranked = ranked[:decoder_top_n]
-                            # VT enrichment per candidate (budgeted)
-                            vt_budget_left = int(vt_lookup_budget)
+
+                            # 1) Deduplicated VT lookups across candidates (budget shared)
+                            candidate_ips = {}
+                            all_ips = []
                             for name, info in ranked:
                                 ips = [ip for ip in (info.get('ips') or []) if _is_ipv4(ip)]
                                 ips = ips[:200]
-                                vt_summary = None
-                                if vt_enabled and vt_budget_left > 0 and ips:
-                                    mal = 0
-                                    sus = 0
-                                    asn_freq = {}
-                                    ctry_freq = {}
-                                    # per-candidate budget share
-                                    take = ips[:min(len(ips), max(1, vt_budget_left // max(1, len(ranked))))]
-                                    vt_budget_left -= len(take)
-                                    for ip in take:
-                                        try:
-                                            rep = get_ip_report(ip)
-                                        except Exception:
-                                            rep = None
+                                candidate_ips[name] = ips
+                                all_ips.extend(ips)
+
+                            # stable de-dup order
+                            seen_ip = set()
+                            uniq_ips = []
+                            for ip in all_ips:
+                                if ip in seen_ip:
+                                    continue
+                                seen_ip.add(ip)
+                                uniq_ips.append(ip)
+
+                            vt_reports = {}
+                            vt_attempted = 0
+                            if vt_enabled and vt_lookup_budget > 0 and uniq_ips:
+                                lookup_ips = uniq_ips[:vt_lookup_budget]
+                                vt_attempted = len(lookup_ips)
+                                try:
+                                    # best effort parallelization (IO-bound)
+                                    if vt_workers <= 1 or len(lookup_ips) <= 1:
+                                        for ip in lookup_ips:
+                                            try:
+                                                vt_reports[ip] = get_ip_report(ip)
+                                            except Exception:
+                                                vt_reports[ip] = None
+                                    else:
+                                        import concurrent.futures as _cf
+
+                                        def _lookup(ip_str):
+                                            try:
+                                                return get_ip_report(ip_str)
+                                            except Exception:
+                                                return None
+
+                                        with _cf.ThreadPoolExecutor(max_workers=vt_workers) as ex:
+                                            futs = {ex.submit(_lookup, ip): ip for ip in lookup_ips}
+                                            for fut in _cf.as_completed(futs):
+                                                ip = futs[fut]
+                                                vt_reports[ip] = fut.result()
+                                except Exception:
+                                    pass
+
+                            # 2) Per-decoder anomaly signals/score
+                            def _topn(freq, n=3):
+                                return sorted(freq.items(), key=lambda x: (-x[1], x[0]))[:n]
+
+                            def _calc_anomaly(vt_rows, total_ip_count):
+                                """Return (score:int, signals:dict)"""
+                                if total_ip_count <= 0:
+                                    return (0, {'reason': 'no_ips'})
+                                mal_ips = 0
+                                sus_ips = 0
+                                mal_total = 0
+                                sus_total = 0
+                                asn_freq = {}
+                                ctry_freq = {}
+                                for rep in vt_rows:
+                                    if not isinstance(rep, dict):
+                                        continue
+                                    m = int(rep.get('malicious', 0) or 0)
+                                    s = int(rep.get('suspicious', 0) or 0)
+                                    mal_total += m
+                                    sus_total += s
+                                    if m > 0:
+                                        mal_ips += 1
+                                    if s > 0:
+                                        sus_ips += 1
+                                    asn = rep.get('asn')
+                                    ctry = rep.get('country')
+                                    if asn is not None and str(asn).strip():
+                                        k = str(asn).strip(); asn_freq[k] = asn_freq.get(k, 0) + 1
+                                    if ctry is not None and str(ctry).strip():
+                                        k = str(ctry).strip(); ctry_freq[k] = ctry_freq.get(k, 0) + 1
+
+                                # ratios use total_ip_count (not vt_rows count) to penalize low coverage
+                                mal_ratio = mal_ips / max(1, total_ip_count)
+                                sus_ratio = sus_ips / max(1, total_ip_count)
+                                top_asn = _topn(asn_freq, 3)
+                                top_country = _topn(ctry_freq, 3)
+                                top_asn_share = (top_asn[0][1] / max(1, sum(asn_freq.values()))) if top_asn else 0
+                                top_ctry_share = (top_country[0][1] / max(1, sum(ctry_freq.values()))) if top_country else 0
+
+                                # Simple composite score (interpretable, not ML):
+                                score = 0
+                                score += int(100 * mal_ratio) * 2
+                                score += int(100 * sus_ratio)
+                                score += int(mal_total) * 5
+                                score += int(sus_total) * 2
+                                score += int(10 * top_asn_share)
+                                score += int(8 * top_ctry_share)
+
+                                signals = {
+                                    'malicious_ratio': round(mal_ratio, 3),
+                                    'suspicious_ratio': round(sus_ratio, 3),
+                                    'malicious_total': mal_total,
+                                    'suspicious_total': sus_total,
+                                    'unique_asn': len(asn_freq),
+                                    'unique_country': len(ctry_freq),
+                                    'top_asn': top_asn,
+                                    'top_country': top_country,
+                                }
+                                return (int(score), signals)
+
+                            for name, info in ranked:
+                                ips = candidate_ips.get(name, [])
+                                vt_rows = []
+                                if vt_enabled and vt_reports:
+                                    for ip in ips:
+                                        rep = vt_reports.get(ip)
                                         if isinstance(rep, dict):
-                                            mal += int(rep.get('malicious', 0) or 0)
-                                            sus += int(rep.get('suspicious', 0) or 0)
-                                            asn = rep.get('asn')
-                                            ctry = rep.get('country')
-                                            if asn is not None and str(asn).strip():
-                                                k = str(asn).strip()
-                                                asn_freq[k] = asn_freq.get(k, 0) + 1
-                                            if ctry is not None and str(ctry).strip():
-                                                k = str(ctry).strip()
-                                                ctry_freq[k] = ctry_freq.get(k, 0) + 1
-                                    top_asn = sorted(asn_freq.items(), key=lambda x: (-x[1], x[0]))[:3]
-                                    top_country = sorted(ctry_freq.items(), key=lambda x: (-x[1], x[0]))[:3]
+                                            # Normalize keys used elsewhere
+                                            vt_rows.append({
+                                                'asn': rep.get('asn'),
+                                                'country': rep.get('country'),
+                                                'malicious': int(rep.get('malicious', 0) or 0),
+                                                'suspicious': int(rep.get('suspicious', 0) or 0),
+                                            })
+                                anomaly_score, signals = _calc_anomaly(vt_rows, len(ips))
+                                vt_summary = None
+                                if vt_enabled:
                                     vt_summary = {
-                                        'malicious_total': mal,
-                                        'suspicious_total': sus,
-                                        'top_asn': top_asn,
-                                        'top_country': top_country,
+                                        'malicious_total': signals.get('malicious_total', 0),
+                                        'suspicious_total': signals.get('suspicious_total', 0),
+                                        'top_asn': signals.get('top_asn', []),
+                                        'top_country': signals.get('top_country', []),
+                                        'malicious_ratio': signals.get('malicious_ratio', 0),
+                                        'suspicious_ratio': signals.get('suspicious_ratio', 0),
+                                        'unique_asn': signals.get('unique_asn', 0),
+                                        'unique_country': signals.get('unique_country', 0),
+                                        'vt_attempted_total': vt_attempted,
                                     }
+
                                 decoder_candidates.append({
                                     'decoder_type': 'TXT',
                                     'name': name,
@@ -692,6 +793,7 @@ def attach_api_handlers(
                                     'ip_count': len(ips),
                                     'sample_ips': ips[:8],
                                     'vt_summary': vt_summary,
+                                    'anomaly_score': anomaly_score,
                                 })
                 except Exception:
                     pass
@@ -726,8 +828,14 @@ def attach_api_handlers(
                 except Exception:
                     pass
 
-                # Sort candidates by score/ip_count.
-                decoder_candidates.sort(key=lambda x: (-int(x.get('score') or 0), -int(x.get('ip_count') or 0), str(x.get('decoder_type') or ''), str(x.get('name') or '')))
+                # Sort candidates: prefer anomaly_score (if present), then decoder score/ip_count.
+                decoder_candidates.sort(key=lambda x: (
+                    -int(x.get('anomaly_score') or 0),
+                    -int(x.get('score') or 0),
+                    -int(x.get('ip_count') or 0),
+                    str(x.get('decoder_type') or ''),
+                    str(x.get('name') or ''),
+                ))
                 decoder_candidates = decoder_candidates[:max(1, decoder_top_n * 2)]
         except Exception:
             decoder_candidates = []
