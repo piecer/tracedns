@@ -183,6 +183,19 @@
       <input id="verifyIncludeVt" type="checkbox" checked style="width:auto;margin:0;" />
       Include VT score
     </label>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:30px;font-weight:700;color:#334c5e;">
+      <input id="verifyAnalyzeDecoders" type="checkbox" checked style="width:auto;margin:0;" />
+      Try all decoders (find hidden IPs)
+    </label>
+    <label>Top decoder candidates
+      <input id="verifyDecoderTopN" type="number" min="1" max="50" value="8" />
+    </label>
+    <label>VT lookup budget
+      <input id="verifyVtBudget" type="number" min="0" max="5000" value="200" />
+    </label>
+    <label>VT workers
+      <input id="verifyVtWorkers" type="number" min="1" max="32" value="8" />
+    </label>
   </div>
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 10px;">
     <button id="runDomainVerifyBtn">🔬 Validate Domain</button>
@@ -191,6 +204,12 @@
     <span id="domainVerifyStatus" class="settings-status"></span>
   </div>
   <div id="domainVerifySummary" style="background:#f8f9fa;padding:12px;border:1px solid #d7e4eb;border-radius:10px;margin-bottom:10px;">No validation result yet.</div>
+  <h4>Decoder Candidates</h4>
+  <table id="domainVerifyDecoderTable">
+    <thead><tr><th>Type</th><th>Decoder</th><th>Score</th><th>IPs</th><th>VT (M/S)</th><th>ASNs</th><th>Countries</th><th>Sample IPs</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
   <h4>DNS Server Results</h4>
   <table id="domainVerifyServerTable">
     <thead><tr><th>DNS Server</th><th>Query Type</th><th>Status</th><th>Values</th><th>Managed IPs</th><th>Method</th></tr></thead>

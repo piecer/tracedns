@@ -442,6 +442,25 @@ def attach_api_handlers(
         else:
             include_vt = bool(include_vt_raw)
 
+        analyze_decoders = bool(data.get('analyze_decoders', False))
+        try:
+            decoder_top_n = int(data.get('decoder_top_n', 8))
+        except Exception:
+            decoder_top_n = 8
+        decoder_top_n = max(1, min(50, decoder_top_n))
+
+        try:
+            vt_lookup_budget = int(data.get('vt_lookup_budget', 200))
+        except Exception:
+            vt_lookup_budget = 200
+        vt_lookup_budget = max(0, min(5000, vt_lookup_budget))
+
+        try:
+            vt_workers = int(data.get('vt_workers', 8))
+        except Exception:
+            vt_workers = 8
+        vt_workers = max(1, min(32, vt_workers))
+
         req_servers = data.get('servers')
         if isinstance(req_servers, list):
             servers = [str(x).strip() for x in req_servers if str(x).strip()]
@@ -610,6 +629,109 @@ def attach_api_handlers(
 
         can_add = bool(managed_ips or resolved_ips or detected_types)
 
+        # Optional: analyze all decoder methods (TXT/A) and surface candidates.
+        decoder_candidates = []
+        try:
+            if analyze_decoders:
+                # TXT decoder analysis (use existing analyzer on a combined sample)
+                try:
+                    sample_txt = ''
+                    for item in by_server:
+                        if str(item.get('type') or '').upper() == 'TXT':
+                            vals = item.get('values') or []
+                            if isinstance(vals, list) and vals:
+                                sample_txt += ('|' if sample_txt else '') + '|'.join([str(v) for v in vals[:20]])
+                    if sample_txt:
+                        analysis = analyze_domain_decoding(domain, sample_txt) or {}
+                        items = analysis.get('analysis') if isinstance(analysis, dict) else None
+                        if isinstance(items, dict):
+                            ranked = sorted(items.items(), key=lambda kv: (-(kv[1] or {}).get('score', 0), kv[0]))
+                            ranked = ranked[:decoder_top_n]
+                            # VT enrichment per candidate (budgeted)
+                            vt_budget_left = int(vt_lookup_budget)
+                            for name, info in ranked:
+                                ips = [ip for ip in (info.get('ips') or []) if _is_ipv4(ip)]
+                                ips = ips[:200]
+                                vt_summary = None
+                                if vt_enabled and vt_budget_left > 0 and ips:
+                                    mal = 0
+                                    sus = 0
+                                    asn_freq = {}
+                                    ctry_freq = {}
+                                    # per-candidate budget share
+                                    take = ips[:min(len(ips), max(1, vt_budget_left // max(1, len(ranked))))]
+                                    vt_budget_left -= len(take)
+                                    for ip in take:
+                                        try:
+                                            rep = get_ip_report(ip)
+                                        except Exception:
+                                            rep = None
+                                        if isinstance(rep, dict):
+                                            mal += int(rep.get('malicious', 0) or 0)
+                                            sus += int(rep.get('suspicious', 0) or 0)
+                                            asn = rep.get('asn')
+                                            ctry = rep.get('country')
+                                            if asn is not None and str(asn).strip():
+                                                k = str(asn).strip()
+                                                asn_freq[k] = asn_freq.get(k, 0) + 1
+                                            if ctry is not None and str(ctry).strip():
+                                                k = str(ctry).strip()
+                                                ctry_freq[k] = ctry_freq.get(k, 0) + 1
+                                    top_asn = sorted(asn_freq.items(), key=lambda x: (-x[1], x[0]))[:3]
+                                    top_country = sorted(ctry_freq.items(), key=lambda x: (-x[1], x[0]))[:3]
+                                    vt_summary = {
+                                        'malicious_total': mal,
+                                        'suspicious_total': sus,
+                                        'top_asn': top_asn,
+                                        'top_country': top_country,
+                                    }
+                                decoder_candidates.append({
+                                    'decoder_type': 'TXT',
+                                    'name': name,
+                                    'score': (info or {}).get('score', 0),
+                                    'ip_count': len(ips),
+                                    'sample_ips': ips[:8],
+                                    'vt_summary': vt_summary,
+                                })
+                except Exception:
+                    pass
+
+                # A decoder quick sweep (only decoders that don't require extra params besides provided key)
+                try:
+                    if selected_type in ('AUTO', 'A') or requested_type in ('AUTO', 'A'):
+                        resolved_set = set(type_resolved_ip_sets.get('A', set()))
+                        resolved_list = sorted([ip for ip in resolved_set if _is_ipv4(ip)])
+                        if resolved_list:
+                            a_names = sorted(list(A_DECODE_METHODS.keys()))
+                            # keep it small
+                            a_names = [n for n in a_names if n in ('none', 'xor32_ipv4')] + [n for n in a_names if n not in ('none', 'xor32_ipv4')]
+                            a_names = a_names[:min(10, len(a_names))]
+                            for name in a_names:
+                                if name == 'none':
+                                    ips = resolved_list
+                                else:
+                                    try:
+                                        ips = decode_a_hidden_ips(resolved_list, method=name, key_hex=a_xor_key, domain=domain) or []
+                                    except Exception:
+                                        ips = []
+                                ips = sorted({ip for ip in ips if _is_ipv4(ip)})
+                                decoder_candidates.append({
+                                    'decoder_type': 'A',
+                                    'name': name,
+                                    'score': len(ips),
+                                    'ip_count': len(ips),
+                                    'sample_ips': ips[:8],
+                                    'vt_summary': None,
+                                })
+                except Exception:
+                    pass
+
+                # Sort candidates by score/ip_count.
+                decoder_candidates.sort(key=lambda x: (-int(x.get('score') or 0), -int(x.get('ip_count') or 0), str(x.get('decoder_type') or ''), str(x.get('name') or '')))
+                decoder_candidates = decoder_candidates[:max(1, decoder_top_n * 2)]
+        except Exception:
+            decoder_candidates = []
+
         return self._send_json({
             'status': 'ok',
             'domain': domain,
@@ -618,6 +740,7 @@ def attach_api_handlers(
             'detected_types': sorted(list(detected_types)),
             'servers': servers,
             'include_vt': include_vt,
+            'decoder_candidates': decoder_candidates,
             'vt_enabled': vt_enabled,
             'vt_unavailable_reason': vt_unavailable_reason,
             'resolved_ips': resolved_ips,

@@ -415,10 +415,99 @@ function renderDomainVerifyIpTable(result){
   });
 }
 
+function renderDomainVerifyDecoderTable(result){
+  const body = document.querySelector('#domainVerifyDecoderTable tbody');
+  if(!body) return;
+  body.innerHTML = '';
+  const rows = Array.isArray(result && result.decoder_candidates) ? result.decoder_candidates : [];
+  if(!rows.length){
+    setSummaryMessage(body, 8, 'No decoder analysis (disable "Try all decoders" or no TXT/A values)');
+    return;
+  }
+  rows.forEach(row=>{
+    const tr = document.createElement('tr');
+    tr.style.cursor = 'pointer';
+    tr.title = 'Click to apply this decoder and re-run validation';
+
+    const tdT = document.createElement('td'); tdT.textContent = String(row.decoder_type || '-');
+    const tdN = document.createElement('td'); tdN.textContent = String(row.name || '-');
+    const tdS = document.createElement('td'); tdS.textContent = String(row.score != null ? row.score : '-');
+    const tdC = document.createElement('td'); tdC.textContent = String(row.ip_count || 0);
+
+    const tdVT = document.createElement('td');
+    if(row.vt_summary){
+      const m = Number(row.vt_summary.malicious_total || 0);
+      const s = Number(row.vt_summary.suspicious_total || 0);
+      const badge = document.createElement('span');
+      badge.className = 'vt-badge';
+      if(m > 0) badge.classList.add('high');
+      else if(s > 0) badge.classList.add('mid');
+      badge.textContent = `${m}/${s}`;
+      tdVT.appendChild(badge);
+    } else {
+      tdVT.textContent = (result && result.include_vt) ? '-' : 'VT off';
+    }
+
+    const tdAs = document.createElement('td'); tdAs.textContent = Array.isArray(row.vt_summary && row.vt_summary.top_asn) ? row.vt_summary.top_asn.map(x=>x[0]+'('+x[1]+')').join(', ') : '-';
+    const tdCo = document.createElement('td'); tdCo.textContent = Array.isArray(row.vt_summary && row.vt_summary.top_country) ? row.vt_summary.top_country.map(x=>x[0]+'('+x[1]+')').join(', ') : '-';
+    const tdSm = document.createElement('td');
+    tdSm.className = 'wrap-cell';
+    const sample = Array.isArray(row.sample_ips) ? row.sample_ips : [];
+    tdSm.textContent = sample.join(' | ') || '-';
+    tdSm.title = sample.join(' | ');
+
+    tr.onclick = async ()=>{
+      // Apply decoder choice to UI
+      if(String(row.decoder_type).toUpperCase() === 'TXT'){
+        const sel = document.getElementById('verifyTxtDecode');
+        if(sel){
+          // ensure option exists
+          const name = String(row.name || '').trim();
+          if(name && !Array.from(sel.options).some(o=>o.value === name)){
+            const o = document.createElement('option');
+            o.value = name; o.textContent = name;
+            sel.appendChild(o);
+          }
+          if(name) sel.value = name;
+        }
+        const typ = document.getElementById('verifyDomainType');
+        if(typ && typ.value === 'AUTO') typ.value = 'TXT';
+      }
+      if(String(row.decoder_type).toUpperCase() === 'A'){
+        const sel = document.getElementById('verifyADecode');
+        if(sel){
+          const name = String(row.name || '').trim();
+          if(name && !Array.from(sel.options).some(o=>o.value === name)){
+            const o = document.createElement('option');
+            o.value = name; o.textContent = name;
+            sel.appendChild(o);
+          }
+          if(name) sel.value = name;
+        }
+        const typ = document.getElementById('verifyDomainType');
+        if(typ && typ.value === 'AUTO') typ.value = 'A';
+      }
+      // re-run
+      await runDomainVerify();
+    };
+
+    tr.appendChild(tdT);
+    tr.appendChild(tdN);
+    tr.appendChild(tdS);
+    tr.appendChild(tdC);
+    tr.appendChild(tdVT);
+    tr.appendChild(tdAs);
+    tr.appendChild(tdCo);
+    tr.appendChild(tdSm);
+    body.appendChild(tr);
+  });
+}
+
 function clearDomainVerifyResult(){
   window.DOMAIN_VERIFY_LAST = null;
   setDomainVerifyStatus('', '');
   renderDomainVerifySummary(null);
+  renderDomainVerifyDecoderTable({decoder_candidates: []});
   renderDomainVerifyServerTable({by_server: []});
   renderDomainVerifyIpTable({ip_rows: []});
 }
@@ -435,6 +524,10 @@ async function runDomainVerify(){
   const aDecode = String((document.getElementById('verifyADecode') || {}).value || 'none').trim();
   const aXorKey = String((document.getElementById('verifyAXorKey') || {}).value || '').trim();
   const includeVt = !!((document.getElementById('verifyIncludeVt') || {}).checked);
+  const analyzeDecoders = !!((document.getElementById('verifyAnalyzeDecoders') || {}).checked);
+  const decoderTopN = parseBoundedInt((document.getElementById('verifyDecoderTopN') || {}).value, 8, 1, 50);
+  const vtBudget = parseBoundedInt((document.getElementById('verifyVtBudget') || {}).value, 200, 0, 5000);
+  const vtWorkers = parseBoundedInt((document.getElementById('verifyVtWorkers') || {}).value, 8, 1, 32);
 
   setDomainVerifyStatus('Validating...', '');
   try{
@@ -447,7 +540,11 @@ async function runDomainVerify(){
         txt_decode: txtDecode,
         a_decode: aDecode,
         a_xor_key: aXorKey,
-        include_vt: includeVt
+        include_vt: includeVt,
+        analyze_decoders: analyzeDecoders,
+        decoder_top_n: decoderTopN,
+        vt_lookup_budget: vtBudget,
+        vt_workers: vtWorkers
       })
     });
     const j = await r.json();
@@ -456,12 +553,14 @@ async function runDomainVerify(){
       setDomainVerifyStatus(msg, 'err');
       window.DOMAIN_VERIFY_LAST = null;
       renderDomainVerifySummary({error: msg});
+      renderDomainVerifyDecoderTable({decoder_candidates: []});
       renderDomainVerifyServerTable({by_server: []});
       renderDomainVerifyIpTable({ip_rows: []});
       return;
     }
     window.DOMAIN_VERIFY_LAST = j;
     renderDomainVerifySummary(j);
+    renderDomainVerifyDecoderTable(j);
     renderDomainVerifyServerTable(j);
     renderDomainVerifyIpTable(j);
     setDomainVerifyStatus(j.can_add === false ? 'Validation complete (no addable IP)' : 'Validation complete', j.can_add === false ? 'err' : 'ok');
@@ -470,6 +569,7 @@ async function runDomainVerify(){
     setDomainVerifyStatus(msg, 'err');
     window.DOMAIN_VERIFY_LAST = null;
     renderDomainVerifySummary({error: msg});
+    renderDomainVerifyDecoderTable({decoder_candidates: []});
     renderDomainVerifyServerTable({by_server: []});
     renderDomainVerifyIpTable({ip_rows: []});
   }
