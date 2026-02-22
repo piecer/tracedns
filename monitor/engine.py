@@ -156,10 +156,14 @@ def run_domain_cycle(
                 continue
 
             # changed?
+            prev_values = (prev_obj or {}).get('values', []) if isinstance(prev_obj, dict) else (prev.values if prev else [])
+            prev_decoded = (prev_obj or {}).get('decoded_ips', []) if isinstance(prev_obj, dict) else (prev.decoded_ips if prev else [])
+            prev_type = (prev_obj or {}).get('type') if isinstance(prev_obj, dict) else (prev.type if prev else None)
+
             changed = (
-                (prev.get('values') if isinstance(prev_obj, dict) else prev.values) != snap.values
-                or (prev.get('decoded_ips') if isinstance(prev_obj, dict) else prev.decoded_ips) != snap.decoded_ips
-                or str((prev.get('type') if isinstance(prev_obj, dict) else prev.type) or '').upper() != str(snap.type or '').upper()
+                (prev_values or []) != (snap.values or [])
+                or (prev_decoded or []) != (snap.decoded_ips or [])
+                or str(prev_type or '').upper() != str(snap.type or '').upper()
             )
 
             if changed:
