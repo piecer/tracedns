@@ -1480,7 +1480,8 @@ function updateOverviewPanel(){
   set('metricConfigured', String(uiOverview.configured));
   set('metricStatusRows', String(uiOverview.statusRows));
   set('metricDecoded', String(uiOverview.managedIps));
-  set('metricIps', `${uiOverview.allIps} / valid ${uiOverview.validIps}`);
+  const validTxt = (uiOverview.validIps == null) ? '?' : String(uiOverview.validIps);
+  set('metricIps', `${uiOverview.allIps} / valid ${validTxt}`);
   set('metricUpdated', uiOverview.lastRefreshLocal);
 }
 
@@ -2295,12 +2296,52 @@ document.getElementById('doQuery').onclick = async ()=>{
   await runQuery(v);
 };
 
+// All IPs pagination state
+let ipsOffset = 0;
+
+function getIpsPageSize(){
+  const el = document.getElementById('ips_page_size');
+  const n = parseBoundedInt(el ? el.value : 200, 200, 50, 5000);
+  return n;
+}
+
+function updateIpsMeta(j){
+  const el = document.getElementById('ips_meta');
+  if(!el) return;
+  if(!j){ el.textContent = '-'; return; }
+  const total = Number(j.ips_total_count || 0);
+  const shown = Number(j.ips_displayed_count || 0);
+  const offset = Number(j.ips_offset || 0);
+  const limit = Number(j.ips_limit || 0);
+  const includeVT = !!j.include_vt;
+  const vtBudget = Number(j.vt_budget || 0);
+  const vtWorkers = Number(j.vt_workers || 0);
+  const start = total ? (offset + 1) : 0;
+  const end = Math.min(total, offset + shown);
+  let txt = `showing ${start}-${end} / total ${total}`;
+  if(includeVT) txt += ` / VT page budget ${vtBudget} (workers ${vtWorkers})`;
+  el.textContent = txt;
+}
+
 async function refreshIPs(){
   if(refreshIPsInFlight) return;
   refreshIPsInFlight = true;
   try{
     const includeVT = !!(document.getElementById('ips_include_vt') && document.getElementById('ips_include_vt').checked);
-    const r = await fetch('/ips' + (includeVT ? '?include_vt=1' : ''));
+    const limit = getIpsPageSize();
+    const vtWorkers = parseBoundedInt((document.getElementById('ips_vt_workers') || {}).value, 8, 1, 32);
+    const vtBudget = parseBoundedInt((document.getElementById('ips_vt_budget') || {}).value, limit, 0, 5000);
+
+    const params = new URLSearchParams();
+    params.set('limit', String(limit));
+    params.set('offset', String(Math.max(0, ipsOffset)));
+    if(includeVT) params.set('include_vt', '1');
+    if(includeVT){
+      params.set('vt_workers', String(vtWorkers));
+      params.set('vt_budget', String(vtBudget));
+    }
+
+    const r = await fetch('/ips?' + params.toString());
     if(!r.ok) {
       console.error('refreshIPs: HTTP error', r.status);
       return;
@@ -2312,15 +2353,20 @@ async function refreshIPs(){
       console.error('refreshIPs: ips is not an array', arr);
       return;
     }
-    const fp = `vt:${includeVT ? 1 : 0}|${buildIpsFingerprint(arr)}`;
-    uiOverview.allIps = arr.length;
-    uiOverview.validIps = arr.filter(it=>it && it.valid).length;
+
+    // overview counts should reflect total, not just the current page
+    uiOverview.allIps = Number(j.ips_total_count || arr.length || 0);
+    uiOverview.validIps = null; // unknown without full set
     updateOverviewPanel();
+
+    const fp = `vt:${includeVT ? 1 : 0}|off:${ipsOffset}|lim:${getIpsPageSize()}|${buildIpsFingerprint(arr)}`;
     if(fp === lastAllIpsRenderFingerprint){
+      updateIpsMeta(j);
       touchOverviewTs();
       return;
     }
     lastAllIpsRenderFingerprint = fp;
+
     tbody.innerHTML = '';
     arr.forEach(it=>{
       if(typeof it !== 'object') return;
@@ -2332,7 +2378,12 @@ async function refreshIPs(){
         tdIp.title = 'Open in Query';
         tdIp.onclick = ()=> openQueryForValue(it.ip);
       }
-      const tdDomains = document.createElement('td'); tdDomains.textContent = (it.domains||[]).join(', ');
+
+      const tdDomains = document.createElement('td');
+      const domains = Array.isArray(it.domains) ? it.domains : [];
+      tdDomains.textContent = domains.join(', ');
+      tdDomains.title = domains.join(', ');
+
       const tdCount = document.createElement('td'); tdCount.textContent = it.count || 0;
       const tdTs = document.createElement('td'); tdTs.textContent = formatUnixTsLocal(it.last_ts);
       const tdVtScore = document.createElement('td');
@@ -2352,9 +2403,24 @@ async function refreshIPs(){
         tdVtScore.textContent = includeVT ? '-' : 'off';
         tdVtCtx.textContent = includeVT ? '-' : 'VT disabled';
       }
-      tr.appendChild(tdIp); tr.appendChild(tdDomains); tr.appendChild(tdCount); tr.appendChild(tdTs); tr.appendChild(tdVtScore); tr.appendChild(tdVtCtx);
+
+      tr.appendChild(tdIp);
+      tr.appendChild(tdDomains);
+      tr.appendChild(tdCount);
+      tr.appendChild(tdTs);
+      tr.appendChild(tdVtScore);
+      tr.appendChild(tdVtCtx);
       tbody.appendChild(tr);
     });
+
+    // enable/disable paging buttons
+    const total = Number(j.ips_total_count || 0);
+    const prevBtn = document.getElementById('ips_prev_btn');
+    const nextBtn = document.getElementById('ips_next_btn');
+    if(prevBtn) prevBtn.disabled = ipsOffset <= 0;
+    if(nextBtn) nextBtn.disabled = (ipsOffset + arr.length) >= total;
+
+    updateIpsMeta(j);
     touchOverviewTs();
   }catch(e){ console.log('refreshIPs error', e); }
   finally{ refreshIPsInFlight = false; }
@@ -2458,6 +2524,33 @@ async function refreshValidIPs(){
     updateRefreshStateBadge();
     if(!manualPause){ triggerSectionRefresh(getActiveSectionId()); }
   };
+
+  // All IPs paging controls
+  const ipsPrevBtn = document.getElementById('ips_prev_btn');
+  const ipsNextBtn = document.getElementById('ips_next_btn');
+  const ipsRefreshBtn = document.getElementById('ips_refresh_btn');
+  const ipsPageSize = document.getElementById('ips_page_size');
+  if(ipsPrevBtn){
+    ipsPrevBtn.onclick = ()=>{
+      ipsOffset = Math.max(0, ipsOffset - getIpsPageSize());
+      refreshIPs();
+    };
+  }
+  if(ipsNextBtn){
+    ipsNextBtn.onclick = ()=>{
+      ipsOffset = ipsOffset + getIpsPageSize();
+      refreshIPs();
+    };
+  }
+  if(ipsRefreshBtn){
+    ipsRefreshBtn.onclick = ()=> refreshIPs();
+  }
+  if(ipsPageSize){
+    ipsPageSize.onchange = ()=>{
+      ipsOffset = 0;
+      refreshIPs();
+    };
+  }
 
   // pause when user hovers results table to allow inspection of long URLs
   const resultsTable = document.getElementById('resultsTable');

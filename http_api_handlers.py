@@ -1204,8 +1204,15 @@ def attach_api_handlers(
         })
     
     def _handle_ips(self, qs):
+        """Return IP list aggregated from current+history.
+
+        Performance notes:
+        - Supports pagination so VT lookups only run on the visible page.
+        - VT lookups can be parallelized via vt_workers.
+        """
         try:
             ip_map = self._gather_ip_map()
+
             # apply 'since' filter if requested (seconds)
             since_val = qs.get('since', [None])[0]
             cutoff = None
@@ -1215,45 +1222,91 @@ def attach_api_handlers(
                     cutoff = int(time.time()) - s
                 except Exception:
                     cutoff = None
-    
+
+            def _qs_int(name, default, min_v=None, max_v=None):
+                raw = qs.get(name, [None])[0]
+                if raw is None:
+                    return default
+                try:
+                    n = int(str(raw).strip())
+                except Exception:
+                    return default
+                if min_v is not None and n < min_v:
+                    n = min_v
+                if max_v is not None and n > max_v:
+                    n = max_v
+                return n
+
             include_vt = bool(int(qs.get('include_vt', ['0'])[0]) if qs.get('include_vt') else False)
+            limit = _qs_int('limit', 500, 1, 5000)
+            offset = _qs_int('offset', 0, 0, 10_000_000)
+            vt_workers = _qs_int('vt_workers', 8, 1, 32)
+            vt_budget = _qs_int('vt_budget', limit, 0, 5000)
+
             out = []
-            vt_batch_started = False
-            if include_vt and get_ip_report:
-                begin_cache_batch()
-                vt_batch_started = True
-            try:
-                for ip, v in ip_map.items():
-                    # validate IP syntax
-                    valid = True
-                    try:
-                        import ipaddress as _ip
-                        _ip.ip_address(ip)
-                    except Exception:
-                        valid = False
-                    if cutoff is not None and v.get('last_ts', 0) < cutoff:
-                        continue
-                    row = {
-                        'ip': ip,
-                        'domains': sorted(list(v['domains'])),
-                        'count': v['count'],
-                        'last_ts': v['last_ts'],
-                        'valid': valid
-                    }
-                    # optionally include VirusTotal reputation info (requires env var VIRUSTOTAL_API_KEY)
-                    if include_vt and get_ip_report:
-                        try:
-                            rep = get_ip_report(ip)
-                            row['vt'] = rep
-                        except Exception:
-                            row['vt'] = None
-    
-                    out.append(row)
-            finally:
-                if vt_batch_started:
-                    end_cache_batch(flush=True)
+            for ip, v in ip_map.items():
+                # validate IP syntax
+                valid = True
+                try:
+                    import ipaddress as _ip
+                    _ip.ip_address(ip)
+                except Exception:
+                    valid = False
+                if cutoff is not None and v.get('last_ts', 0) < cutoff:
+                    continue
+                out.append({
+                    'ip': ip,
+                    'domains': sorted(list(v['domains'])),
+                    'count': v['count'],
+                    'last_ts': v['last_ts'],
+                    'valid': valid,
+                })
+
             out.sort(key=lambda x: (-x['count'], -x['last_ts']))
-            self._send_json({'ips': out})
+
+            total = len(out)
+            page = out[offset: offset + limit]
+            truncated = (offset + limit) < total
+
+            # VT enrichment only for the visible page (bounded + optionally parallel)
+            if include_vt and get_ip_report and vt_budget > 0 and page:
+                begin_cache_batch()
+                try:
+                    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+                    budgeted = page[: min(len(page), vt_budget)]
+                    if vt_workers <= 1 or len(budgeted) <= 1:
+                        for row in budgeted:
+                            try:
+                                row['vt'] = get_ip_report(row['ip'])
+                            except Exception:
+                                row['vt'] = None
+                    else:
+                        def _lookup(ip_str):
+                            try:
+                                return get_ip_report(ip_str)
+                            except Exception:
+                                return None
+
+                        with ThreadPoolExecutor(max_workers=vt_workers) as ex:
+                            futs = {ex.submit(_lookup, row['ip']): row for row in budgeted}
+                            for fut in as_completed(futs):
+                                row = futs[fut]
+                                row['vt'] = fut.result()
+                finally:
+                    end_cache_batch(flush=True)
+
+            self._send_json({
+                'ips': page,
+                'ips_total_count': total,
+                'ips_displayed_count': len(page),
+                'ips_offset': offset,
+                'ips_limit': limit,
+                'ips_truncated': bool(truncated),
+                'include_vt': bool(include_vt),
+                'vt_budget': vt_budget,
+                'vt_workers': vt_workers,
+            })
         except Exception as e:
             self._send_json({'error': str(e)}, 500)
     

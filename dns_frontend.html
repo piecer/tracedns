@@ -369,13 +369,39 @@
 
 <div id="ips" class="section">
   <h3>📍 All IPs</h3>
-  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+  <div class="toolbar-row" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
     <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
       <input id="ips_include_vt" type="checkbox" checked style="width:auto;margin:0;" />
-      Include VT score
+      Include VT score (current page)
     </label>
-    <span style="font-size:.78rem;color:#5b6a77;">Uses cached VT results when available.</span>
+
+    <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
+      Page size
+      <select id="ips_page_size" style="width:auto;min-width:90px;">
+        <option value="100">100</option>
+        <option value="200" selected>200</option>
+        <option value="500">500</option>
+        <option value="1000">1000</option>
+      </select>
+    </label>
+
+    <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
+      VT workers
+      <input id="ips_vt_workers" type="number" min="1" max="32" value="8" style="width:88px;" />
+    </label>
+
+    <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
+      VT budget
+      <input id="ips_vt_budget" type="number" min="0" max="5000" value="200" style="width:96px;" />
+    </label>
+
+    <button id="ips_prev_btn">◀ Prev</button>
+    <button id="ips_next_btn">Next ▶</button>
+    <button id="ips_refresh_btn">🔄 Refresh</button>
+
+    <span id="ips_meta" style="font-size:.78rem;color:#5b6a77;">-</span>
   </div>
+
   <table id="ipsTable">
     <thead><tr><th>IP</th><th>Domains</th><th>Count</th><th>Last Seen</th><th>VT Score (M/S)</th><th>VT Context</th></tr></thead>
     <tbody></tbody>

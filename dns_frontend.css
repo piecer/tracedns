@@ -291,6 +291,16 @@ tbody tr:hover{background:#f0f8fb;}
   min-width:280px;
   max-width:none;
 }
+
+/* All IPs: avoid aggressive ellipsis for domain lists / VT context */
+#ipsTable td:nth-child(2),
+#ipsTable td:nth-child(6){
+  max-width:none;
+  white-space:normal;
+  overflow:visible;
+  text-overflow:clip;
+  word-break:break-word;
+}
 #resultsTable td:last-child button{
   margin:0;
   padding:6px 9px;
