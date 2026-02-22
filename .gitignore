@@ -1,0 +1,30 @@
+__pycache__/
+*.py[cod]
+*.swp
+*.tmp
+*.bak
+
+.gdb_history
+
+# Runtime/cache artifacts
+vt_cache.json
+misp_sighting_batch.json
+dns_history/
+dns_config.json
+dns_config.json.history/
+dns_config.json.history_backup/
+dns_config.json.history_backup_260214/
+dns_config.json.history_backup_260217/
+dns_config.json.history_xxx/
+dns_config.json.bak.*
+dns_config.json.cleaned.tmp
+
+# Local scratch / ad-hoc scripts
+banner.txt
+banner.zip
+banner.zip.bak
+jack-o-lantern.html
+git_commit.sh
+app.py
+test_vt_config.py
+txttrace.py
