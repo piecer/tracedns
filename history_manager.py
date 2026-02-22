@@ -97,7 +97,10 @@ def persist_history_entry(history_dir, domain, history_obj):
             to_write = {'meta': meta, 'events': events, 'current': current}
         else:
             to_write = {'meta': {}, 'events': [], 'current': {}}
-        with open(fn, 'w', encoding='utf-8') as f:
+        # Atomic write to avoid partially-written JSON when multiple threads/processes run.
+        tmp_fn = fn + ".tmp"
+        with open(tmp_fn, 'w', encoding='utf-8') as f:
             json.dump(to_write, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_fn, fn)
     except Exception as e:
         logger.warning("cannot persist history for %s: %s", domain, e)

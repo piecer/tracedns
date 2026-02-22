@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -16,44 +17,80 @@ from .state_utils import collect_active_ip_map, collect_domain_managed_ips
 
 logger = logging.getLogger(__name__)
 
+# Safety: protect shared mutable state when we later add domain-level parallelism.
+# Even with current per-domain threading, keeping writes guarded makes behavior deterministic.
+_STATE_LOCK = threading.RLock()
+
+# Best-effort alert dedupe to prevent bursts/duplicates when concurrency increases.
+# key: (action, domain, ip) -> last_ts
+_ALERT_DEDUPE: Dict[Tuple[str, str, str], int] = {}
+_ALERT_DEDUPE_TTL_SECONDS = 60
+
 
 def mark_query_failure(fail_counts: Dict[Any, int], key: Any) -> int:
-    try:
-        count = int(fail_counts.get(key, 0)) + 1
-    except Exception:
-        count = 1
-    fail_counts[key] = count
-    return count
+    with _STATE_LOCK:
+        try:
+            count = int(fail_counts.get(key, 0)) + 1
+        except Exception:
+            count = 1
+        fail_counts[key] = count
+        return count
 
 
 def clear_query_failure(fail_counts: Dict[Any, int], key: Any) -> None:
-    fail_counts.pop(key, None)
+    with _STATE_LOCK:
+        fail_counts.pop(key, None)
 
 
 def drop_snapshot_for_failed_target(current_results: Dict[str, Any], history: Dict[str, Any], name: str, srv: str, ts: Optional[int] = None) -> bool:
     """Drop current snapshot for a domain/server pair. Returns True when something was removed."""
-    removed = False
-    if name in current_results and isinstance(current_results.get(name), dict):
-        if srv in current_results[name]:
-            current_results[name].pop(srv, None)
+    with _STATE_LOCK:
+        removed = False
+        if name in current_results and isinstance(current_results.get(name), dict):
+            if srv in current_results[name]:
+                current_results[name].pop(srv, None)
+                removed = True
+
+        hist_obj = history.setdefault(name, {'meta': {}, 'events': [], 'current': {}})
+        current_map = hist_obj.setdefault('current', {})
+        if isinstance(current_map, dict) and srv in current_map:
+            current_map.pop(srv, None)
             removed = True
 
-    hist_obj = history.setdefault(name, {'meta': {}, 'events': [], 'current': {}})
-    current_map = hist_obj.setdefault('current', {})
-    if isinstance(current_map, dict) and srv in current_map:
-        current_map.pop(srv, None)
-        removed = True
-
-    if removed and ts:
-        try:
-            hist_obj.setdefault('meta', {})['last_changed'] = int(ts)
-        except Exception:
-            pass
-    return removed
+        if removed and ts:
+            try:
+                hist_obj.setdefault('meta', {})['last_changed'] = int(ts)
+            except Exception:
+                pass
+        return removed
 
 
 def _snapshot_dict(snap: Snapshot) -> Dict[str, Any]:
     return snap.to_dict() if isinstance(snap, Snapshot) else {}
+
+
+def _dedupe_alert(action: str, entries: List[Tuple[str, str, str]]) -> List[Tuple[str, str, str]]:
+    """Drop recently-sent duplicate alerts (best effort).
+
+    entries: (ip, domain/label, source_type)
+    """
+    now = int(time.time())
+    keep: List[Tuple[str, str, str]] = []
+    with _STATE_LOCK:
+        # prune occasionally
+        for k, ts in list(_ALERT_DEDUPE.items()):
+            if (now - int(ts or 0)) > _ALERT_DEDUPE_TTL_SECONDS:
+                _ALERT_DEDUPE.pop(k, None)
+
+        for ip, label, source_type in entries or []:
+            key = (action, str(label or ''), str(ip or ''))
+            last = _ALERT_DEDUPE.get(key, 0)
+            if last and (now - last) <= _ALERT_DEDUPE_TTL_SECONDS:
+                continue
+            _ALERT_DEDUPE[key] = now
+            keep.append((ip, label, source_type))
+
+    return keep
 
 
 def run_domain_cycle(
@@ -77,8 +114,9 @@ def run_domain_cycle(
     if not name:
         return
 
-    current_results.setdefault(name, {})
-    history.setdefault(name, {'meta': {}, 'events': [], 'current': {}})
+    with _STATE_LOCK:
+        current_results.setdefault(name, {})
+        history.setdefault(name, {'meta': {}, 'events': [], 'current': {}})
 
     domain_prev_managed_ips = collect_domain_managed_ips(current_results, name, rtype=rtype)
 
@@ -143,14 +181,16 @@ def run_domain_cycle(
             hist_obj = history[name]
             # initial population
             if prev_obj is None:
-                current_results.setdefault(name, {})[srv] = _snapshot_dict(snap)
-                hist_obj.setdefault('current', {})[srv] = _snapshot_dict(snap)
-                meta = hist_obj.setdefault('meta', {})
-                meta.setdefault('first_seen', ts)
-                meta.setdefault('last_changed', ts)
+                with _STATE_LOCK:
+                    current_results.setdefault(name, {})[srv] = _snapshot_dict(snap)
+                    hist_obj.setdefault('current', {})[srv] = _snapshot_dict(snap)
+                    meta = hist_obj.setdefault('meta', {})
+                    meta.setdefault('first_seen', ts)
+                    meta.setdefault('last_changed', ts)
                 logger.info("INIT %s (%s) @ %s -> %s decoded=%s", name, rtype, srv, snap.values, snap.decoded_ips)
                 try:
-                    persist_history_entry(history_dir, name, hist_obj)
+                    with _STATE_LOCK:
+                        persist_history_entry(history_dir, name, hist_obj)
                 except Exception:
                     pass
                 continue
@@ -178,12 +218,13 @@ def run_domain_cycle(
                     },
                     'new': {'values': snap.values, 'decoded_ips': snap.decoded_ips, 'ts': ts},
                 }
-                hist_obj.setdefault('events', []).append(ev)
-                meta = hist_obj.setdefault('meta', {})
-                meta['last_changed'] = ts
-                meta.setdefault('first_seen', ev['old'].get('ts', ts) if isinstance(ev.get('old'), dict) else ts)
-                hist_obj.setdefault('current', {})[srv] = _snapshot_dict(snap)
-                current_results[name][srv] = _snapshot_dict(snap)
+                with _STATE_LOCK:
+                    hist_obj.setdefault('events', []).append(ev)
+                    meta = hist_obj.setdefault('meta', {})
+                    meta['last_changed'] = ts
+                    meta.setdefault('first_seen', ev['old'].get('ts', ts) if isinstance(ev.get('old'), dict) else ts)
+                    hist_obj.setdefault('current', {})[srv] = _snapshot_dict(snap)
+                    current_results[name][srv] = _snapshot_dict(snap)
                 logger.info(
                     "CHANGED %s (%s) @ %s: %s -> %s decoded=%s",
                     name,
@@ -194,7 +235,8 @@ def run_domain_cycle(
                     snap.decoded_ips,
                 )
                 try:
-                    persist_history_entry(history_dir, name, hist_obj)
+                    with _STATE_LOCK:
+                        persist_history_entry(history_dir, name, hist_obj)
                 except Exception:
                     pass
 
@@ -212,7 +254,8 @@ def run_domain_cycle(
         )
         if lifecycle_changed:
             try:
-                persist_history_entry(history_dir, name, history.get(name))
+                with _STATE_LOCK:
+                    persist_history_entry(history_dir, name, history.get(name))
             except Exception:
                 pass
     except Exception:
@@ -224,7 +267,9 @@ def run_domain_cycle(
         added_ips = sorted(domain_now_managed_ips - domain_prev_managed_ips)
         if added_ips:
             tuples = [(ip, name, rtype) for ip in added_ips]
-            alert_new_ips(tuples)
+            tuples = _dedupe_alert('Added', tuples)
+            if tuples:
+                alert_new_ips(tuples)
     except Exception:
         pass
 
@@ -291,9 +336,11 @@ def reconcile_removed_ips(active_ip_map_prev: Dict[str, Any], active_ip_map_now:
         removed_tuples = []
         for ip in removed_ips:
             labels = sorted(active_ip_map_prev.get(ip, set()))
-            removed_tuples.append((ip, ",".join(labels) if labels else "unknown"))
-        try:
-            alert_removed_ips(removed_tuples)
-        except Exception:
-            pass
+            removed_tuples.append((ip, ",".join(labels) if labels else "unknown", 'A'))
+        removed_tuples = _dedupe_alert('Removed', removed_tuples)
+        if removed_tuples:
+            try:
+                alert_removed_ips([(ip, label) for (ip, label, _t) in removed_tuples])
+            except Exception:
+                pass
     return active_ip_map_now
