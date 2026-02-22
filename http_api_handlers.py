@@ -21,6 +21,8 @@ from http_api.basic_handlers import handle_config as _handle_config_basic
 from http_api.basic_handlers import handle_results as _handle_results_basic
 from http_api.basic_handlers import handle_decoders as _handle_decoders_basic
 from http_api.utils import send_json as _send_json_basic
+from http_api.settings_handlers import handle_settings_get as _handle_settings_get_basic
+from http_api.settings_handlers import handle_settings_post as _handle_settings_post_basic
 
 
 try:
@@ -95,125 +97,10 @@ def attach_api_handlers(
     # (Other handlers remain in this module for now; they will be moved in follow-up refactors.)
 
     def _handle_settings_get(self):
-        try:
-            # prefer in-memory shared_config alerts, fallback to config file
-            with config_lock:
-                alerts = shared_config.get('alerts', None)
-            if alerts is None and config_path:
-                cfg = read_config(config_path) or {}
-                alerts = cfg.get('alerts', {})
-            alerts_out = dict(alerts or {})
-            ttl_days_current = get_cache_ttl_days()
-            try:
-                ttl_days_value = int(str(alerts_out.get('vt_cache_ttl_days')).strip())
-                if ttl_days_value < 1:
-                    raise ValueError('invalid ttl')
-            except Exception:
-                ttl_days_value = int(ttl_days_current or 1)
-            alerts_out['vt_cache_ttl_days'] = ttl_days_value
-            raw_remove = alerts_out.get('misp_remove_on_absent', False)
-            if isinstance(raw_remove, bool):
-                alerts_out['misp_remove_on_absent'] = raw_remove
-            else:
-                alerts_out['misp_remove_on_absent'] = str(raw_remove).strip().lower() in (
-                    '1', 'true', 'yes', 'on', 'y'
-                )
-            self._send_json({'settings': {'alerts': alerts_out}})
-        except Exception as e:
-            self._send_json({'error': str(e)}, 500)
-    
+        return _handle_settings_get_basic(ctx, self)
+
     def _handle_settings_post(self):
-        # update alerts settings and persist to config_path
-        length = int(self.headers.get('Content-Length', '0'))
-        body = self.rfile.read(length) if length > 0 else b''
-        try:
-            data = json.loads(body.decode('utf-8')) if body else {}
-        except Exception:
-            return self._send_json({'error': 'invalid json'}, 400)
-    
-        alerts = data.get('alerts')
-        if alerts is None or not isinstance(alerts, dict):
-            return self._send_json({'error': 'alerts object required'}, 400)
-    
-        # Validate VirusTotal API key if provided (basic checks)
-        try:
-            import re as _re
-            vt = alerts.get('vt_api_key')
-            if vt is not None and str(vt).strip() != '':
-                vts = str(vt).strip()
-                # simple validation: no whitespace and reasonable length
-                if _re.search(r"\s", vts) or len(vts) < 20 or len(vts) > 128:
-                    return self._send_json({'error': 'invalid vt_api_key (bad format or length)'}, 400)
-                # allow common VT formats (hex or base64-like); prefer hex64 but not required
-                if not (_re.fullmatch(r'[A-Fa-f0-9]{64}', vts) or _re.fullmatch(r'[A-Za-z0-9\-_=]+', vts)):
-                    return self._send_json({'error': 'invalid vt_api_key (unexpected characters)'}, 400)
-                # store back cleaned value
-                alerts['vt_api_key'] = vts
-                # Apply VT API key to vt_lookup module
-                try:
-                    from vt_lookup import set_api_key
-                    set_api_key(vts)
-                except Exception:
-                    pass
-        except Exception:
-            return self._send_json({'error': 'vt_api_key validation error'}, 400)
-
-        # Validate VT cache TTL (days)
-        try:
-            ttl_raw = alerts.get('vt_cache_ttl_days')
-            if ttl_raw in (None, ''):
-                ttl_days = get_cache_ttl_days()
-            else:
-                ttl_days = int(str(ttl_raw).strip())
-            if ttl_days < 1 or ttl_days > 3650:
-                return self._send_json({'error': 'vt_cache_ttl_days must be between 1 and 3650'}, 400)
-            alerts['vt_cache_ttl_days'] = int(ttl_days)
-            try:
-                set_cache_ttl_days(ttl_days)
-            except Exception:
-                pass
-        except Exception:
-            return self._send_json({'error': 'invalid vt_cache_ttl_days'}, 400)
-
-        # Normalize MISP remove option (default: False / keep attributes).
-        raw_remove = alerts.get('misp_remove_on_absent', False)
-        if isinstance(raw_remove, bool):
-            alerts['misp_remove_on_absent'] = raw_remove
-        else:
-            alerts['misp_remove_on_absent'] = str(raw_remove).strip().lower() in (
-                '1', 'true', 'yes', 'on', 'y'
-            )
-    
-        with config_lock:
-            shared_config['alerts'] = alerts
-            # persist into config_path preserving other top-level keys
-            if config_path:
-                try:
-                    cfg = read_config(config_path) or {}
-                    cfg['alerts'] = alerts
-                    # keep existing domains/servers/interval/custom_decoders if present
-                    if 'domains' not in cfg:
-                        cfg['domains'] = shared_config.get('domains', [])
-                    if 'servers' not in cfg:
-                        cfg['servers'] = shared_config.get('servers', [])
-                    if 'interval' not in cfg:
-                        cfg['interval'] = shared_config.get('interval')
-                    if 'custom_decoders' not in cfg:
-                        cfg['custom_decoders'] = shared_config.get('custom_decoders', [])
-                    write_config(config_path, cfg)
-                    import sys
-                    print(f"[DEBUG] Settings saved to {config_path}: {alerts}", file=sys.stderr)
-                except Exception as e:
-                    import sys
-                    print(f"[ERROR] Failed to save settings to {config_path}: {e}", file=sys.stderr)
-        # apply alert runtime immediately (best effort)
-        try:
-            from alerts import init_from_alerts as _init_alerts_runtime
-            _init_alerts_runtime(alerts)
-        except Exception as e:
-            import sys
-            print(f"[WARN] Failed to apply runtime alert settings: {e}", file=sys.stderr)
-        return self._send_json({'status': 'ok', 'alerts': alerts})
+        return _handle_settings_post_basic(ctx, self)
     
     def _gather_ip_map(self):
         ip_map = {}
