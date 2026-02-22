@@ -14,9 +14,16 @@ A lightweight DNS monitoring toolkit for extracting indicators from TXT records 
 ## Requirements
 
 - Python 3.8+ (tested on Linux)
-- Optional: `vt-py` or another VirusTotal helper if you enable VT lookups
 
-Install Python dependencies (if any) using your environment's package manager. This project uses standard library modules where possible.
+Install Python dependencies:
+
+```bash
+pip3 install -r requirements.txt
+```
+
+Notes:
+- VirusTotal lookups (optional) are implemented via `requests` in `vt_lookup.py` (no special VT SDK required).
+- MISP integration requires `PyMISP` (included in `requirements.txt`).
 
 ## Quick Start
 
@@ -27,18 +34,26 @@ Run the monitor:
 
 ```bash
 cd tracedns
-# Run the monitor (reads dns_config.json)
 python3 dns_monitor.py
 ```
 
-Run the built-in HTTP UI (if present) by starting the package's HTTP server entrypoint (the same monitor may start the UI depending on configuration). If you added a separate server script, run that instead.
+Useful flags:
+
+```bash
+python3 dns_monitor.py --http-port 8000 --max-workers 16
+```
+
+- `--max-workers` controls per-domain parallel DNS queries across configured DNS servers (performance tuning).
 
 ## Web UI
 
-- Open the dashboard in a browser (default path served by the repository's HTTP handler). The UI provides:
-  - Dashboard: list of unique IPs discovered (optional VT info)
-  - Settings: configure Teams webhook, MISP settings, and VirusTotal API key
-  - Custom decoders: preview and register safe DSL-based decoders
+- Open the dashboard in a browser (served by the built-in HTTP server). The UI provides:
+  - **Status**: current per-domain A/TXT snapshots (managed/decoded IPs)
+  - **All IPs**: aggregated IP list with pagination and optional VirusTotal enrichment
+  - **Valid IPs**: syntactically valid IP subset
+  - **Domain Verify / Analysis**: validate domains and decoding methods
+  - **Settings**: configure domains/servers/interval + Teams/MISP/VT settings
+  - **Custom decoders**: preview and register safe DSL-based decoders
 
 ## Configuration (`dns_config.json`)
 
@@ -47,6 +62,7 @@ Key items in `dns_config.json`:
 - `domains`: list of domains to monitor
 - `servers`: DNS servers to query
 - `interval`: polling interval (seconds)
+- `max_workers`: max worker threads for per-domain parallel DNS queries across servers
 - `custom_decoders`: array of custom decoder objects persisted by the UI
 - `alerts`: object containing `teams_webhook`, `misp_url`, `api_key`, `push_event_id`, `vt_api_key`, `vt_cache_ttl_days`, and optional `misp_remove_on_absent` (default `false`).
 
@@ -59,7 +75,12 @@ Do not rename config keys unless you know the code depends on them.
 
 ## Custom Decoder DSL (overview)
 
-Custom decoders use a constrained, validated list of steps (no arbitrary code execution). Typical operations include `regex` capture, `base64` decode, `urlsafe_b64`, and `xor_hex` with a fixed key. Always `Preview` a decoder in the UI before registering.
+Custom decoders use a constrained, validated list of steps (no arbitrary code execution). Typical operations include `regex` capture, `base64` decode, `urlsafe_b64`, and `xor_hex` with a fixed key. Always **Preview** a decoder in the UI before registering.
+
+## Performance Notes
+
+- **DNS query parallelism:** Increase `max_workers` (or `--max-workers`) if you have multiple DNS servers configured and want faster polling.
+- **All IPs + VirusTotal:** The Web UI paginates the All IPs view and applies VirusTotal lookups to the current page only. Use the UI controls (page size / VT budget / VT workers) to balance speed vs. API usage.
 
 ## Alerts
 
