@@ -6,6 +6,11 @@
 <title>DNS Monitor</title>
 <link rel="stylesheet" href="/dns_frontend.css">
 
+<!-- Phase 2/3: lightweight graph/map visualization (no build step) -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="https://unpkg.com/cytoscape@3.29.2/dist/cytoscape.min.js"></script>
+
 </head>
 <body>
 <div class="container">
@@ -351,36 +356,66 @@
   <div id="ipIntelHintsBox" style="background:#f8f9fa;padding:12px;border:1px solid #d7e4eb;border-radius:10px;margin-bottom:10px;"></div>
 
   <div class="summary-card" style="margin-bottom:12px;">
-    <h4>Relationship Summary (input IPs)</h4>
+    <h4>Relationship Summary (Similarity, input IPs)</h4>
+    <p style="margin:6px 0 10px;font-size:.78rem;color:#5b6a77;">Designed for infected-host IP lists: relationships are inferred from VT/GeoIP infrastructure similarity (ASN/Owner/CSP/Country + optional net proximity). This is NOT based on DNS domain sharing.</p>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
       <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
-        Min shared domains
-        <input id="ipRelMinShared" type="number" min="1" max="50" value="1" style="width:86px;margin-top:0;" />
+        Min score
+        <input id="ipRelMinScore" type="number" min="0" max="100" value="40" style="width:86px;margin-top:0;" />
       </label>
       <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
         Top pairs
-        <input id="ipRelTopPairs" type="number" min="1" max="5000" value="50" style="width:96px;margin-top:0;" />
+        <input id="ipRelTopPairs" type="number" min="1" max="5000" value="200" style="width:96px;margin-top:0;" />
       </label>
       <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
-        Window (days)
-        <input id="ipRelWindowDays" type="number" min="0" max="3650" value="0" style="width:92px;margin-top:0;" />
-      </label>
-      <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
-        Domain sample
-        <input id="ipRelDomainSampleLimit" type="number" min="1" max="50" value="5" style="width:86px;margin-top:0;" />
+        Max neighbors/IP
+        <input id="ipRelMaxNeighbors" type="number" min="1" max="200" value="30" style="width:110px;margin-top:0;" />
       </label>
       <span id="ipRelMeta" style="font-size:.78rem;color:#5b6a77;">-</span>
+      <span style="flex:1"></span>
+      <button id="ipRelViewTableBtn" type="button">Table</button>
+      <button id="ipRelViewGraphBtn" type="button">Graph</button>
+      <button id="ipRelViewMapBtn" type="button">Map</button>
     </div>
-    <h4 style="margin-top:12px;">Top Related IP Pairs</h4>
-    <table id="ipRelPairsTable">
-      <thead><tr><th>IP A</th><th>IP B</th><th>Shared Domains</th><th>Jaccard</th><th>Shared domain sample</th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <h4 style="margin-top:12px;">Clusters</h4>
-    <table id="ipRelClustersTable">
-      <thead><tr><th>Cluster</th><th>Size</th><th>Domain Count</th><th>IPs (sample)</th><th>Domains (sample)</th><th>VT Summary</th></tr></thead>
-      <tbody></tbody>
-    </table>
+
+    <div id="ipRelTableView" style="margin-top:10px;">
+      <h4 style="margin-top:12px;">Top Similar IP Pairs</h4>
+      <table id="ipRelPairsTable">
+        <thead><tr><th>IP A</th><th>IP B</th><th>Score</th><th>Evidence</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <h4 style="margin-top:12px;">Clusters</h4>
+      <table id="ipRelClustersTable">
+        <thead><tr><th>Cluster</th><th>Size</th><th>Cohesion</th><th>Top ASN</th><th>Top Owner</th><th>Top Country</th><th>Top CSP</th><th>VT Summary</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="ipRelGraphView" style="margin-top:10px;display:none;">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;">
+        <div id="ipRelGraph" style="flex:1;min-width:520px;height:520px;border:1px solid #d7e4eb;border-radius:10px;"></div>
+        <div style="width:360px;max-width:100%;">
+          <div class="summary-card" style="margin:0;">
+            <h4 style="margin-top:0;">Selection</h4>
+            <pre id="ipRelGraphDetails" style="white-space:pre-wrap;word-break:break-word;max-height:470px;overflow:auto;margin:0;"></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="ipRelMapView" style="margin-top:10px;display:none;">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;">
+        <div id="ipRelMap" style="flex:1;min-width:520px;height:520px;border:1px solid #d7e4eb;border-radius:10px;"></div>
+        <div style="width:360px;max-width:100%;">
+          <div class="summary-card" style="margin:0;">
+            <h4 style="margin-top:0;">Country Bubble Legend</h4>
+            <div style="font-size:.82rem;color:#5b6a77;">Bubble size: infected IP count. Bubble color: malicious ratio (VT).
+              <div style="margin-top:8px;">Click a bubble to filter input IPs to that country and re-run analysis.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="domain-summary-grid">

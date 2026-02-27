@@ -2919,16 +2919,277 @@ window.addEventListener('load', ()=>{
   });
 });
 
-// --- Relationship analysis (input IP list) ---
+// --- Relationship analysis (Similarity, input IP list) ---
+// Phase 1: score+evidence based similarity pairs + clustering
+// Phase 2: IP-IP graph visualization (Cytoscape)
+// Phase 3: Country bubble map (Leaflet)
+window.IP_REL_CACHE = window.IP_REL_CACHE || null;
+window.IP_REL_GRAPH = window.IP_REL_GRAPH || null;
+window.IP_REL_MAP = window.IP_REL_MAP || null;
+window.IP_REL_MAP_MARKERS = window.IP_REL_MAP_MARKERS || [];
+
+function setIpRelView(name){
+  const table = document.getElementById('ipRelTableView');
+  const graph = document.getElementById('ipRelGraphView');
+  const map = document.getElementById('ipRelMapView');
+  if(table) table.style.display = (name === 'table') ? '' : 'none';
+  if(graph) graph.style.display = (name === 'graph') ? '' : 'none';
+  if(map) map.style.display = (name === 'map') ? '' : 'none';
+
+  const b1 = document.getElementById('ipRelViewTableBtn');
+  const b2 = document.getElementById('ipRelViewGraphBtn');
+  const b3 = document.getElementById('ipRelViewMapBtn');
+  if(b1) b1.classList.toggle('active', name === 'table');
+  if(b2) b2.classList.toggle('active', name === 'graph');
+  if(b3) b3.classList.toggle('active', name === 'map');
+
+  // Lazy render visualizations from last cache
+  if(name === 'graph') renderIpRelGraphFromCache();
+  if(name === 'map') renderIpRelMapFromCache();
+}
+
+function summarizeEvidence(evList){
+  const ev = Array.isArray(evList) ? evList : [];
+  if(!ev.length) return '-';
+  // compact summary: same_asn, same_owner, same_csp, same_country, same_/24, vt
+  const parts = [];
+  ev.forEach(e=>{
+    const t = String((e && e.type) || '').trim();
+    const v = (e && e.value != null) ? String(e.value) : '';
+    if(!t) return;
+    if(t === 'same_asn') parts.push(`ASN:${v}`);
+    else if(t === 'same_owner') parts.push('Owner');
+    else if(t === 'same_csp') parts.push(`CSP:${v}`);
+    else if(t === 'same_country') parts.push(`C:${v}`);
+    else if(t === 'same_prefix24') parts.push('/24');
+    else if(t === 'vt_malicious_both') parts.push('VT:M');
+    else if(t === 'vt_suspicious_both') parts.push('VT:S');
+  });
+  return parts.length ? parts.join(' + ') : '-';
+}
+
+function getIpFeature(ip){
+  const cache = window.IP_REL_CACHE;
+  if(!cache || !cache.ip_features) return null;
+  return cache.ip_features[ip] || null;
+}
+
+function renderIpRelGraphFromCache(){
+  const cache = window.IP_REL_CACHE;
+  const el = document.getElementById('ipRelGraph');
+  const details = document.getElementById('ipRelGraphDetails');
+  if(!el) return;
+  if(!cache || !Array.isArray(cache.pairs)){
+    el.innerHTML = '<div style="padding:12px;color:#5b6a77;">Run Relationships first.</div>';
+    return;
+  }
+  if(typeof cytoscape !== 'function'){
+    el.innerHTML = '<div style="padding:12px;color:#5b6a77;">Cytoscape not available (CDN blocked?).</div>';
+    return;
+  }
+
+  const pairs = cache.pairs || [];
+  const nodesSet = new Set();
+  pairs.forEach(p=>{ nodesSet.add(String(p.a||'')); nodesSet.add(String(p.b||'')); });
+
+  const elements = [];
+  nodesSet.forEach(ip=>{
+    const f = getIpFeature(ip) || {};
+    const label = ip;
+    const country = String(f.country || '-');
+    const asn = String(f.asn || '-');
+    const csp = String(f.csp_label || '');
+    elements.push({ data: { id: ip, label: label, country, asn, csp } });
+  });
+  pairs.forEach((p, idx)=>{
+    const a = String(p.a||'');
+    const b = String(p.b||'');
+    const score = Number(p.score || 0);
+    elements.push({ data: { id: `e${idx}`, source: a, target: b, score: score, evidence: p.evidence || [] } });
+  });
+
+  if(window.IP_REL_GRAPH){
+    try{ window.IP_REL_GRAPH.destroy(); }catch(e){}
+    window.IP_REL_GRAPH = null;
+  }
+
+  window.IP_REL_GRAPH = cytoscape({
+    container: el,
+    elements,
+    style: [
+      { selector: 'node', style: {
+        'label': 'data(label)',
+        'font-size': 10,
+        'text-valign': 'center',
+        'text-halign': 'center',
+        'background-color': '#2d6cdf',
+        'color': '#ffffff',
+        'width': 22,
+        'height': 22
+      }},
+      { selector: 'edge', style: {
+        'width': 'mapData(score, 0, 100, 1, 6)',
+        'line-color': '#6b93d6',
+        'curve-style': 'bezier',
+        'opacity': 0.85
+      }},
+      { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#ffb703' } },
+      { selector: 'edge:selected', style: { 'line-color': '#ff006e', 'opacity': 1.0 } }
+    ],
+    layout: { name: 'cose', animate: false, padding: 30 }
+  });
+
+  const cy = window.IP_REL_GRAPH;
+  if(details) details.textContent = 'Click a node/edge to see details.';
+
+  cy.on('tap', 'node', (evt)=>{
+    const d = evt.target.data();
+    const f = getIpFeature(d.id) || {};
+    const out = {
+      type: 'ip',
+      ip: d.id,
+      country: f.country || '-',
+      asn: f.asn || '-',
+      as_owner: f.as_owner || '-',
+      csp: f.csp_label || '-',
+      malicious: f.malicious || 0,
+      suspicious: f.suspicious || 0
+    };
+    if(details) details.textContent = JSON.stringify(out, null, 2);
+  });
+
+  cy.on('tap', 'edge', (evt)=>{
+    const d = evt.target.data();
+    const out = {
+      type: 'pair',
+      a: d.source,
+      b: d.target,
+      score: d.score,
+      evidence: d.evidence || []
+    };
+    if(details) details.textContent = JSON.stringify(out, null, 2);
+  });
+}
+
+async function loadCountryCentroids(){
+  // Served as a static file (see ALLOWED_STATIC_FILES in server)
+  try{
+    const r = await fetch('/country_centroids.json');
+    if(!r.ok) return null;
+    const j = await r.json();
+    return j;
+  }catch(e){
+    return null;
+  }
+}
+
+function clearIpRelMapMarkers(){
+  try{
+    (window.IP_REL_MAP_MARKERS || []).forEach(m=>{ try{ m.remove(); }catch(e){} });
+  }catch(e){}
+  window.IP_REL_MAP_MARKERS = [];
+}
+
+async function renderIpRelMapFromCache(){
+  const cache = window.IP_REL_CACHE;
+  const el = document.getElementById('ipRelMap');
+  if(!el) return;
+  if(!cache || !Array.isArray(cache.country_summary)){
+    el.innerHTML = '<div style="padding:12px;color:#5b6a77;">Run Relationships first.</div>';
+    return;
+  }
+  if(typeof L !== 'object' || !L.map){
+    el.innerHTML = '<div style="padding:12px;color:#5b6a77;">Leaflet not available (CDN blocked?).</div>';
+    return;
+  }
+
+  // Init map once
+  if(!window.IP_REL_MAP){
+    window.IP_REL_MAP = L.map(el, {worldCopyJump:true}).setView([20, 0], 2);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 6,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(window.IP_REL_MAP);
+  }
+
+  const centroids = await loadCountryCentroids();
+  if(!centroids){
+    el.innerHTML = '<div style="padding:12px;color:#5b6a77;">country_centroids.json not available.</div>';
+    return;
+  }
+
+  clearIpRelMapMarkers();
+
+  const rows = cache.country_summary || [];
+  const maxCount = Math.max(1, ...rows.map(x=>Number(x.ip_count||0)));
+  const toColor = (ratio)=>{
+    const r = Math.max(0, Math.min(1, Number(ratio||0)));
+    // green(0) -> red(1)
+    const rr = Math.round(60 + (220-60)*r);
+    const gg = Math.round(180 + (60-180)*r);
+    const bb = 80;
+    return `rgb(${rr},${gg},${bb})`;
+  };
+
+  rows.forEach(row=>{
+    const cc = String(row.country || '').toUpperCase();
+    const c = centroids[cc];
+    if(!c || !Array.isArray(c) || c.length < 2) return;
+    const ipCount = Number(row.ip_count || 0);
+    if(!ipCount) return;
+
+    const mal = Number(row.malicious_ips || 0);
+    const ratio = mal / Math.max(1, ipCount);
+    const radius = 6 + 26 * Math.sqrt(ipCount / maxCount);
+
+    const marker = L.circleMarker([c[0], c[1]], {
+      radius,
+      color: '#1b2a41',
+      weight: 1,
+      fillColor: toColor(ratio),
+      fillOpacity: 0.78
+    }).addTo(window.IP_REL_MAP);
+
+    marker.bindTooltip(`${cc}  IPs:${ipCount}  M:${mal}`, {sticky:true});
+
+    marker.on('click', async ()=>{
+      // Filter input IP list to this country using ip_features
+      const ipFeat = cache.ip_features || {};
+      const ips = Object.keys(ipFeat).filter(ip=> String((ipFeat[ip]||{}).country||'').toUpperCase() === cc);
+      const ta = document.getElementById('ipIntelInput');
+      if(ta) ta.value = ips.join('\n');
+      await analyzeIpRelationships();
+      setIpRelView('table');
+    });
+
+    window.IP_REL_MAP_MARKERS.push(marker);
+  });
+}
+
+function wireIpRelViewButtons(){
+  const b1 = document.getElementById('ipRelViewTableBtn');
+  const b2 = document.getElementById('ipRelViewGraphBtn');
+  const b3 = document.getElementById('ipRelViewMapBtn');
+  if(b1) b1.onclick = ()=> setIpRelView('table');
+  if(b2) b2.onclick = ()=> setIpRelView('graph');
+  if(b3) b3.onclick = ()=> setIpRelView('map');
+}
+// Ensure buttons are wired after DOM is ready.
+if(document.readyState === 'loading'){
+  document.addEventListener('DOMContentLoaded', ()=> wireIpRelViewButtons());
+} else {
+  wireIpRelViewButtons();
+}
+
 async function analyzeIpRelationships(){
   const raw = String((document.getElementById('ipIntelInput') || {}).value || '').trim();
   const includeVT = !!(document.getElementById('ipIntelIncludeVt') && document.getElementById('ipIntelIncludeVt').checked);
   const vtBudget = parseBoundedInt((document.getElementById('ipIntelVtBudget') || {}).value, 1200, 0, 5000);
   const vtWorkers = parseBoundedInt((document.getElementById('ipIntelVtWorkers') || {}).value, 8, 1, 32);
-  const minShared = parseBoundedInt((document.getElementById('ipRelMinShared') || {}).value, 1, 1, 50);
-  const topPairs = parseBoundedInt((document.getElementById('ipRelTopPairs') || {}).value, 50, 1, 5000);
-  const windowDays = parseBoundedInt((document.getElementById('ipRelWindowDays') || {}).value, 0, 0, 3650);
-  const domainSampleLimit = parseBoundedInt((document.getElementById('ipRelDomainSampleLimit') || {}).value, 5, 1, 50);
+
+  const minScore = parseBoundedInt((document.getElementById('ipRelMinScore') || {}).value, 40, 0, 100);
+  const topPairs = parseBoundedInt((document.getElementById('ipRelTopPairs') || {}).value, 200, 1, 5000);
+  const maxNeighbors = parseBoundedInt((document.getElementById('ipRelMaxNeighbors') || {}).value, 30, 1, 200);
 
   const meta = document.getElementById('ipRelMeta');
   const pairsBody = document.querySelector('#ipRelPairsTable tbody');
@@ -2936,14 +3197,17 @@ async function analyzeIpRelationships(){
 
   if(!raw){
     if(meta) meta.textContent = 'Input IP list first';
-    if(pairsBody) setSummaryMessage(pairsBody, 5, 'No data');
-    if(clustersBody) setSummaryMessage(clustersBody, 6, 'No data');
+    if(pairsBody) setSummaryMessage(pairsBody, 4, 'No data');
+    if(clustersBody) setSummaryMessage(clustersBody, 8, 'No data');
     return;
   }
 
-  if(meta) meta.textContent = 'Analyzing relationships...';
-  if(pairsBody) setSummaryMessage(pairsBody, 5, 'Loading...');
-  if(clustersBody) setSummaryMessage(clustersBody, 6, 'Loading...');
+  // default view
+  setIpRelView('table');
+
+  if(meta) meta.textContent = 'Analyzing similarity...';
+  if(pairsBody) setSummaryMessage(pairsBody, 4, 'Loading...');
+  if(clustersBody) setSummaryMessage(clustersBody, 8, 'Loading...');
 
   try{
     const r = await fetch('/ip-relationship-analysis', {
@@ -2951,10 +3215,9 @@ async function analyzeIpRelationships(){
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
         ips: raw,
-        min_shared_domains: minShared,
+        min_score: minScore,
         top_pairs: topPairs,
-        time_window_days: windowDays,
-        domain_sample_limit: domainSampleLimit,
+        max_neighbors_per_ip: maxNeighbors,
         include_vt: includeVT,
         vt_budget: Math.min(vtBudget, 5000),
         vt_workers: vtWorkers
@@ -2962,38 +3225,40 @@ async function analyzeIpRelationships(){
     });
     const j = await r.json();
     if(!r.ok || !j || j.status !== 'ok'){
-      if(meta) meta.textContent = `Relationship analysis failed: ${(j && j.error) ? j.error : 'HTTP '+r.status}`;
-      if(pairsBody) setSummaryMessage(pairsBody, 5, 'No data');
-      if(clustersBody) setSummaryMessage(clustersBody, 6, 'No data');
+      if(meta) meta.textContent = `Similarity analysis failed: ${(j && j.error) ? j.error : 'HTTP '+r.status}`;
+      if(pairsBody) setSummaryMessage(pairsBody, 4, 'No data');
+      if(clustersBody) setSummaryMessage(clustersBody, 8, 'No data');
       return;
     }
+
+    window.IP_REL_CACHE = j;
 
     if(meta){
       const pairCount = Number(j.pair_count || 0);
       const clusterCount = Array.isArray(j.clusters) ? j.clusters.length : 0;
-      let txt = `valid ${j.valid_count || 0} / pairs ${pairCount} / clusters ${clusterCount}`;
-      if(Number(j.time_window_days || 0) > 0){
-        txt += ` / window ${j.time_window_days}d`;
-        if(j.window_valid_count != null) txt += ` (in-window ${j.window_valid_count})`;
-      }
+      let txt = `valid ${j.valid_count || 0} / edges ${pairCount} / clusters ${clusterCount} / minScore ${j.min_score || minScore}`;
       if(j.vt_enabled){
         txt += ` / VT attempted ${j.vt_attempted || 0} (budget ${j.vt_budget || 0}, workers ${j.vt_workers || 0})`;
+      } else {
+        txt += ' / VT off';
       }
+      if(j.geoip_enabled) txt += ' / GeoIP ok';
       meta.textContent = txt;
     }
 
+    // pairs
     if(pairsBody){
       pairsBody.innerHTML = '';
       const pairs = Array.isArray(j.pairs) ? j.pairs : [];
       if(!pairs.length){
-        setSummaryMessage(pairsBody, 5, 'No related pairs found (try lowering min shared domains)');
+        setSummaryMessage(pairsBody, 4, 'No strong pairs found (try lowering min score)');
       } else {
         pairs.forEach(it=>{
           const tr = document.createElement('tr');
           const a = String((it && it.a) || '');
           const b = String((it && it.b) || '');
-          const sd = Number((it && it.shared_domains) || 0);
-          const jac = Number((it && it.jaccard) || 0);
+          const score = Number((it && it.score) || 0);
+          const ev = it && it.evidence;
 
           const tdA = document.createElement('td');
           tdA.textContent = a;
@@ -3011,55 +3276,42 @@ async function analyzeIpRelationships(){
             tdB.onclick = ()=> openQueryForValue(b);
           }
 
-          const tdS = document.createElement('td'); tdS.textContent = String(sd);
-          const tdJ = document.createElement('td'); tdJ.textContent = jac.toFixed(3);
-          const tdD = document.createElement('td');
-          const doms = Array.isArray(it.shared_domains_sample) ? it.shared_domains_sample : [];
-          tdD.className = 'wrap-cell';
-          tdD.textContent = doms.join(', ') || '-';
-          tdD.title = doms.join(', ');
+          const tdS = document.createElement('td'); tdS.textContent = String(score);
+          const tdE = document.createElement('td');
+          tdE.className = 'wrap-cell';
+          tdE.textContent = summarizeEvidence(ev);
+          tdE.title = JSON.stringify(ev || [], null, 0);
 
-          tr.appendChild(tdA); tr.appendChild(tdB); tr.appendChild(tdS); tr.appendChild(tdJ); tr.appendChild(tdD);
+          tr.appendChild(tdA); tr.appendChild(tdB); tr.appendChild(tdS); tr.appendChild(tdE);
           pairsBody.appendChild(tr);
         });
       }
     }
 
+    // clusters
     if(clustersBody){
       clustersBody.innerHTML = '';
       const clusters = Array.isArray(j.clusters) ? j.clusters : [];
       if(!clusters.length){
-        setSummaryMessage(clustersBody, 6, 'No clusters');
+        setSummaryMessage(clustersBody, 8, 'No clusters');
       } else {
         clusters.forEach((c, idx)=>{
           const tr = document.createElement('tr');
           const ips = Array.isArray(c.ips) ? c.ips : [];
-          const sample = ips.slice(0, 12).join(' | ');
-          const doms = Array.isArray(c.domains_sample) ? c.domains_sample : [];
           const vt = c.vt_summary || null;
           const vtTxt = vt
-            ? `M:${vt.malicious_total || 0} S:${vt.suspicious_total || 0} topASN:${(vt.top_asn||[]).map(x=>x[0]+'('+x[1]+')').join(', ')} topC:${(vt.top_country||[]).map(x=>x[0]+'('+x[1]+')').join(', ')}`
+            ? `M:${vt.malicious_total || 0} S:${vt.suspicious_total || 0}`
             : (j.vt_enabled ? '-' : 'VT off');
 
           const tdId = document.createElement('td'); tdId.textContent = String(idx + 1);
           const tdSz = document.createElement('td'); tdSz.textContent = String(c.size || ips.length || 0);
-          const tdDc = document.createElement('td'); tdDc.textContent = String(c.domain_count || 0);
-          const tdIps = document.createElement('td');
-          tdIps.className = 'wrap-cell';
-          tdIps.textContent = sample || '-';
-          tdIps.title = ips.join(' | ');
+          const tdCoh = document.createElement('td'); tdCoh.textContent = (c.cohesion != null) ? Number(c.cohesion).toFixed(1) : '-';
+          const tdAsn = document.createElement('td'); tdAsn.textContent = (c.top_asn||[]).map(x=>x[0]+'('+x[1]+')').join(', ') || '-';
+          const tdOwn = document.createElement('td'); tdOwn.textContent = (c.top_owner||[]).map(x=>x[0]+'('+x[1]+')').join(', ') || '-';
+          const tdCty = document.createElement('td'); tdCty.textContent = (c.top_country||[]).map(x=>x[0]+'('+x[1]+')').join(', ') || '-';
+          const tdCsp = document.createElement('td'); tdCsp.textContent = (c.top_csp||[]).map(x=>x[0]+'('+x[1]+')').join(', ') || '-';
+          const tdVt = document.createElement('td'); tdVt.textContent = vtTxt;
 
-          const tdDom = document.createElement('td');
-          tdDom.className = 'wrap-cell';
-          tdDom.textContent = doms.join(', ') || '-';
-          tdDom.title = doms.join(', ');
-
-          const tdVt = document.createElement('td');
-          tdVt.className = 'wrap-cell';
-          tdVt.textContent = vtTxt;
-          tdVt.title = vtTxt;
-
-          // Click cluster row -> filter IP Intel input to this cluster and run ipIntel
           tr.style.cursor = 'pointer';
           tr.title = 'Click to analyze this cluster in Per-IP Details';
           tr.onclick = async ()=>{
@@ -3068,7 +3320,7 @@ async function analyzeIpRelationships(){
             await analyzeIpIntel();
           };
 
-          tr.appendChild(tdId); tr.appendChild(tdSz); tr.appendChild(tdDc); tr.appendChild(tdIps); tr.appendChild(tdDom); tr.appendChild(tdVt);
+          tr.appendChild(tdId); tr.appendChild(tdSz); tr.appendChild(tdCoh); tr.appendChild(tdAsn); tr.appendChild(tdOwn); tr.appendChild(tdCty); tr.appendChild(tdCsp); tr.appendChild(tdVt);
           clustersBody.appendChild(tr);
         });
       }
@@ -3076,6 +3328,6 @@ async function analyzeIpRelationships(){
 
     touchOverviewTs();
   }catch(e){
-    if(meta) meta.textContent = 'Relationship analysis error: ' + e;
+    if(meta) meta.textContent = 'Similarity analysis error: ' + e;
   }
 }

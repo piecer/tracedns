@@ -6,5 +6,8 @@ PyMISP==2.4.140
 python-dotenv==1.0.0
 pytest==7.3.1
 
+# Optional: GeoIP (country code fallback when VT lacks coverage)
+geoip2==4.8.0
+
 # Note: VirusTotal lookups in `vt_lookup.py` use `requests` directly; no special VT package
 # is required by default.

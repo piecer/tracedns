@@ -24,6 +24,7 @@ pip3 install -r requirements.txt
 Notes:
 - VirusTotal lookups (optional) are implemented via `requests` in `vt_lookup.py` (no special VT SDK required).
 - MISP integration requires `PyMISP` (included in `requirements.txt`).
+- GeoIP country fallback (optional) for IP similarity analysis: install `geoip2` and provide a MaxMind mmdb path via `GEOIP_MMDB_PATH` (env) or `geoip_mmdb_path` in `dns_config.json`.
 
 ## Quick Start
 

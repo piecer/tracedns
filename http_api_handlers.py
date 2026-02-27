@@ -56,6 +56,7 @@ ALLOWED_STATIC_FILES = {
     "settings.html",
     "dns_frontend.css",
     "dns_frontend.js",
+    "country_centroids.json",
 }
 
 
@@ -81,6 +82,13 @@ def attach_api_handlers(
         history=history,
         purge_removed_domains_state=purge_removed_domains_state,
     )
+
+    # Expose shared_config on the handler instance for specialized endpoints
+    # (e.g. GeoIP mmdb path used by relationship/similarity analysis).
+    try:
+        handler_cls.shared_config = shared_config
+    except Exception:
+        pass
 
     def _send_json(self, obj, code=200):
         return _send_json_basic(self, obj, code=code)
