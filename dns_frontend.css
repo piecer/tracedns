@@ -301,6 +301,22 @@ tbody tr:hover{background:#f0f8fb;}
   text-overflow:clip;
   word-break:break-word;
 }
+
+/* Botnet IP Analysis summary tables: allow long text columns */
+#ipIntelAsSummaryTable td:nth-child(2),
+#ipIntelAsSummaryTable td:nth-child(3),
+#ipIntelAsSummaryTable td:nth-child(6),
+#ipIntelCspSummaryTable td:nth-child(1),
+#ipIntelCspSummaryTable td:nth-child(4),
+#ipIntelAsCountrySummaryTable td:nth-child(2),
+#ipIntelAsCountrySummaryTable td:nth-child(3){
+  max-width:none;
+  white-space:normal;
+  overflow:visible;
+  text-overflow:clip;
+  word-break:break-word;
+}
+
 #resultsTable td:last-child button{
   margin:0;
   padding:6px 9px;
@@ -571,6 +587,16 @@ tbody tr:hover{background:#f0f8fb;}
   grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));
   gap:12px;
   margin:10px 0 14px;
+}
+
+.ipintel-summary-grid{
+  grid-template-columns:repeat(3, minmax(300px, 1fr));
+}
+.ipintel-summary-grid .summary-card.span-all{
+  grid-column:1 / -1;
+}
+.ipintel-summary-grid table{
+  table-layout:auto;
 }
 .summary-card{
   border:1px solid var(--line);
