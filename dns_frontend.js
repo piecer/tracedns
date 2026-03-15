@@ -641,54 +641,205 @@ async function addVerifiedDomainToConfig(){
   }
 }
 
+function renderQueryLocalResult(value, payload){
+  const box = document.getElementById('queryResult');
+  if(!box) return;
+  box.innerHTML = '';
+
+  if(payload && payload.error){
+    box.textContent = payload.error;
+    return;
+  }
+
+  if(isIPv4(value)){
+    const info = payload || {};
+    const rows = [
+      ['IP', info.ip || value],
+      ['Domains', Array.isArray(info.domains) ? info.domains.join(', ') : '-'],
+      ['Count', info.count != null ? String(info.count) : '-'],
+      ['Last Seen', info.last_ts ? formatUnixTsLocal(info.last_ts) : '-'],
+      ['VT', info.vt ? `M:${(info.vt.malicious||0)} S:${(info.vt.suspicious||0)}` : '-']
+    ];
+    const table = document.createElement('table');
+    table.innerHTML = '<thead><tr><th>Field</th><th>Value</th></tr></thead>';
+    const tb = document.createElement('tbody');
+    rows.forEach(r=>{
+      const tr = document.createElement('tr');
+      const td1 = document.createElement('td'); td1.textContent = r[0];
+      const td2 = document.createElement('td'); td2.textContent = r[1];
+      tr.appendChild(td1); tr.appendChild(td2); tb.appendChild(tr);
+    });
+    table.appendChild(tb);
+    box.appendChild(table);
+    return;
+  }
+
+  const current = (payload && payload.current) || [];
+  const history = (payload && payload.history) || [];
+
+  const mkTitle = (txt)=>{ const h = document.createElement('h5'); h.textContent = txt; h.style.margin = '10px 0 6px'; return h; };
+
+  const curTable = document.createElement('table');
+  curTable.innerHTML = '<thead><tr><th>Domain</th><th>Type</th><th>Values</th><th>Decoded IPs</th><th>Servers</th><th>Last Seen</th></tr></thead>';
+  const curBody = document.createElement('tbody');
+  if(!current.length){
+    setSummaryMessage(curBody, 6, 'No current matches');
+  } else {
+    current.forEach(it=>{
+      const tr = document.createElement('tr');
+      const tdD = document.createElement('td'); tdD.textContent = it.domain || '-';
+      const tdT = document.createElement('td'); tdT.textContent = it.type || '-';
+      const tdV = document.createElement('td'); tdV.textContent = formatListPreview(it.values || [], 4);
+      const tdI = document.createElement('td'); tdI.textContent = formatListPreview(it.decoded_ips || [], 4);
+      const tdS = document.createElement('td'); tdS.textContent = formatListPreview(it.servers || [], 3);
+      const tdTs = document.createElement('td'); tdTs.textContent = it.ts ? formatUnixTsLocal(it.ts) : '-';
+      tr.appendChild(tdD); tr.appendChild(tdT); tr.appendChild(tdV); tr.appendChild(tdI); tr.appendChild(tdS); tr.appendChild(tdTs);
+      curBody.appendChild(tr);
+    });
+  }
+  curTable.appendChild(curBody);
+
+  const histTable = document.createElement('table');
+  histTable.innerHTML = '<thead><tr><th>Domain</th><th>Server</th><th>Timestamp</th><th>Values</th></tr></thead>';
+  const histBody = document.createElement('tbody');
+  if(!history.length){
+    setSummaryMessage(histBody, 4, 'No history matches');
+  } else {
+    history.forEach(it=>{
+      const tr = document.createElement('tr');
+      const tdD = document.createElement('td'); tdD.textContent = it.domain || '-';
+      const tdS = document.createElement('td'); tdS.textContent = it.server || '-';
+      const tdT = document.createElement('td'); tdT.textContent = it.ts ? formatUnixTsLocal(it.ts) : '-';
+      const vals = (it.new && it.new.values) ? it.new.values : (it.values || []);
+      const tdV = document.createElement('td'); tdV.textContent = formatListPreview(vals, 4);
+      tr.appendChild(tdD); tr.appendChild(tdS); tr.appendChild(tdT); tr.appendChild(tdV);
+      histBody.appendChild(tr);
+    });
+  }
+  histTable.appendChild(histBody);
+
+  box.appendChild(mkTitle('Current')); box.appendChild(curTable);
+  box.appendChild(mkTitle('History')); box.appendChild(histTable);
+}
+
+function renderQueryMispResult(payload){
+  const box = document.getElementById('queryMispResult');
+  if(!box) return;
+  box.innerHTML = '';
+
+  if(!payload || payload.error){
+    box.textContent = payload && payload.error ? payload.error : '-';
+    return;
+  }
+
+  const attrs = Array.isArray(payload.attributes) ? payload.attributes : [];
+  const meta = document.createElement('div');
+  meta.style.fontSize = '.85rem';
+  meta.style.color = '#5b6a77';
+  meta.style.marginBottom = '6px';
+  meta.textContent = `matches: ${payload.count || 0} (type ${payload.type_attribute || 'any'})`;
+  box.appendChild(meta);
+
+  const table = document.createElement('table');
+  table.innerHTML = '<thead><tr><th>Value</th><th>Type</th><th>Category</th><th>Event</th><th>Comment</th><th>TS</th><th>to_ids</th></tr></thead>';
+  const tbody = document.createElement('tbody');
+  if(!attrs.length){
+    setSummaryMessage(tbody, 7, 'No MISP matches');
+  } else {
+    attrs.forEach(a=>{
+      const tr = document.createElement('tr');
+      const tdV = document.createElement('td'); tdV.textContent = a.value || '-';
+      const tdT = document.createElement('td'); tdT.textContent = a.type || '-';
+      const tdC = document.createElement('td'); tdC.textContent = a.category || '-';
+      const tdE = document.createElement('td'); tdE.textContent = a.event_id || '-';
+      const tdCom = document.createElement('td'); tdCom.textContent = a.comment || '-';
+      const tdTs = document.createElement('td'); tdTs.textContent = a.timestamp ? formatUnixTsLocal(a.timestamp) : '-';
+      const tdIds = document.createElement('td'); tdIds.textContent = (a.to_ids === true) ? 'yes' : (a.to_ids === false ? 'no' : '-');
+      tr.appendChild(tdV); tr.appendChild(tdT); tr.appendChild(tdC); tr.appendChild(tdE); tr.appendChild(tdCom); tr.appendChild(tdTs); tr.appendChild(tdIds);
+      tbody.appendChild(tr);
+    });
+  }
+  table.appendChild(tbody);
+  box.appendChild(table);
+}
+
 async function runQuery(v){
   const value = String(v || '').trim();
   if(!value){ alert('Enter search value'); return; }
+  const mispBox = document.getElementById('queryMispResult');
+  if(mispBox) mispBox.textContent = 'Loading MISP...';
+
   if(isIPv4(value)){
     const r = await fetch('/ip?ip='+encodeURIComponent(value));
     const j = await r.json();
-    document.getElementById('queryResult').textContent = JSON.stringify(j, null, 2);
-    return;
-  }
-  // search value across history/current by fetching aggregated results + /history client-side
-  const r1 = await fetch('/results?aggregate=1'); const res = await r1.json();
-  const agg = (res && res.results_agg && typeof res.results_agg === 'object')
-    ? res.results_agg
-    : {};
-  const matches = [];
-  for(const d of Object.keys(agg || {})){
-    const info = agg[d] || {};
-    const vals = Array.isArray(info.values) ? info.values : [];
-    const dec = Array.isArray(info.decoded_ips) ? info.decoded_ips : [];
-    if(vals.some(x=>String(x || '').includes(value)) || dec.some(x=>String(x || '').includes(value))){
-      matches.push({
-        domain: d,
-        type: info.type || 'A',
-        ts: info.ts || 0,
-        servers: info.servers || [],
-        values: vals,
-        decoded_ips: dec
+    renderQueryLocalResult(value, j);
+  } else {
+    // search value across history/current by fetching aggregated results + /history client-side
+    const r1 = await fetch('/results?aggregate=1'); const res = await r1.json();
+    const agg = (res && res.results_agg && typeof res.results_agg === 'object')
+      ? res.results_agg
+      : {};
+    const matches = [];
+    for(const d of Object.keys(agg || {})){
+      const info = agg[d] || {};
+      const vals = Array.isArray(info.values) ? info.values : [];
+      const dec = Array.isArray(info.decoded_ips) ? info.decoded_ips : [];
+      if(vals.some(x=>String(x || '').includes(value)) || dec.some(x=>String(x || '').includes(value))){
+        matches.push({
+          domain: d,
+          type: info.type || 'A',
+          ts: info.ts || 0,
+          servers: info.servers || [],
+          values: vals,
+          decoded_ips: dec
+        });
+      }
+    }
+    // fallback: fetch history per domain from results list
+    const histMatches = [];
+    for(const d of Object.keys(agg || {})){
+      const hresp = await fetch('/history?domain='+encodeURIComponent(d));
+      const hj = await hresp.json();
+      const histObj = hj && hj.history ? hj.history : {};
+      const events = Array.isArray(histObj) ? histObj : (Array.isArray(histObj.events) ? histObj.events : []);
+      events.forEach(ev=>{
+        const newHit = !!(ev.new && (ev.new.values||[]).some(x=>x.includes(value)));
+        const oldHit = !!(ev.old && (ev.old.values||[]).some(x=>x.includes(value)));
+        if(newHit || oldHit){
+          histMatches.push({domain:d, server:ev.server, ts:ev.ts, old:ev.old, new:ev.new});
+        } else if(ev.values && (ev.values||[]).some(x=>x.includes(value))){
+          histMatches.push({domain:d, server:ev.server, ts:ev.ts, values:ev.values});
+        }
       });
     }
+    renderQueryLocalResult(value, {current:matches, history:histMatches});
   }
-  // fallback: fetch history per domain from results list
-  const histMatches = [];
-  for(const d of Object.keys(agg || {})){
-    const hresp = await fetch('/history?domain='+encodeURIComponent(d));
-    const hj = await hresp.json();
-    const histObj = hj && hj.history ? hj.history : {};
-    const events = Array.isArray(histObj) ? histObj : (Array.isArray(histObj.events) ? histObj.events : []);
-    events.forEach(ev=>{
-      const newHit = !!(ev.new && (ev.new.values||[]).some(x=>x.includes(value)));
-      const oldHit = !!(ev.old && (ev.old.values||[]).some(x=>x.includes(value)));
-      if(newHit || oldHit){
-        histMatches.push({domain:d, server:ev.server, ts:ev.ts, old:ev.old, new:ev.new});
-      } else if(ev.values && (ev.values||[]).some(x=>x.includes(value))){
-        histMatches.push({domain:d, server:ev.server, ts:ev.ts, values:ev.values});
+
+  if(mispBox){
+    try{
+      const r = await fetch('/misp/search?value='+encodeURIComponent(value));
+      const text = await r.text();
+      let j = null;
+      if(text && text.trim()){
+        try{ j = JSON.parse(text); }catch(e){ j = null; }
       }
-    });
+      if(!r.ok){
+        if(j && j.error){
+          renderQueryMispResult({error: `MISP error: ${j.error}`});
+        } else {
+          renderQueryMispResult({error: `MISP error (${r.status}): ${text || 'empty response'}`});
+        }
+      } else if(!j){
+        renderQueryMispResult({error: `MISP error: invalid JSON response (${text || 'empty response'})`});
+      } else if(j.status !== 'ok'){
+        renderQueryMispResult({error: j.error ? `MISP error: ${j.error}` : 'MISP error: unknown response'});
+      } else {
+        renderQueryMispResult(j);
+      }
+    }catch(e){
+      renderQueryMispResult({error: `MISP error: ${e}`});
+    }
   }
-  document.getElementById('queryResult').textContent = JSON.stringify({current:matches, history:histMatches}, null, 2);
 }
 
 function setSummaryMessage(tbody, colSpan, message){
