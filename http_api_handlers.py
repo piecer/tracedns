@@ -57,6 +57,7 @@ ALLOWED_STATIC_FILES = {
     "dns_frontend.css",
     "dns_frontend.js",
     "country_centroids.json",
+    "cytoscape.min.js",
 }
 
 

@@ -2927,6 +2927,7 @@ window.IP_REL_CACHE = window.IP_REL_CACHE || null;
 window.IP_REL_GRAPH = window.IP_REL_GRAPH || null;
 window.IP_REL_MAP = window.IP_REL_MAP || null;
 window.IP_REL_MAP_MARKERS = window.IP_REL_MAP_MARKERS || [];
+window.IP_REL_MAP_SVG = window.IP_REL_MAP_SVG || null;
 
 function setIpRelView(name){
   const table = document.getElementById('ipRelTableView');
@@ -3088,6 +3089,59 @@ function clearIpRelMapMarkers(){
     (window.IP_REL_MAP_MARKERS || []).forEach(m=>{ try{ m.remove(); }catch(e){} });
   }catch(e){}
   window.IP_REL_MAP_MARKERS = [];
+  window.IP_REL_MAP_SVG = null;
+}
+
+function projectLatLon(lat, lon, width, height){
+  const x = ((lon + 180) / 360) * width;
+  const y = ((90 - lat) / 180) * height;
+  return [x, y];
+}
+
+function buildSvgMap(el, width, height){
+  el.innerHTML = '';
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.setAttribute('width', '100%');
+  svg.setAttribute('height', '100%');
+  svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+  svg.style.display = 'block';
+
+  const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  bg.setAttribute('x', '0');
+  bg.setAttribute('y', '0');
+  bg.setAttribute('width', String(width));
+  bg.setAttribute('height', String(height));
+  bg.setAttribute('fill', '#f8fbff');
+  bg.setAttribute('stroke', '#d7e4eb');
+  bg.setAttribute('stroke-width', '1');
+  svg.appendChild(bg);
+
+  for(let lon=-180; lon<=180; lon+=60){
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    const x = ((lon + 180) / 360) * width;
+    line.setAttribute('x1', String(x));
+    line.setAttribute('x2', String(x));
+    line.setAttribute('y1', '0');
+    line.setAttribute('y2', String(height));
+    line.setAttribute('stroke', '#e6eef5');
+    line.setAttribute('stroke-width', '1');
+    svg.appendChild(line);
+  }
+  for(let lat=-60; lat<=60; lat+=30){
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    const y = ((90 - lat) / 180) * height;
+    line.setAttribute('x1', '0');
+    line.setAttribute('x2', String(width));
+    line.setAttribute('y1', String(y));
+    line.setAttribute('y2', String(y));
+    line.setAttribute('stroke', '#e6eef5');
+    line.setAttribute('stroke-width', '1');
+    svg.appendChild(line);
+  }
+
+  el.appendChild(svg);
+  return svg;
 }
 
 async function renderIpRelMapFromCache(){
@@ -3098,19 +3152,6 @@ async function renderIpRelMapFromCache(){
     el.innerHTML = '<div style="padding:12px;color:#5b6a77;">Run Relationships first.</div>';
     return;
   }
-  if(typeof L !== 'object' || !L.map){
-    el.innerHTML = '<div style="padding:12px;color:#5b6a77;">Leaflet not available (CDN blocked?).</div>';
-    return;
-  }
-
-  // Init map once
-  if(!window.IP_REL_MAP){
-    window.IP_REL_MAP = L.map(el, {worldCopyJump:true}).setView([20, 0], 2);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 6,
-      attribution: '&copy; OpenStreetMap contributors'
-    }).addTo(window.IP_REL_MAP);
-  }
 
   const centroids = await loadCountryCentroids();
   if(!centroids){
@@ -3118,13 +3159,16 @@ async function renderIpRelMapFromCache(){
     return;
   }
 
-  clearIpRelMapMarkers();
+  const rect = el.getBoundingClientRect();
+  const width = Math.max(520, Math.round(rect.width || 520));
+  const height = Math.max(520, Math.round(rect.height || 520));
+  const svg = buildSvgMap(el, width, height);
+  window.IP_REL_MAP_SVG = svg;
 
   const rows = cache.country_summary || [];
   const maxCount = Math.max(1, ...rows.map(x=>Number(x.ip_count||0)));
   const toColor = (ratio)=>{
     const r = Math.max(0, Math.min(1, Number(ratio||0)));
-    // green(0) -> red(1)
     const rr = Math.round(60 + (220-60)*r);
     const gg = Math.round(180 + (60-180)*r);
     const bb = 80;
@@ -3141,19 +3185,26 @@ async function renderIpRelMapFromCache(){
     const mal = Number(row.malicious_ips || 0);
     const ratio = mal / Math.max(1, ipCount);
     const radius = 6 + 26 * Math.sqrt(ipCount / maxCount);
+    const lat = Number(c[0]);
+    const lon = Number(c[1]);
+    if(!Number.isFinite(lat) || !Number.isFinite(lon)) return;
 
-    const marker = L.circleMarker([c[0], c[1]], {
-      radius,
-      color: '#1b2a41',
-      weight: 1,
-      fillColor: toColor(ratio),
-      fillOpacity: 0.78
-    }).addTo(window.IP_REL_MAP);
+    const [x, y] = projectLatLon(lat, lon, width, height);
+    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    circle.setAttribute('cx', String(x));
+    circle.setAttribute('cy', String(y));
+    circle.setAttribute('r', String(radius));
+    circle.setAttribute('fill', toColor(ratio));
+    circle.setAttribute('fill-opacity', '0.78');
+    circle.setAttribute('stroke', '#1b2a41');
+    circle.setAttribute('stroke-width', '1');
+    circle.style.cursor = 'pointer';
 
-    marker.bindTooltip(`${cc}  IPs:${ipCount}  M:${mal}`, {sticky:true});
+    const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+    title.textContent = `${cc}  IPs:${ipCount}  M:${mal}`;
+    circle.appendChild(title);
 
-    marker.on('click', async ()=>{
-      // Filter input IP list to this country using ip_features
+    circle.addEventListener('click', async ()=>{
       const ipFeat = cache.ip_features || {};
       const ips = Object.keys(ipFeat).filter(ip=> String((ipFeat[ip]||{}).country||'').toUpperCase() === cc);
       const ta = document.getElementById('ipIntelInput');
@@ -3162,7 +3213,7 @@ async function renderIpRelMapFromCache(){
       setIpRelView('table');
     });
 
-    window.IP_REL_MAP_MARKERS.push(marker);
+    svg.appendChild(circle);
   });
 }
 
