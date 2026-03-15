@@ -58,6 +58,7 @@ ALLOWED_STATIC_FILES = {
     "dns_frontend.js",
     "country_centroids.json",
     "cytoscape.min.js",
+    "world_countries_110m.geojson",
 }
 
 

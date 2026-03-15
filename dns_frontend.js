@@ -3084,6 +3084,17 @@ async function loadCountryCentroids(){
   }
 }
 
+async function loadWorldGeoJson(){
+  try{
+    const r = await fetch('/world_countries_110m.geojson');
+    if(!r.ok) return null;
+    const j = await r.json();
+    return j;
+  }catch(e){
+    return null;
+  }
+}
+
 function clearIpRelMapMarkers(){
   try{
     (window.IP_REL_MAP_MARKERS || []).forEach(m=>{ try{ m.remove(); }catch(e){} });
@@ -3096,6 +3107,10 @@ function projectLatLon(lat, lon, width, height){
   const x = ((lon + 180) / 360) * width;
   const y = ((90 - lat) / 180) * height;
   return [x, y];
+}
+
+function projectLonLat(lon, lat, width, height){
+  return projectLatLon(lat, lon, width, height);
 }
 
 function buildSvgMap(el, width, height){
@@ -3144,6 +3159,37 @@ function buildSvgMap(el, width, height){
   return svg;
 }
 
+function geojsonToPath(feature, width, height){
+  const geom = feature && feature.geometry;
+  if(!geom) return '';
+  const type = geom.type;
+  const coords = geom.coordinates || [];
+  const parts = [];
+
+  const ringToPath = (ring)=>{
+    if(!Array.isArray(ring) || ring.length < 2) return '';
+    let d = '';
+    ring.forEach((pt, idx)=>{
+      const lon = Number(pt[0]);
+      const lat = Number(pt[1]);
+      if(!Number.isFinite(lon) || !Number.isFinite(lat)) return;
+      const [x, y] = projectLonLat(lon, lat, width, height);
+      d += (idx === 0 ? 'M' : 'L') + x.toFixed(2) + ' ' + y.toFixed(2) + ' ';
+    });
+    return d + 'Z ';
+  };
+
+  if(type === 'Polygon'){
+    coords.forEach(ring=>{ parts.push(ringToPath(ring)); });
+  } else if(type === 'MultiPolygon'){
+    coords.forEach(poly=>{
+      (poly || []).forEach(ring=>{ parts.push(ringToPath(ring)); });
+    });
+  }
+
+  return parts.join('');
+}
+
 async function renderIpRelMapFromCache(){
   const cache = window.IP_REL_CACHE;
   const el = document.getElementById('ipRelMap');
@@ -3159,11 +3205,31 @@ async function renderIpRelMapFromCache(){
     return;
   }
 
+  const world = await loadWorldGeoJson();
+  if(!world || !Array.isArray(world.features)){
+    el.innerHTML = '<div style="padding:12px;color:#5b6a77;">world_countries_110m.geojson not available.</div>';
+    return;
+  }
+
   const rect = el.getBoundingClientRect();
   const width = Math.max(520, Math.round(rect.width || 520));
   const height = Math.max(520, Math.round(rect.height || 520));
   const svg = buildSvgMap(el, width, height);
   window.IP_REL_MAP_SVG = svg;
+
+  const landGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  landGroup.setAttribute('fill', '#eef3f8');
+  landGroup.setAttribute('stroke', '#c7d6e4');
+  landGroup.setAttribute('stroke-width', '0.7');
+  svg.appendChild(landGroup);
+
+  world.features.forEach(feat=>{
+    const d = geojsonToPath(feat, width, height);
+    if(!d) return;
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d.trim());
+    landGroup.appendChild(path);
+  });
 
   const rows = cache.country_summary || [];
   const maxCount = Math.max(1, ...rows.map(x=>Number(x.ip_count||0)));
