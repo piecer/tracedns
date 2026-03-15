@@ -1352,6 +1352,33 @@ def attach_api_handlers(
             'hints': hints
         })
     
+    def _init_misp_client(self):
+        # Prefer already-initialized MISP client from alerts runtime.
+        misp_client = None
+        misp_mod = None
+        try:
+            import mispupdate_code as _misp_mod
+            misp_mod = _misp_mod
+            misp_client = getattr(_misp_mod, 'misp', None)
+        except Exception:
+            misp_mod = None
+
+        if misp_client is None:
+            # Try runtime re-init from current alerts config.
+            try:
+                from alerts import init_from_alerts as _alerts_init_from_dict
+                with config_lock:
+                    alerts_cfg = shared_config.get('alerts', {}) if isinstance(shared_config, dict) else {}
+                if isinstance(alerts_cfg, dict) and alerts_cfg:
+                    _alerts_init_from_dict(alerts_cfg)
+                    if misp_mod is None:
+                        import mispupdate_code as _misp_mod2
+                        misp_mod = _misp_mod2
+                    misp_client = getattr(misp_mod, 'misp', None) if misp_mod else None
+            except Exception:
+                misp_client = None
+        return misp_client
+
     def _handle_misp_event_ips(self):
         """Load ip-src attributes from a MISP event."""
         length = int(self.headers.get('Content-Length', '0'))
@@ -1375,32 +1402,8 @@ def attach_api_handlers(
             event_id_int = int(str(event_id).strip())
         except Exception:
             return self._send_json({'error': 'invalid event_id'}, 400)
-    
-        # Prefer already-initialized MISP client from alerts runtime.
-        misp_client = None
-        misp_mod = None
-        try:
-            import mispupdate_code as _misp_mod
-            misp_mod = _misp_mod
-            misp_client = getattr(_misp_mod, 'misp', None)
-        except Exception:
-            misp_mod = None
-    
-        if misp_client is None:
-            # Try runtime re-init from current alerts config.
-            try:
-                from alerts import init_from_alerts as _alerts_init_from_dict
-                with config_lock:
-                    alerts_cfg = shared_config.get('alerts', {}) if isinstance(shared_config, dict) else {}
-                if isinstance(alerts_cfg, dict) and alerts_cfg:
-                    _alerts_init_from_dict(alerts_cfg)
-                    if misp_mod is None:
-                        import mispupdate_code as _misp_mod2
-                        misp_mod = _misp_mod2
-                    misp_client = getattr(misp_mod, 'misp', None) if misp_mod else None
-            except Exception:
-                misp_client = None
-    
+
+        misp_client = _init_misp_client(self)
         if misp_client is None:
             return self._send_json({'error': 'misp client not initialized; check MISP URL/API key settings'}, 400)
     
@@ -1443,6 +1446,93 @@ def attach_api_handlers(
             'count': len(ips),
             'ips': ips,
             'invalid_values': invalid_values[:200]
+        })
+
+    def _handle_misp_search(self, qs=None):
+        qs = qs or {}
+        value = ''
+        try:
+            value = (qs.get('value') or [''])[0]
+        except Exception:
+            value = ''
+        value = str(value or '').strip()
+        if not value:
+            return self._send_json({'error': 'value required'}, 400)
+
+        with config_lock:
+            alerts_cfg = shared_config.get('alerts', {}) if isinstance(shared_config, dict) else {}
+        if not isinstance(alerts_cfg, dict):
+            alerts_cfg = {}
+        misp_url = str(alerts_cfg.get('misp_url') or '').strip()
+        api_key = str(alerts_cfg.get('api_key') or '').strip()
+        if not misp_url or not api_key:
+            return self._send_json({'error': 'misp_url/api_key missing in alerts config'}, 400)
+
+        import ipaddress as _ip
+        type_attr = None
+        try:
+            _ip.ip_address(value)
+            type_attr = 'ip-src'
+        except Exception:
+            type_attr = None
+
+        import requests as _requests
+        payload = {'value': value, 'returnFormat': 'json'}
+        if type_attr:
+            payload['type'] = ['ip-src', 'ip-dst', 'ip-src|port', 'ip-dst|port']
+        url = misp_url.rstrip('/') + '/attributes/restSearch'
+        try:
+            print(f"[misp] search url={url} value={value} type={payload.get('type')}")
+            resp = _requests.post(
+                url,
+                json=payload,
+                headers={'Authorization': api_key, 'Accept': 'application/json', 'Content-Type': 'application/json'},
+                verify=False,
+                timeout=20
+            )
+            print(f"[misp] response status={resp.status_code} bytes={len(resp.content or b'')} ")
+        except Exception as e:
+            print(f"[misp] search failed: {e}")
+            return self._send_json({'error': f'misp search failed: {e}'}, 500)
+
+        if not resp.ok:
+            return self._send_json({'error': f'misp search failed ({resp.status_code})', 'detail': resp.text[:500]}, 500)
+
+        try:
+            result = resp.json()
+        except Exception:
+            return self._send_json({'error': 'misp search returned non-json', 'detail': resp.text[:500]}, 500)
+
+        attrs = []
+        if isinstance(result, dict):
+            if isinstance(result.get('response'), dict):
+                attrs = result.get('response', {}).get('Attribute', []) or []
+            else:
+                attrs = result.get('Attribute', []) or []
+        if not isinstance(attrs, list):
+            attrs = []
+
+        out = []
+        for a in attrs:
+            if not isinstance(a, dict):
+                continue
+            out.append({
+                'id': a.get('id'),
+                'event_id': a.get('event_id'),
+                'type': a.get('type'),
+                'category': a.get('category'),
+                'value': a.get('value'),
+                'comment': a.get('comment') or '',
+                'timestamp': a.get('timestamp') or a.get('first_seen') or '',
+                'to_ids': a.get('to_ids'),
+            })
+
+        return self._send_json({
+            'status': 'ok',
+            'query': value,
+            'type_attribute': type_attr,
+            'count': len(out),
+            'attributes': out
         })
     
     def _handle_ips(self, qs):
@@ -1666,6 +1756,8 @@ def attach_api_handlers(
             return self._handle_domains()
         if parsed.path == '/domain-analysis':
             return self._handle_domain_analysis(qs)
+        if parsed.path == '/misp/search':
+            return self._handle_misp_search(qs)
         if parsed.path == '/':
             b = frontend_html.encode('utf-8')
             self.send_response(200)
@@ -1977,6 +2069,9 @@ def attach_api_handlers(
         if parsed.path == '/ip-relationship-analysis':
             return _handle_ip_relationship_analysis(self, gather_ip_map_fn=self._gather_ip_map)
     
+        if parsed.path == '/misp/search':
+            return self._handle_misp_search(qs)
+
         if parsed.path == '/misp/event-ips':
             return self._handle_misp_event_ips()
     
@@ -2242,6 +2337,7 @@ def attach_api_handlers(
     handler_cls._handle_domain_precheck = _handle_domain_precheck
     handler_cls._handle_ip_list_analysis = _handle_ip_list_analysis
     handler_cls._handle_misp_event_ips = _handle_misp_event_ips
+    handler_cls._handle_misp_search = _handle_misp_search
     handler_cls._handle_ips = _handle_ips
     handler_cls._handle_history = _handle_history
     handler_cls._handle_ip_query = _handle_ip_query
