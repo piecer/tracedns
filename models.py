@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 
-RecordType = str  # 'A' | 'TXT' | 'MIXED'
+RecordType = str  # 'A' | 'TXT' | 'ENS' | 'MIXED'
 
 
 @dataclass(frozen=True)
@@ -23,6 +23,7 @@ class DomainSpec:
     txt_decode: Optional[str] = None
     a_decode: Optional[str] = None
     a_xor_key: Optional[str] = None
+    ens_text_key: Optional[str] = None
 
 
 @dataclass
@@ -34,10 +35,11 @@ class Snapshot:
     txt_decode: Optional[str] = None
     a_decode: Optional[str] = None
     a_xor_key: Optional[str] = None
+    ens_text_key: Optional[str] = None
 
     def managed_ips(self) -> Set[str]:
         r = str(self.type or '').upper()
-        if r == 'TXT':
+        if r in ('TXT', 'ENS'):
             return {str(x).strip() for x in (self.decoded_ips or []) if str(x or '').strip()}
         if r == 'A':
             # A-type with post-process enabled stores transformed IPs in values.
@@ -60,6 +62,8 @@ class Snapshot:
             out['a_decode'] = self.a_decode
         if self.a_xor_key:
             out['a_xor_key'] = self.a_xor_key
+        if self.ens_text_key:
+            out['ens_text_key'] = self.ens_text_key
         return out
 
     @staticmethod
@@ -75,6 +79,7 @@ class Snapshot:
             txt_decode=obj.get('txt_decode'),
             a_decode=obj.get('a_decode'),
             a_xor_key=obj.get('a_xor_key'),
+            ens_text_key=obj.get('ens_text_key'),
         )
         return snap
 
@@ -186,6 +191,7 @@ def coerce_domains(domains: List[Any]) -> List[DomainSpec]:
                     txt_decode=d.get('txt_decode'),
                     a_decode=d.get('a_decode'),
                     a_xor_key=d.get('a_xor_key'),
+                    ens_text_key=d.get('ens_text_key'),
                 )
             )
         else:

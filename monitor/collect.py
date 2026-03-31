@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from a_decoder import decode_a_hidden_ips
+from ens_query import fetch_ens_text_record, parse_record
 from dns_query import query_dns
 from models import DomainSpec, Snapshot, QueryResult
 from txt_decoder import decode_txt_hidden_ips
@@ -41,6 +42,24 @@ def collect_snapshot(domain: DomainSpec, server: str) -> Collected:
     # decode / post-process
     snap_values = [str(v) for v in (values or []) if str(v or '').strip()]
     decoded: List[str] = []
+
+
+    if rtype == 'ENS':
+        ens_key = (domain.ens_text_key or 'ipv6').strip() or 'ipv6'
+        try:
+            raw_value = fetch_ens_text_record(str(server), name, ens_key)
+            snap_values = [str(raw_value)]
+            decoded = parse_record(raw_value)
+            snap = Snapshot(type='ENS', values=snap_values, decoded_ips=decoded, ts=ts, ens_text_key=ens_key)
+            return Collected(
+                query=QueryResult(server=str(server), domain=name, rtype='ENS', status='ok', values=snap_values),
+                snapshot=snap,
+            )
+        except Exception:
+            return Collected(
+                query=QueryResult(server=str(server), domain=name, rtype='ENS', status='error', values=[]),
+                snapshot=None,
+            )
 
     if rtype == 'TXT':
         method = domain.txt_decode or 'cafebabe_xor_base64'

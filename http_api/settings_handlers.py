@@ -114,6 +114,7 @@ def handle_settings_post(ctx: HttpContext, handler) -> None:
                 cfg.setdefault('interval', ctx.shared_config.get('interval'))
                 cfg.setdefault('max_workers', ctx.shared_config.get('max_workers', 8))
                 cfg.setdefault('custom_decoders', ctx.shared_config.get('custom_decoders', []))
+                cfg.setdefault('ens_rpc_url', ctx.shared_config.get('ens_rpc_url', ''))
                 write_config(ctx.config_path, cfg)
                 logger.debug('Settings saved to %s', ctx.config_path)
             except Exception as e:

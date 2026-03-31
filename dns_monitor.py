@@ -99,6 +99,7 @@ def main():
         'servers': servers0,
         'interval': max(1, int(interval0)),
         'max_workers': max(1, int(max_workers0)),
+        'ens_rpc_url': str(file_cfg.get('ens_rpc_url') or '').strip(),
     }
     cfg_store = ConfigStore(shared_config, config_lock)
 
@@ -202,6 +203,8 @@ def main():
                     restored['a_decode'] = snap.get('a_decode')
                 if snap.get('a_xor_key'):
                     restored['a_xor_key'] = snap.get('a_xor_key')
+                if snap.get('ens_text_key'):
+                    restored['ens_text_key'] = snap.get('ens_text_key')
                 current_results[domain][srv] = restored
 
     configured_names = {d.get('name', '').strip() for d in normalize_domains(shared_config.get('domains', [])) if isinstance(d, dict) and d.get('name')}
@@ -238,6 +241,7 @@ def main():
             query_fail_counts=query_fail_counts,
             max_workers=snap.max_workers,
             force_req=snap.force_req,
+            ens_rpc_url=str(shared_config.get('ens_rpc_url') or '').strip() or None,
         )
 
         # reconcile removed IPs only for full scans

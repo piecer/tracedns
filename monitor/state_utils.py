@@ -36,7 +36,7 @@ def collect_domain_managed_ips(current_results: Dict[str, Any], domain: str, rty
         snap = Snapshot.from_legacy(snap_obj)
         use_type = prefer or str(snap.type or '').upper()
         # Force interpretation in case legacy snapshot has mixed fields
-        if use_type == 'TXT':
+        if use_type in ('TXT', 'ENS'):
             for ip in (snap.decoded_ips or []):
                 s = str(ip or '').strip()
                 if s:
