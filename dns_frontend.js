@@ -1869,7 +1869,7 @@ function addDomainRow(obj){
   const sel = document.createElement('select');
   sel.className = 'domain-type';
   // Expand supported record type list
-  ['A','TXT','AAAA','CNAME','MX','NS','SRV','CAA'].forEach(t=>{ const o = document.createElement('option'); o.value=t; o.text=t; sel.appendChild(o); });
+  ['A','TXT','ENS','AAAA','CNAME','MX','NS','SRV','CAA'].forEach(t=>{ const o = document.createElement('option'); o.value=t; o.text=t; sel.appendChild(o); });
   if(obj && obj.type) sel.value = obj.type.toUpperCase();
   tdType.appendChild(sel);
 
@@ -1926,14 +1926,25 @@ function addDomainRow(obj){
   inpAKey.value = (obj && obj.a_xor_key) ? obj.a_xor_key : '';
   tdAKey.appendChild(inpAKey);
 
+  // ENS text-key input
+  const tdEnsKey = document.createElement('td');
+  const inpEnsKey = document.createElement('input');
+  inpEnsKey.type = 'text';
+  inpEnsKey.className = 'ens-text-key';
+  inpEnsKey.placeholder = 'ipv6';
+  inpEnsKey.value = (obj && obj.ens_text_key) ? obj.ens_text_key : '';
+  tdEnsKey.appendChild(inpEnsKey);
+
   // Toggle decoder fields by record type
   const toggleDecodeInputs = function(){
     const typ = (sel.value || 'A').toUpperCase();
     const isTXT = typ === 'TXT';
     const isA = typ === 'A';
+    const isENS = typ === 'ENS';
     selDecode.disabled = !isTXT;
     selADecode.disabled = !isA;
     inpAKey.disabled = !isA;
+    inpEnsKey.disabled = !isENS;
   };
   sel.onchange = toggleDecodeInputs;
   toggleDecodeInputs();
@@ -1950,7 +1961,8 @@ function addDomainRow(obj){
     const payload = {
       domains: collectDomainsFromUI(),
       servers: document.getElementById('servers').value.split(',').map(s=>s.trim()).filter(Boolean),
-      interval: parseInt(document.getElementById('interval').value) || 60
+      interval: parseInt(document.getElementById('interval').value) || 60,
+      ens_rpc_url: ((document.getElementById('ensRpcUrl') || {}).value || '').trim()
     };
     try{
       const r = await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
@@ -1966,6 +1978,7 @@ function addDomainRow(obj){
   tr.appendChild(tdTxtDecode);
   tr.appendChild(tdADecode);
   tr.appendChild(tdAKey);
+  tr.appendChild(tdEnsKey);
   tr.appendChild(tdBtn);
   tbody.appendChild(tr);
   uiOverview.configured = document.querySelectorAll('#domainTable tbody tr').length;
@@ -2027,6 +2040,7 @@ function collectDomainsFromUI(){
     const txt_decode = ((r.querySelector('.txt-decode') || {}).value || '').trim();
     const a_decode = ((r.querySelector('.a-decode') || {}).value || 'none').trim();
     const a_xor_key = ((r.querySelector('.a-xor-key') || {}).value || '').trim();
+    const ens_text_key = ((r.querySelector('.ens-text-key') || {}).value || '').trim();
     if(name) {
       const obj = {name: name, type: typ};
       if(typ === 'TXT'){
@@ -2038,6 +2052,8 @@ function collectDomainsFromUI(){
           if(!obj.a_decode) obj.a_decode = 'xor32_ipv4';
           obj.a_xor_key = a_xor_key;
         }
+      } else if(typ === 'ENS'){
+        if(ens_text_key) obj.ens_text_key = ens_text_key;
       }
       out.push(obj);
     }
@@ -2063,6 +2079,8 @@ async function loadCfg(){
     }
     const servers = j.servers || [];
     document.getElementById('servers').value = (Array.isArray(servers) ? servers : []).join(',');
+    const ensRpcEl = document.getElementById('ensRpcUrl');
+    if(ensRpcEl) ensRpcEl.value = String(j.ens_rpc_url || '');
     document.getElementById('interval').value = j.interval || 60;
     log('Loaded config');
     touchOverviewTs();
@@ -2074,7 +2092,8 @@ document.getElementById('save').onclick = async ()=>{
   const payload = {
     domains: collectDomainsFromUI(),
     servers: document.getElementById('servers').value.split(',').map(s=>s.trim()).filter(Boolean),
-    interval: parseInt(document.getElementById('interval').value) || 60
+    interval: parseInt(document.getElementById('interval').value) || 60,
+    ens_rpc_url: ((document.getElementById('ensRpcUrl') || {}).value || '').trim()
   };
   uiOverview.configured = payload.domains.length;
   updateOverviewPanel();

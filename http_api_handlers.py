@@ -184,7 +184,7 @@ def attach_api_handlers(
                     maxts = max(maxts, ts)
                     if info.get('type') == 'A':
                         samples.extend(info.get('values', []) or [])
-                    elif info.get('type') == 'TXT':
+                    elif info.get('type') in ('TXT', 'ENS'):
                         samples.extend(info.get('decoded_ips', []) or [])
                 seen_map[d] = {'last_ts': maxts, 'servers': servers, 'samples': samples}
     
@@ -1837,10 +1837,18 @@ def attach_api_handlers(
                             if 'a_xor_key' not in d and prev.get('a_xor_key') is not None:
                                 d['a_xor_key'] = prev.get('a_xor_key')
                             d.pop('txt_decode', None)
+                            d.pop('ens_text_key', None)
+                        elif typ == 'ENS':
+                            if 'ens_text_key' not in d and prev.get('ens_text_key'):
+                                d['ens_text_key'] = prev.get('ens_text_key')
+                            d.pop('txt_decode', None)
+                            d.pop('a_decode', None)
+                            d.pop('a_xor_key', None)
                         else:
                             d.pop('txt_decode', None)
                             d.pop('a_decode', None)
                             d.pop('a_xor_key', None)
+                            d.pop('ens_text_key', None)
                     next_names = {d.get('name', '').strip() for d in new_domains_normalized if d.get('name')}
                     removed_names = sorted(prev_names - next_names)
                     if removed_names:
@@ -1893,6 +1901,8 @@ def attach_api_handlers(
                         shared_config['interval'] = max(1, iv)
                     except Exception:
                         pass
+                if 'ens_rpc_url' in data:
+                    shared_config['ens_rpc_url'] = str(data.get('ens_rpc_url') or '').strip()
     
                 if config_path:
                     to_write = {
@@ -1902,6 +1912,7 @@ def attach_api_handlers(
                         'alerts': shared_config.get('alerts', {}),
                         'custom_decoders': shared_config.get('custom_decoders', []),
                         'custom_a_decoders': shared_config.get('custom_a_decoders', []),
+                        'ens_rpc_url': shared_config.get('ens_rpc_url', ''),
                     }
                     try:
                         write_config(config_path, to_write)
@@ -1914,7 +1925,8 @@ def attach_api_handlers(
                     'domains': shared_config.get('domains'),
                     'servers': shared_config.get('servers'),
                     'interval': shared_config.get('interval'),
-                    'alerts': shared_config.get('alerts', {})
+                    'alerts': shared_config.get('alerts', {}),
+                    'ens_rpc_url': shared_config.get('ens_rpc_url', '')
                 }
             return self._send_json(resp)
     

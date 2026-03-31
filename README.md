@@ -4,9 +4,10 @@ A lightweight DNS monitoring toolkit for extracting indicators from TXT records 
 
 ## Features
 
-- Monitor domains' DNS TXT and A records for C2-style IP indicators.
+- Monitor domains' DNS TXT/A records and ENS text records for C2-style IP indicators.
 - Multiple built-in TXT decoders (base64, xor variants, BTEA variants, plain IP extraction, etc.).
 - Optional A-record post-processing method (`xor32_ipv4`) with user-supplied XOR key.
+- ENS monitoring: set domain type to `ENS` in Settings, provide `ENS RPC URL`, and optional per-domain `ENS Key` (default `ipv6`).
 - Register, preview, edit and delete safe custom decoders from the web UI; custom decoders persist in `dns_config.json`.
 - Alerts: Teams webhook and MISP integration for newly discovered IPs.
 - Dashboard UI showing unique IPs and optional VirusTotal lookup (store VT API key in settings).

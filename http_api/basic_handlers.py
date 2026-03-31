@@ -16,6 +16,7 @@ def handle_config(ctx: HttpContext, handler) -> None:
             'servers': list(ctx.shared_config.get('servers', [])),
             'interval': ctx.shared_config.get('interval'),
             'max_workers': ctx.shared_config.get('max_workers', 8),
+            'ens_rpc_url': ctx.shared_config.get('ens_rpc_url', ''),
         }
         if 'alerts' in ctx.shared_config:
             cfg['alerts'] = ctx.shared_config.get('alerts')
@@ -43,6 +44,7 @@ def handle_results(ctx: HttpContext, handler, qs: Dict[str, Any]) -> None:
                 'txt_decodes': set(),
                 'a_decodes': set(),
                 'a_xor_keys': set(),
+                'ens_text_keys': set(),
             }
 
             for srv, info in m.items():
@@ -68,6 +70,11 @@ def handle_results(ctx: HttpContext, handler, qs: Dict[str, Any]) -> None:
                     if entry is not None:
                         entry['a_xor_key'] = info.get('a_xor_key')
                     agg_entry['a_xor_keys'].add(str(info.get('a_xor_key')))
+
+                if rtype == 'ENS' and info.get('ens_text_key'):
+                    if entry is not None:
+                        entry['ens_text_key'] = info.get('ens_text_key')
+                    agg_entry['ens_text_keys'].add(str(info.get('ens_text_key')))
 
                 if include_raw:
                     data[d][srv] = entry
@@ -97,6 +104,8 @@ def handle_results(ctx: HttpContext, handler, qs: Dict[str, Any]) -> None:
                 if agg_entry['a_xor_keys']:
                     a_method += f" ({','.join(sorted(agg_entry['a_xor_keys']))})"
                 method_parts.append(a_method)
+            if agg_entry['ens_text_keys']:
+                method_parts.append('ENS:' + ','.join(sorted(agg_entry['ens_text_keys'])))
 
             data_agg[d] = {
                 'type': domain_type,
@@ -109,6 +118,7 @@ def handle_results(ctx: HttpContext, handler, qs: Dict[str, Any]) -> None:
                 'txt_decodes': sorted(list(agg_entry['txt_decodes'])),
                 'a_decodes': sorted(list(agg_entry['a_decodes'])),
                 'a_xor_keys': sorted(list(agg_entry['a_xor_keys'])),
+                'ens_text_keys': sorted(list(agg_entry['ens_text_keys'])),
                 'method_summary': ' / '.join(method_parts) if method_parts else '-',
             }
 
