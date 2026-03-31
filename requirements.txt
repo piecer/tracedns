@@ -11,3 +11,6 @@ geoip2==4.8.0
 
 # Note: VirusTotal lookups in `vt_lookup.py` use `requests` directly; no special VT package
 # is required by default.
+
+# Optional: ENS on-chain text record query helper
+web3==6.20.4

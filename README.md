@@ -89,6 +89,21 @@ Custom decoders use a constrained, validated list of steps (no arbitrary code ex
 - MISP: existing helper functions integrate with MISP to add attributes/sightings; configure MISP-related fields in `alerts`.
 
 
+
+## ENS Text Record Decoder Helper
+
+Use `ens_ipv6_decoder.py` to read an ENS text record (default key: `ipv6`) via an Ethereum RPC endpoint and decode fake IPv6 values into IPv4s.
+
+```bash
+python3 ens_ipv6_decoder.py --rpc https://<mainnet-rpc>
+```
+
+Optional flags:
+
+- `ens_name` positional arg (default: `ukranianhorseriding.eth`)
+- `--key <text-key>` to read another ENS text key
+- `--raw-only` to print only raw ENS text
+
 ## Contributing
 
 Contributions are welcome. Please open issues or PRs with focused changes. When editing or translating user-facing strings, avoid renaming programmatic keys in `dns_config.json`.
