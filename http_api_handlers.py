@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 from a_decoder import A_DECODE_METHODS, decode_a_hidden_ips
 from config_manager import normalize_domains, read_config, write_config
 from dns_query import query_dns
+from ens_query import fetch_ens_text_record, parse_record
 from txt_decoder import TXT_DECODE_METHODS, analyze_domain_decoding, decode_txt_hidden_ips
 
 # Refactor: move common handlers into smaller modules.
@@ -434,12 +435,13 @@ def attach_api_handlers(
             return self._send_json({'error': 'domain required'}, 400)
 
         requested_type = str(data.get('type') or 'AUTO').strip().upper()
-        if requested_type not in ('AUTO', 'A', 'TXT'):
-            return self._send_json({'error': 'type must be one of AUTO/A/TXT'}, 400)
+        if requested_type not in ('AUTO', 'A', 'TXT', 'ENS'):
+            return self._send_json({'error': 'type must be one of AUTO/A/TXT/ENS'}, 400)
 
         txt_decode = str(data.get('txt_decode') or 'cafebabe_xor_base64').strip() or 'cafebabe_xor_base64'
         a_decode = str(data.get('a_decode') or 'none').strip() or 'none'
         a_xor_key = str(data.get('a_xor_key') or '').strip()
+        ens_text_key = str(data.get('ens_text_key') or 'ipv6').strip() or 'ipv6'
         a_decode_active = a_decode.lower() not in ('', 'none')
         if requested_type in ('AUTO', 'TXT') and txt_decode not in TXT_DECODE_METHODS:
             return self._send_json({'error': f'unknown txt_decode: {txt_decode}'}, 400)
@@ -471,17 +473,6 @@ def attach_api_handlers(
             vt_workers = 8
         vt_workers = max(1, min(32, vt_workers))
 
-        req_servers = data.get('servers')
-        if isinstance(req_servers, list):
-            servers = [str(x).strip() for x in req_servers if str(x).strip()]
-        elif isinstance(req_servers, str):
-            servers = [s.strip() for s in req_servers.split(',') if s.strip()]
-        else:
-            with config_lock:
-                servers = [str(x).strip() for x in (shared_config.get('servers', []) or []) if str(x).strip()]
-        if not servers:
-            servers = ['8.8.8.8', '1.1.1.1']
-
         probe_types = ['TXT', 'A'] if requested_type == 'AUTO' else [requested_type]
         type_scores = {t: 0 for t in probe_types}
         type_value_counts = {t: 0 for t in probe_types}
@@ -491,37 +482,76 @@ def attach_api_handlers(
         detected_types = set()
         by_server = []
 
+        req_servers = data.get('servers')
+        if isinstance(req_servers, list):
+            dns_servers = [str(x).strip() for x in req_servers if str(x).strip()]
+        elif isinstance(req_servers, str):
+            dns_servers = [s.strip() for s in req_servers.split(',') if s.strip()]
+        else:
+            with config_lock:
+                dns_servers = [str(x).strip() for x in (shared_config.get('servers', []) or []) if str(x).strip()]
+        if not dns_servers:
+            dns_servers = ['8.8.8.8', '1.1.1.1']
+
+        req_ens_rpc = data.get('ens_rpc_url')
+        if isinstance(req_ens_rpc, str) and req_ens_rpc.strip():
+            ens_rpc_url = req_ens_rpc.strip()
+        else:
+            with config_lock:
+                ens_rpc_url = str(shared_config.get('ens_rpc_url') or '').strip()
+
+        if requested_type == 'ENS':
+            servers = [ens_rpc_url] if ens_rpc_url else ['(missing ens_rpc_url)']
+        else:
+            servers = dns_servers
+
         for srv in servers:
             for rtype in probe_types:
-                qret = query_dns(srv, domain, rtype=rtype, with_meta=True)
-                if isinstance(qret, dict):
-                    vals = qret.get('values') if isinstance(qret.get('values'), list) else []
-                    qstatus = str(qret.get('status') or 'error').lower()
-                else:
-                    vals = qret if isinstance(qret, list) else []
-                    qstatus = 'ok' if isinstance(qret, list) else 'error'
-                values = sorted({str(v).strip() for v in vals if str(v).strip()})
-                managed_ips = []
-                method = '-'
-
-                if rtype == 'TXT':
-                    method = f"TXT:{txt_decode}"
-                    try:
-                        managed_ips = decode_txt_hidden_ips(values, method=txt_decode, domain=domain) or []
-                    except Exception:
-                        managed_ips = []
-                elif rtype == 'A':
-                    if a_decode_active:
-                        method = f"A:{a_decode}" + (f" ({a_xor_key})" if a_xor_key else '')
+                if rtype == 'ENS':
+                    vals = []
+                    qstatus = 'error'
+                    method = f"ENS:{ens_text_key}"
+                    managed_ips = []
+                    if ens_rpc_url:
                         try:
-                            managed_ips = decode_a_hidden_ips(values, method=a_decode, key_hex=a_xor_key, domain=domain) or []
+                            raw_value = fetch_ens_text_record(ens_rpc_url, domain, ens_text_key)
+                            vals = [str(raw_value)]
+                            managed_ips = parse_record(raw_value)
+                            qstatus = 'ok'
+                        except Exception:
+                            qstatus = 'error'
+                    values = sorted({str(v).strip() for v in vals if str(v).strip()})
+                    managed_ips = sorted({str(v).strip() for v in managed_ips if _is_ipv4(v)})
+                else:
+                    qret = query_dns(srv, domain, rtype=rtype, with_meta=True)
+                    if isinstance(qret, dict):
+                        vals = qret.get('values') if isinstance(qret.get('values'), list) else []
+                        qstatus = str(qret.get('status') or 'error').lower()
+                    else:
+                        vals = qret if isinstance(qret, list) else []
+                        qstatus = 'ok' if isinstance(qret, list) else 'error'
+                    values = sorted({str(v).strip() for v in vals if str(v).strip()})
+                    managed_ips = []
+                    method = '-'
+
+                    if rtype == 'TXT':
+                        method = f"TXT:{txt_decode}"
+                        try:
+                            managed_ips = decode_txt_hidden_ips(values, method=txt_decode, domain=domain) or []
                         except Exception:
                             managed_ips = []
-                    else:
-                        method = "A:none"
-                        managed_ips = list(values)
+                    elif rtype == 'A':
+                        if a_decode_active:
+                            method = f"A:{a_decode}" + (f" ({a_xor_key})" if a_xor_key else '')
+                            try:
+                                managed_ips = decode_a_hidden_ips(values, method=a_decode, key_hex=a_xor_key, domain=domain) or []
+                            except Exception:
+                                managed_ips = []
+                        else:
+                            method = "A:none"
+                            managed_ips = list(values)
 
-                managed_ips = sorted({str(v).strip() for v in managed_ips if _is_ipv4(v)})
+                    managed_ips = sorted({str(v).strip() for v in managed_ips if _is_ipv4(v)})
 
                 score = 0
                 if qstatus == 'ok':
@@ -624,6 +654,9 @@ def attach_api_handlers(
                 if 'a_decode' not in domain_obj:
                     domain_obj['a_decode'] = 'xor32_ipv4'
                 domain_obj['a_xor_key'] = a_xor_key
+        elif selected_type == 'ENS':
+            if ens_text_key:
+                domain_obj['ens_text_key'] = ens_text_key
 
         notes = []
         if requested_type == 'AUTO':
@@ -632,6 +665,8 @@ def attach_api_handlers(
             notes.append("A decode enabled: managed IPs are transformed IPs only.")
         if selected_type == 'TXT' and not managed_ips:
             notes.append("TXT values were found but decoder did not produce IPv4 outputs.")
+        if selected_type == 'ENS' and not ens_rpc_url:
+            notes.append("ENS RPC URL is not configured. Set it in Settings or pass ens_rpc_url.")
         if not managed_ips and not resolved_ips:
             notes.append("No IPv4 candidate found from current DNS responses.")
         if vt_unavailable_reason:

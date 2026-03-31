@@ -272,13 +272,16 @@ function updateDomainVerifyInputMode(){
   const txtEl = document.getElementById('verifyTxtDecode');
   const aEl = document.getElementById('verifyADecode');
   const xorEl = document.getElementById('verifyAXorKey');
-  if(!typeEl || !txtEl || !aEl || !xorEl) return;
+  const ensKeyEl = document.getElementById('verifyEnsTextKey');
+  if(!typeEl || !txtEl || !aEl || !xorEl || !ensKeyEl) return;
   const t = String(typeEl.value || 'AUTO').toUpperCase();
   const isAOnly = t === 'A';
   const isTxtOnly = t === 'TXT';
-  txtEl.disabled = isAOnly;
-  aEl.disabled = isTxtOnly;
-  xorEl.disabled = isTxtOnly;
+  const isEnsOnly = t === 'ENS';
+  txtEl.disabled = isAOnly || isEnsOnly;
+  aEl.disabled = isTxtOnly || isEnsOnly;
+  xorEl.disabled = isTxtOnly || isEnsOnly;
+  ensKeyEl.disabled = !isEnsOnly;
 }
 
 function initDomainVerifyUi(){
@@ -533,6 +536,7 @@ async function runDomainVerify(){
   const txtDecode = String((document.getElementById('verifyTxtDecode') || {}).value || '').trim();
   const aDecode = String((document.getElementById('verifyADecode') || {}).value || 'none').trim();
   const aXorKey = String((document.getElementById('verifyAXorKey') || {}).value || '').trim();
+  const ensTextKey = String((document.getElementById('verifyEnsTextKey') || {}).value || '').trim();
   const includeVt = !!((document.getElementById('verifyIncludeVt') || {}).checked);
   const analyzeDecoders = !!((document.getElementById('verifyAnalyzeDecoders') || {}).checked);
   const decoderTopN = parseBoundedInt((document.getElementById('verifyDecoderTopN') || {}).value, 8, 1, 50);
@@ -550,6 +554,7 @@ async function runDomainVerify(){
         txt_decode: txtDecode,
         a_decode: aDecode,
         a_xor_key: aXorKey,
+        ens_text_key: ensTextKey,
         include_vt: includeVt,
         analyze_decoders: analyzeDecoders,
         decoder_top_n: decoderTopN,
@@ -2900,12 +2905,14 @@ window.addEventListener('load', ()=>{
       const txtEl = document.getElementById('verifyTxtDecode');
       const aEl = document.getElementById('verifyADecode');
       const keyEl = document.getElementById('verifyAXorKey');
+      const ensKeyEl = document.getElementById('verifyEnsTextKey');
       const includeVtEl = document.getElementById('verifyIncludeVt');
       if(domainEl) domainEl.value = '';
       if(typeEl) typeEl.value = 'AUTO';
       if(txtEl && includeOption(txtEl, 'cafebabe_xor_base64')) txtEl.value = 'cafebabe_xor_base64';
       if(aEl && includeOption(aEl, 'none')) aEl.value = 'none';
       if(keyEl) keyEl.value = '';
+      if(ensKeyEl) ensKeyEl.value = '';
       if(includeVtEl) includeVtEl.checked = true;
       updateDomainVerifyInputMode();
       clearDomainVerifyResult();
