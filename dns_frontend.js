@@ -1499,14 +1499,447 @@ async function refreshDomainAnalysis(){
   }
 }
 
+const IP_INTEL_HINT_LEVEL_ORDER = { high: 0, warn: 1, mid: 2, info: 3 };
+window.IP_INTEL_INSIGHTS = window.IP_INTEL_INSIGHTS || {
+  infra: { signature: '', hints: [], characteristics: null },
+  relationship: { signature: '', hints: [], characteristics: null },
+};
+
+function normalizeIpIntelHintLevel(rawLevel){
+  const level = String(rawLevel || 'info').trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(IP_INTEL_HINT_LEVEL_ORDER, level) ? level : 'info';
+}
+
+function formatIpIntelSignal(rawSignal){
+  const signal = String(rawSignal || '').trim();
+  if(!signal) return '';
+  return signal
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (m)=>m.toUpperCase());
+}
+
+function shortIpIntelToken(value, head, tail){
+  const s = String(value || '').trim();
+  const h = parseBoundedInt(head, 10, 4, 20);
+  const t = parseBoundedInt(tail, 6, 3, 12);
+  if(!s) return '-';
+  if(s.length <= (h + t + 2)) return s;
+  return `${s.slice(0, h)}..${s.slice(-t)}`;
+}
+
+function topIpIntelCounter(counter){
+  const src = (counter && typeof counter === 'object') ? counter : {};
+  let topKey = null;
+  let topCount = 0;
+  Object.keys(src).forEach((k)=>{
+    const n = Number(src[k] || 0);
+    if(n > topCount){
+      topKey = k;
+      topCount = n;
+    }else if(n === topCount && n > 0 && topKey != null && String(k) < String(topKey)){
+      topKey = k;
+    }
+  });
+  return { key: topKey, count: topCount };
+}
+
+function computeIpIntelInputSignature(rawInput){
+  const raw = String(rawInput || '').trim();
+  if(!raw) return '';
+  const tokens = raw.split(/[\s,;|]+/).map(x=>String(x || '').trim()).filter(Boolean);
+  const uniq = Array.from(new Set(tokens)).sort();
+  return uniq.join('|');
+}
+
+function getCurrentIpIntelInputSignature(){
+  const raw = String((document.getElementById('ipIntelInput') || {}).value || '').trim();
+  return computeIpIntelInputSignature(raw);
+}
+
+function getIpIntelInsightsState(){
+  if(!window.IP_INTEL_INSIGHTS || typeof window.IP_INTEL_INSIGHTS !== 'object'){
+    window.IP_INTEL_INSIGHTS = {
+      infra: { signature: '', hints: [], characteristics: null },
+      relationship: { signature: '', hints: [], characteristics: null },
+    };
+  }
+  if(!window.IP_INTEL_INSIGHTS.infra || typeof window.IP_INTEL_INSIGHTS.infra !== 'object'){
+    window.IP_INTEL_INSIGHTS.infra = { signature: '', hints: [], characteristics: null };
+  }
+  if(!window.IP_INTEL_INSIGHTS.relationship || typeof window.IP_INTEL_INSIGHTS.relationship !== 'object'){
+    window.IP_INTEL_INSIGHTS.relationship = { signature: '', hints: [], characteristics: null };
+  }
+  return window.IP_INTEL_INSIGHTS;
+}
+
+function buildIpIntelCharacteristicsSummary(characteristics){
+  if(!characteristics || typeof characteristics !== 'object'){
+    return '';
+  }
+  const chips = [];
+  const infra = (characteristics.infra && typeof characteristics.infra === 'object')
+    ? characteristics.infra
+    : characteristics;
+  const rel = (characteristics.relationship && typeof characteristics.relationship === 'object')
+    ? characteristics.relationship
+    : null;
+
+  const vtEnriched = Number((infra && infra.vt_enriched_count) || 0);
+  if(vtEnriched > 0){
+    chips.push(`VT-enriched ${vtEnriched}`);
+  }
+  const network = (infra && infra.network) || {};
+  if(network.value && Number(network.count || 0) >= 2){
+    chips.push(`Top network ${network.value} (${network.count})`);
+  }
+  const p24 = (infra && infra.prefix24) || {};
+  if(p24.value && Number(p24.count || 0) >= 2){
+    chips.push(`Top /24 ${p24.value} (${p24.count})`);
+  }
+  const jarm = (infra && infra.jarm) || {};
+  if(jarm.value && Number(jarm.count || 0) >= 2){
+    chips.push(`Shared JARM ${jarm.value} (${jarm.count})`);
+  }
+  const cert = (infra && infra.cert_sha256) || {};
+  if(cert.value && Number(cert.count || 0) >= 2){
+    chips.push(`Shared cert ${cert.value} (${cert.count})`);
+  }
+  const rdap = (infra && infra.rdap_name) || {};
+  if(rdap.value && Number(rdap.count || 0) >= 2){
+    chips.push(`Shared RDAP ${rdap.value} (${rdap.count})`);
+  }
+
+  if(rel){
+    const clusterCount = Number(rel.cluster_count || 0);
+    const largestClusterSize = Number(rel.largest_cluster_size || 0);
+    const largestClusterRatio = Number(rel.largest_cluster_ratio || 0);
+    const avgCohesion = (rel.avg_cohesion == null) ? null : Number(rel.avg_cohesion);
+    if(clusterCount > 0){
+      chips.push(`Clusters ${clusterCount}`);
+    }
+    if(largestClusterSize > 0){
+      const ratioTxt = largestClusterRatio > 0 ? ` (${Math.round(largestClusterRatio * 100)}%)` : '';
+      chips.push(`Largest ${largestClusterSize}${ratioTxt}`);
+    }
+    if(avgCohesion != null && Number.isFinite(avgCohesion)){
+      chips.push(`Avg cohesion ${avgCohesion.toFixed(1)}`);
+    }
+    const relNet = (rel.top_network || {});
+    if(relNet.value && Number(relNet.count || 0) >= 2){
+      chips.push(`Cluster net ${relNet.value} (${relNet.count})`);
+    }
+    const relJarm = (rel.top_jarm || {});
+    if(relJarm.value && Number(relJarm.count || 0) >= 2){
+      chips.push(`Cluster JARM ${relJarm.value} (${relJarm.count})`);
+    }
+    const relCert = (rel.top_cert || {});
+    if(relCert.value && Number(relCert.count || 0) >= 2){
+      chips.push(`Cluster cert ${relCert.value} (${relCert.count})`);
+    }
+  }
+
+  return chips.join(' · ');
+}
+
+function buildIpIntelRelationshipInsights(relCache){
+  const payload = (relCache && typeof relCache === 'object') ? relCache : {};
+  const clustersRaw = Array.isArray(payload.clusters) ? payload.clusters : [];
+  const clusters = clustersRaw.filter(c=>Number((c && c.size) || 0) >= 2);
+  const validCount = Number(payload.valid_count || 0);
+  const pairCount = Number(payload.pair_count || 0);
+  const topPairsLimit = Number(payload.top_pairs || 0);
+  const hints = [];
+  const addHint = (level, title, detail, signal)=>{
+    const item = { level, title, detail, source: 'Cluster' };
+    if(signal) item.signal = signal;
+    hints.push(item);
+  };
+
+  let largestClusterSize = 0;
+  let largestClusterRatio = 0;
+  let cohesionSum = 0;
+  let cohesionCount = 0;
+  let highCohesionClusters = 0;
+  let highMaliciousClusters = 0;
+  const networkCounter = {};
+  const jarmCounter = {};
+  const certCounter = {};
+
+  clusters.forEach((c)=>{
+    const size = Number((c && c.size) || 0);
+    if(size > largestClusterSize) largestClusterSize = size;
+    const ratio = validCount > 0 ? size / validCount : 0;
+    if(ratio > largestClusterRatio) largestClusterRatio = ratio;
+
+    const cohesion = (c && c.cohesion != null) ? Number(c.cohesion) : null;
+    if(cohesion != null && Number.isFinite(cohesion)){
+      cohesionSum += cohesion;
+      cohesionCount += 1;
+      if(cohesion >= 65 && size >= 3){
+        highCohesionClusters += 1;
+      }
+    }
+
+    const vt = (c && c.vt_summary && typeof c.vt_summary === 'object') ? c.vt_summary : null;
+    const malTotal = Number((vt && vt.malicious_total) || 0);
+    if(size >= 3 && malTotal >= Math.ceil(size * 0.5)){
+      highMaliciousClusters += 1;
+    }
+
+    const topNet = Array.isArray(c && c.top_network) ? c.top_network[0] : null;
+    if(topNet && topNet[0] && topNet[0] !== '-' && Number(topNet[1] || 0) >= 2){
+      const key = String(topNet[0]);
+      networkCounter[key] = Number(networkCounter[key] || 0) + Number(topNet[1] || 0);
+    }
+    const topJarm = Array.isArray(c && c.top_jarm) ? c.top_jarm[0] : null;
+    if(topJarm && topJarm[0] && topJarm[0] !== '-' && Number(topJarm[1] || 0) >= 2){
+      const key = String(topJarm[0]);
+      jarmCounter[key] = Number(jarmCounter[key] || 0) + Number(topJarm[1] || 0);
+    }
+    const topCert = Array.isArray(c && c.top_cert) ? c.top_cert[0] : null;
+    if(topCert && topCert[0] && topCert[0] !== '-' && Number(topCert[1] || 0) >= 2){
+      const key = String(topCert[0]);
+      certCounter[key] = Number(certCounter[key] || 0) + Number(topCert[1] || 0);
+    }
+  });
+
+  const topNetwork = topIpIntelCounter(networkCounter);
+  const topJarm = topIpIntelCounter(jarmCounter);
+  const topCert = topIpIntelCounter(certCounter);
+  const avgCohesion = (cohesionCount > 0) ? (cohesionSum / cohesionCount) : null;
+
+  if(!clusters.length){
+    if(validCount >= 2){
+      addHint('warn', 'Weak Cluster Connectivity', 'No cluster with 2+ IPs met the current relationship threshold.', 'cluster');
+    }
+  }else{
+    if(largestClusterSize >= 4 && largestClusterRatio >= 0.55){
+      addHint('high', 'Dominant Cluster', `Largest cluster has ${largestClusterSize}/${validCount || largestClusterSize} IPs (${Math.round(largestClusterRatio * 100)}%).`, 'cluster_size');
+    }else if(clusters.length >= 3){
+      addHint('mid', 'Multi-cluster Layout', `${clusters.length} clusters were identified, suggesting segmented infrastructure.`, 'cluster_count');
+    }
+
+    if(highCohesionClusters > 0){
+      const lvl = highCohesionClusters >= 2 ? 'high' : 'mid';
+      addHint(lvl, 'High Cohesion Cluster', `${highCohesionClusters} cluster(s) show cohesion ≥ 65.`, 'cohesion');
+    }
+    if(highMaliciousClusters > 0){
+      addHint('high', 'Malicious Cluster Core', `${highMaliciousClusters} cluster(s) have high malicious density in VT summary.`, 'vt_cluster');
+    }
+  }
+
+  if(topNetwork.key && topNetwork.count >= 4){
+    addHint('mid', 'Cluster Network Reuse', `Cluster footprints repeatedly include network ${topNetwork.key} (${topNetwork.count}).`, 'network');
+  }
+  if(topJarm.key && topJarm.count >= 3){
+    addHint('high', 'Cluster JARM Reuse', `${topJarm.count} cluster-IP observations share JARM ${shortIpIntelToken(topJarm.key, 10, 6)}.`, 'jarm');
+  }
+  if(topCert.key && topCert.count >= 2){
+    const lvl = topCert.count >= 3 ? 'high' : 'mid';
+    addHint(lvl, 'Cluster Certificate Reuse', `${topCert.count} cluster-IP observations share cert ${shortIpIntelToken(topCert.key, 10, 6)}.`, 'cert_sha256');
+  }
+
+  const pairGate = (payload.pair_gate && typeof payload.pair_gate === 'object') ? payload.pair_gate : null;
+  if(pairGate && pairGate.enabled){
+    const kept = Number(pairGate.kept || 0);
+    const dropped = Number(pairGate.dropped || 0);
+    const total = kept + dropped;
+    if(total >= 20 && dropped / Math.max(1, total) >= 0.75){
+      addHint('info', 'Pair Gate Filtering', `${dropped}/${total} candidate edges were filtered as weak links.`, 'pair_gate');
+    }
+  }
+
+  const oversized = Number(payload.bucket_oversized_count || 0);
+  const truncated = Number(payload.bucket_truncated_count || 0);
+  if(oversized > 0){
+    addHint('warn', 'Bucket Overflow Applied', `${oversized} oversized feature buckets detected (${truncated} truncated).`, 'bucket');
+  }
+  if(topPairsLimit > 0 && pairCount >= topPairsLimit){
+    addHint('info', 'Pair Output Limited', `Top pair output reached configured limit (${topPairsLimit}).`, 'top_pairs');
+  }
+
+  return {
+    hints,
+    characteristics: {
+      cluster_count: clusters.length,
+      pair_count: pairCount,
+      largest_cluster_size: largestClusterSize,
+      largest_cluster_ratio: largestClusterRatio,
+      avg_cohesion: (avgCohesion != null && Number.isFinite(avgCohesion)) ? avgCohesion : null,
+      high_cohesion_clusters: highCohesionClusters,
+      high_malicious_clusters: highMaliciousClusters,
+      top_network: { value: topNetwork.key, count: Number(topNetwork.count || 0) },
+      top_jarm: { value: topJarm.key ? shortIpIntelToken(topJarm.key, 10, 6) : null, count: Number(topJarm.count || 0) },
+      top_cert: { value: topCert.key ? shortIpIntelToken(topCert.key, 10, 6) : null, count: Number(topCert.count || 0) },
+    },
+  };
+}
+
+function renderIpIntelHints(hintsBox, rawHints, characteristics){
+  if(!hintsBox) return;
+  hintsBox.innerHTML = '';
+  const hints = Array.isArray(rawHints)
+    ? rawHints
+        .map(h=>({
+          level: normalizeIpIntelHintLevel(h && h.level),
+          title: String((h && h.title) || 'Hint').trim() || 'Hint',
+          detail: String((h && h.detail) || '-').trim() || '-',
+          source: formatIpIntelSignal(h && h.source),
+          signal: formatIpIntelSignal(h && h.signal),
+        }))
+        .sort((a, b)=>{
+          const pa = Number(IP_INTEL_HINT_LEVEL_ORDER[a.level]);
+          const pb = Number(IP_INTEL_HINT_LEVEL_ORDER[b.level]);
+          if(pa !== pb) return pa - pb;
+          return a.title.localeCompare(b.title);
+        })
+    : [];
+
+  const summary = buildIpIntelCharacteristicsSummary(characteristics);
+  if(summary){
+    const meta = document.createElement('div');
+    meta.className = 'ipintel-hints-meta';
+    meta.textContent = summary;
+    hintsBox.appendChild(meta);
+  }
+
+  if(!hints.length){
+    const empty = document.createElement('div');
+    empty.className = 'ipintel-hint-empty';
+    empty.textContent = summary ? 'No additional heuristics available' : 'No heuristics available';
+    hintsBox.appendChild(empty);
+    return;
+  }
+
+  const grid = document.createElement('div');
+  grid.className = 'ipintel-hints-grid';
+  hints.forEach(h=>{
+    const card = document.createElement('article');
+    card.className = `ipintel-hint-card level-${h.level}`;
+
+    const head = document.createElement('div');
+    head.className = 'ipintel-hint-head';
+
+    const levelBadge = document.createElement('span');
+    levelBadge.className = 'ipintel-hint-level';
+    levelBadge.textContent = h.level.toUpperCase();
+
+    const title = document.createElement('span');
+    title.className = 'ipintel-hint-title';
+    title.textContent = h.title;
+
+    head.appendChild(levelBadge);
+    head.appendChild(title);
+
+    if(h.source){
+      const src = document.createElement('span');
+      src.className = 'ipintel-hint-source';
+      src.textContent = h.source;
+      head.appendChild(src);
+    }
+
+    if(h.signal){
+      const signal = document.createElement('span');
+      signal.className = 'ipintel-hint-signal';
+      signal.textContent = h.signal;
+      head.appendChild(signal);
+    }
+
+    const detail = document.createElement('div');
+    detail.className = 'ipintel-hint-detail';
+    detail.textContent = h.detail;
+
+    card.appendChild(head);
+    card.appendChild(detail);
+    grid.appendChild(card);
+  });
+  hintsBox.appendChild(grid);
+}
+
+function renderMergedIpIntelHints(){
+  const hintsBox = document.getElementById('ipIntelHintsBox');
+  if(!hintsBox) return;
+  const state = getIpIntelInsightsState();
+  const currentSig = getCurrentIpIntelInputSignature();
+  const mergedHints = [];
+  let infraCharacteristics = null;
+  let relationshipCharacteristics = null;
+
+  if(currentSig && state.infra.signature === currentSig){
+    infraCharacteristics = state.infra.characteristics && typeof state.infra.characteristics === 'object'
+      ? state.infra.characteristics
+      : null;
+    const infraHints = Array.isArray(state.infra.hints) ? state.infra.hints : [];
+    infraHints.forEach((h)=>{
+      if(!h || typeof h !== 'object') return;
+      mergedHints.push({
+        ...h,
+        source: h.source || 'Infra',
+      });
+    });
+  }
+
+  if(currentSig && state.relationship.signature === currentSig){
+    relationshipCharacteristics = state.relationship.characteristics && typeof state.relationship.characteristics === 'object'
+      ? state.relationship.characteristics
+      : null;
+    const relHints = Array.isArray(state.relationship.hints) ? state.relationship.hints : [];
+    relHints.forEach((h)=>{
+      if(!h || typeof h !== 'object') return;
+      mergedHints.push({
+        ...h,
+        source: h.source || 'Cluster',
+      });
+    });
+  }
+
+  renderIpIntelHints(hintsBox, mergedHints, {
+    infra: infraCharacteristics,
+    relationship: relationshipCharacteristics,
+  });
+}
+
+function setIpIntelInfraInsights(inputSignature, rawHints, characteristics){
+  const state = getIpIntelInsightsState();
+  state.infra = {
+    signature: String(inputSignature || ''),
+    hints: Array.isArray(rawHints) ? rawHints : [],
+    characteristics: (characteristics && typeof characteristics === 'object') ? characteristics : null,
+  };
+  renderMergedIpIntelHints();
+}
+
+function setIpIntelRelationshipInsights(inputSignature, relCache){
+  const state = getIpIntelInsightsState();
+  const built = buildIpIntelRelationshipInsights(relCache);
+  state.relationship = {
+    signature: String(inputSignature || ''),
+    hints: Array.isArray(built.hints) ? built.hints : [],
+    characteristics: (built.characteristics && typeof built.characteristics === 'object') ? built.characteristics : null,
+  };
+  renderMergedIpIntelHints();
+}
+
+function clearIpIntelRelationshipInsights(inputSignature){
+  const state = getIpIntelInsightsState();
+  state.relationship = {
+    signature: String(inputSignature || ''),
+    hints: [],
+    characteristics: null,
+  };
+  renderMergedIpIntelHints();
+}
+
 async function analyzeIpIntel(){
   const raw = String((document.getElementById('ipIntelInput') || {}).value || '').trim();
+  const inputSignature = computeIpIntelInputSignature(raw);
   const includeVT = !!(document.getElementById('ipIntelIncludeVt') && document.getElementById('ipIntelIncludeVt').checked);
   const rowLimit = parseBoundedInt((document.getElementById('ipIntelRowLimit') || {}).value, 1500, 100, 5000);
   const vtBudget = parseBoundedInt((document.getElementById('ipIntelVtBudget') || {}).value, 1200, 0, 5000);
   const vtWorkers = parseBoundedInt((document.getElementById('ipIntelVtWorkers') || {}).value, 8, 1, 32);
   const meta = document.getElementById('ipIntelMeta');
-  const hintsBox = document.getElementById('ipIntelHintsBox');
   const invalidBox = document.getElementById('ipIntelInvalidBox');
   const ipBody = document.querySelector('#ipIntelResultTable tbody');
   const asBody = document.querySelector('#ipIntelAsSummaryTable tbody');
@@ -1516,6 +1949,7 @@ async function analyzeIpIntel(){
 
   if(!raw){
     if(meta) meta.textContent = 'Input IP list first';
+    renderMergedIpIntelHints();
     return;
   }
   if(meta) meta.textContent = 'Analyzing...';
@@ -1540,7 +1974,7 @@ async function analyzeIpIntel(){
       if(cBody) setSummaryMessage(cBody, 4, 'No data');
       if(acBody) setSummaryMessage(acBody, 6, 'No data');
       if(cspBody) setSummaryMessage(cspBody, 5, 'No data');
-      if(hintsBox) hintsBox.textContent = '-';
+      setIpIntelInfraInsights(inputSignature, [], null);
       if(invalidBox) invalidBox.textContent = '-';
       return;
     }
@@ -1551,6 +1985,7 @@ async function analyzeIpIntel(){
     const acRows = Array.isArray(j.as_country_summary) ? j.as_country_summary : [];
     const cspRows = Array.isArray(j.csp_summary) ? j.csp_summary : [];
     const hints = Array.isArray(j.hints) ? j.hints : [];
+    const characteristics = (j && typeof j.characteristics === 'object' && j.characteristics) ? j.characteristics : {};
     const invalid = Array.isArray(j.invalid_inputs) ? j.invalid_inputs : [];
     const ipsTotal = Number((j && j.ips_total_count) || rows.length || 0);
     const ipsShown = Number((j && j.ips_displayed_count) || rows.length || 0);
@@ -1673,22 +2108,7 @@ async function analyzeIpIntel(){
       }
     }
 
-    if(hintsBox){
-      hintsBox.innerHTML = '';
-      if(!hints.length){
-        hintsBox.textContent = 'No heuristics available';
-      } else {
-        hints.forEach(h=>{
-          const div = document.createElement('div');
-          const level = String((h && h.level) || 'info').toUpperCase();
-          const title = String((h && h.title) || 'Hint');
-          const detail = String((h && h.detail) || '-');
-          div.style.padding = '4px 0';
-          div.textContent = `[${level}] ${title}: ${detail}`;
-          hintsBox.appendChild(div);
-        });
-      }
-    }
+    setIpIntelInfraInsights(inputSignature, hints, characteristics);
 
     if(invalidBox){
       if(!invalid.length){
@@ -1699,6 +2119,7 @@ async function analyzeIpIntel(){
     }
     touchOverviewTs();
   }catch(e){
+    setIpIntelInfraInsights(inputSignature, [], null);
     if(meta) meta.textContent = 'Analyze error: ' + e;
   }
 }
@@ -1727,6 +2148,7 @@ async function loadIpIntelFromMisp(autoAnalyze){
     if(ta){
       ta.value = ips.join('\n');
     }
+    renderMergedIpIntelHints();
     if(!eventId){
       const eidEl = document.getElementById('ipIntelMispEventId');
       if(eidEl && j.event_id != null){
@@ -3084,6 +3506,11 @@ window.addEventListener('load', ()=>{
   if(runIpRelBtn){
     runIpRelBtn.addEventListener('click', ()=> analyzeIpRelationships());
   }
+  const ipIntelInputEl = document.getElementById('ipIntelInput');
+  if(ipIntelInputEl){
+    ipIntelInputEl.addEventListener('input', ()=> renderMergedIpIntelHints());
+  }
+  renderMergedIpIntelHints();
   const loadIpIntelMispBtn = document.getElementById('loadIpIntelMispBtn');
   if(loadIpIntelMispBtn){
     loadIpIntelMispBtn.addEventListener('click', ()=> loadIpIntelFromMisp(true));
@@ -3222,6 +3649,25 @@ window.IP_REL_GRAPH = window.IP_REL_GRAPH || null;
 window.IP_REL_MAP = window.IP_REL_MAP || null;
 window.IP_REL_MAP_MARKERS = window.IP_REL_MAP_MARKERS || [];
 window.IP_REL_MAP_SVG = window.IP_REL_MAP_SVG || null;
+const IP_REL_CUSTOM_PROFILE_STORAGE_KEY = 'tracedns.iprel.custom_profile.v1';
+const IP_REL_SELECTED_PROFILE_STORAGE_KEY = 'tracedns.iprel.selected_profile.v1';
+
+function safeLocalStorageGet(key){
+  try{
+    return localStorage.getItem(String(key || ''));
+  }catch(e){
+    return null;
+  }
+}
+
+function safeLocalStorageSet(key, value){
+  try{
+    localStorage.setItem(String(key || ''), String(value || ''));
+    return true;
+  }catch(e){
+    return false;
+  }
+}
 
 function setIpRelView(name){
   const table = document.getElementById('ipRelTableView');
@@ -3246,7 +3692,7 @@ function setIpRelView(name){
 function summarizeEvidence(evList){
   const ev = Array.isArray(evList) ? evList : [];
   if(!ev.length) return '-';
-  // compact summary: same_asn, same_owner, same_csp, same_country, same_/24, vt
+  // compact summary for high-signal triage
   const parts = [];
   ev.forEach(e=>{
     const t = String((e && e.type) || '').trim();
@@ -3256,17 +3702,70 @@ function summarizeEvidence(evList){
     else if(t === 'same_owner') parts.push('Owner');
     else if(t === 'same_csp') parts.push(`CSP:${v}`);
     else if(t === 'same_country') parts.push(`C:${v}`);
+    else if(t === 'same_network_exact') parts.push('NET');
+    else if(t === 'same_network_overlap') parts.push('NET~');
+    else if(t === 'same_jarm') parts.push('JARM');
+    else if(t === 'same_cert_sha256') parts.push('CERT');
+    else if(t === 'same_rdap_name') parts.push('RDAP');
+    else if(t === 'same_rdap_type') parts.push('RDAP-T');
+    else if(t === 'same_rir') parts.push('RIR');
     else if(t === 'same_prefix24') parts.push('/24');
+    else if(t === 'vt_detector_overlap') parts.push('VT:ENG');
+    else if(t === 'vt_time_proximity') parts.push('VT:TIME');
     else if(t === 'vt_malicious_both') parts.push('VT:M');
     else if(t === 'vt_suspicious_both') parts.push('VT:S');
   });
   return parts.length ? parts.join(' + ') : '-';
 }
 
+function evidenceTypeLabel(t){
+  const k = String(t || '').trim();
+  if(k === 'same_asn') return 'Same ASN';
+  if(k === 'same_owner') return 'Same Owner';
+  if(k === 'same_csp') return 'Same CSP';
+  if(k === 'same_country') return 'Same Country';
+  if(k === 'same_network_exact') return 'Same Network';
+  if(k === 'same_network_overlap') return 'Network Overlap';
+  if(k === 'same_jarm') return 'Same JARM';
+  if(k === 'same_cert_sha256') return 'Same Cert SHA256';
+  if(k === 'same_rdap_name') return 'Same RDAP Name';
+  if(k === 'same_rdap_type') return 'Same RDAP Type';
+  if(k === 'same_rir') return 'Same RIR';
+  if(k === 'same_prefix24') return 'Same /24';
+  if(k === 'vt_detector_overlap') return 'VT Engine Overlap';
+  if(k === 'vt_time_proximity') return 'VT Time Proximity';
+  if(k === 'vt_malicious_both') return 'VT Malicious Both';
+  if(k === 'vt_suspicious_both') return 'VT Suspicious Both';
+  return k || 'Evidence';
+}
+
+function formatEvidenceDetails(evList){
+  const ev = Array.isArray(evList) ? evList : [];
+  if(!ev.length) return '-';
+  const parts = [];
+  ev.forEach(e=>{
+    if(!e) return;
+    const t = evidenceTypeLabel(e.type);
+    const w = Number(e.weight || 0);
+    const v = (e.value == null) ? '' : String(e.value).trim();
+    let txt = w > 0 ? `${t}[${w}]` : t;
+    if(v) txt += ` ${v}`;
+    parts.push(txt);
+  });
+  return parts.length ? parts.join(' | ') : '-';
+}
+
 function getIpFeature(ip){
   const cache = window.IP_REL_CACHE;
   if(!cache || !cache.ip_features) return null;
   return cache.ip_features[ip] || null;
+}
+
+function getClusterColor(clusterIndex, clusterCount){
+  const idx = Math.max(0, Number(clusterIndex || 0));
+  const total = Math.max(1, Number(clusterCount || 1));
+  const hue = Math.round(((idx % total) * 360) / total);
+  return `hsl(${hue}, 66%, 46%)`;
 }
 
 function renderIpRelGraphFromCache(){
@@ -3284,23 +3783,61 @@ function renderIpRelGraphFromCache(){
   }
 
   const pairs = cache.pairs || [];
+  const clusters = Array.isArray(cache.clusters) ? cache.clusters : [];
+  const minScore = Number(cache.min_score || 40);
   const nodesSet = new Set();
   pairs.forEach(p=>{ nodesSet.add(String(p.a||'')); nodesSet.add(String(p.b||'')); });
+  const ipToCluster = new Map();
+  clusters.forEach((c, idx)=>{
+    const ips = Array.isArray(c && c.ips) ? c.ips : [];
+    ips.forEach(ip=> ipToCluster.set(String(ip || ''), Number(idx + 1)));
+  });
+  const degreeMap = {};
+  pairs.forEach(p=>{
+    const a = String((p && p.a) || '');
+    const b = String((p && p.b) || '');
+    if(!a || !b) return;
+    degreeMap[a] = Number(degreeMap[a] || 0) + 1;
+    degreeMap[b] = Number(degreeMap[b] || 0) + 1;
+  });
 
   const elements = [];
+  const clusterCount = Math.max(1, clusters.length);
   nodesSet.forEach(ip=>{
     const f = getIpFeature(ip) || {};
     const label = ip;
     const country = String(f.country || '-');
     const asn = String(f.asn || '-');
     const csp = String(f.csp_label || '');
-    elements.push({ data: { id: ip, label: label, country, asn, csp } });
+    const clusterIdx = Number(ipToCluster.get(ip) || 0);
+    const degree = Number(degreeMap[ip] || 0);
+    const nodeColor = clusterIdx > 0 ? getClusterColor(clusterIdx - 1, clusterCount) : '#5e7891';
+    const nodeSize = Math.max(18, Math.min(42, 18 + (degree * 2.2)));
+    elements.push({ data: { id: ip, label: label, country, asn, csp, cluster_idx: clusterIdx, degree, color: nodeColor, node_size: nodeSize } });
   });
   pairs.forEach((p, idx)=>{
     const a = String(p.a||'');
     const b = String(p.b||'');
     const score = Number(p.score || 0);
-    elements.push({ data: { id: `e${idx}`, source: a, target: b, score: score, evidence: p.evidence || [] } });
+    const ca = Number(ipToCluster.get(a) || 0);
+    const cb = Number(ipToCluster.get(b) || 0);
+    const sameCluster = (ca > 0 && cb > 0 && ca === cb);
+    const edgeColor = sameCluster ? getClusterColor(ca - 1, clusterCount) : '#9bb0c4';
+    const edgeStyle = score >= minScore ? 'solid' : 'dashed';
+    const edgeOpacity = sameCluster ? 0.86 : 0.55;
+    elements.push({
+      data: {
+        id: `e${idx}`,
+        source: a,
+        target: b,
+        score: score,
+        evidence: p.evidence || [],
+        edge_color: edgeColor,
+        edge_style: edgeStyle,
+        edge_opacity: edgeOpacity,
+        same_cluster: sameCluster ? 1 : 0
+      }
+    });
   });
 
   if(window.IP_REL_GRAPH){
@@ -3317,25 +3854,26 @@ function renderIpRelGraphFromCache(){
         'font-size': 10,
         'text-valign': 'center',
         'text-halign': 'center',
-        'background-color': '#2d6cdf',
+        'background-color': 'data(color)',
         'color': '#ffffff',
-        'width': 22,
-        'height': 22
+        'width': 'data(node_size)',
+        'height': 'data(node_size)'
       }},
       { selector: 'edge', style: {
         'width': 'mapData(score, 0, 100, 1, 6)',
-        'line-color': '#6b93d6',
+        'line-color': 'data(edge_color)',
+        'line-style': 'data(edge_style)',
         'curve-style': 'bezier',
-        'opacity': 0.85
+        'opacity': 'data(edge_opacity)'
       }},
       { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#ffb703' } },
       { selector: 'edge:selected', style: { 'line-color': '#ff006e', 'opacity': 1.0 } }
     ],
-    layout: { name: 'cose', animate: false, padding: 30 }
+    layout: { name: 'cose', animate: false, padding: 30, componentSpacing: 80, nodeRepulsion: 5000 }
   });
 
   const cy = window.IP_REL_GRAPH;
-  if(details) details.textContent = 'Click a node/edge to see details.';
+  if(details) details.textContent = `Click a node/edge to see details.\nClusters: ${clusters.length} / MinScore: ${minScore}`;
 
   cy.on('tap', 'node', (evt)=>{
     const d = evt.target.data();
@@ -3346,7 +3884,16 @@ function renderIpRelGraphFromCache(){
       country: f.country || '-',
       asn: f.asn || '-',
       as_owner: f.as_owner || '-',
+      network: f.network || '-',
+      rir: f.rir || '-',
+      rdap_name: f.rdap_name || '-',
+      rdap_type: f.rdap_type || '-',
+      jarm: f.jarm || '-',
+      cert_sha256: f.cert_sha256 || '-',
+      vt_engine_positive_count: f.vt_engine_positive_count || 0,
       csp: f.csp_label || '-',
+      cluster_index: d.cluster_idx || 0,
+      degree: d.degree || 0,
       malicious: f.malicious || 0,
       suspicious: f.suspicious || 0
     };
@@ -3360,6 +3907,7 @@ function renderIpRelGraphFromCache(){
       a: d.source,
       b: d.target,
       score: d.score,
+      same_cluster: !!d.same_cluster,
       evidence: d.evidence || []
     };
     if(details) details.textContent = JSON.stringify(out, null, 2);
@@ -3585,15 +4133,300 @@ function wireIpRelViewButtons(){
   if(b2) b2.onclick = ()=> setIpRelView('graph');
   if(b3) b3.onclick = ()=> setIpRelView('map');
 }
+
+function setIpRelPairsPanelVisible(visible, options){
+  const opts = options || {};
+  const panel = document.getElementById('ipRelPairsPanel');
+  const btn = document.getElementById('ipRelPairsToggleBtn');
+  const isVisible = !!visible;
+  if(panel){
+    panel.style.display = isVisible ? '' : 'none';
+  }
+  if(btn){
+    const hasCount = (opts.pairCount != null && Number.isFinite(Number(opts.pairCount)));
+    const pairCount = hasCount ? Number(opts.pairCount) : null;
+    let txt = isVisible ? 'Hide pairs' : 'Show pairs';
+    if(!isVisible && pairCount != null){
+      txt += ` (${pairCount})`;
+    }
+    btn.textContent = txt;
+    btn.setAttribute('aria-expanded', isVisible ? 'true' : 'false');
+  }
+}
+
+function wireIpRelPairsToggle(){
+  const btn = document.getElementById('ipRelPairsToggleBtn');
+  if(!btn) return;
+  btn.addEventListener('click', ()=>{
+    const panel = document.getElementById('ipRelPairsPanel');
+    const currentlyVisible = !!(panel && panel.style.display !== 'none');
+    let pairCount = null;
+    try{
+      const c = window.IP_REL_CACHE && window.IP_REL_CACHE.pair_count;
+      if(c != null) pairCount = Number(c);
+    }catch(e){}
+    setIpRelPairsPanelVisible(!currentlyVisible, { pairCount });
+  });
+  let initialCount = null;
+  try{
+    const c = window.IP_REL_CACHE && window.IP_REL_CACHE.pair_count;
+    if(c != null) initialCount = Number(c);
+  }catch(e){}
+  setIpRelPairsPanelVisible(false, { pairCount: initialCount });
+}
+
+const IP_REL_PROFILE_PRESETS = {
+  conservative: {
+    label: 'Conservative',
+    hint: 'Higher confidence, fewer edges. Good for strict blocking review.',
+    min_score: 55,
+    top_pairs: 120,
+    max_neighbors_per_ip: 20,
+    bucket_max: 350,
+    bucket_overflow_mode: 'skip',
+    pair_gate_enabled: true,
+    pair_gate_strong_min: 1,
+    pair_gate_mid_min: 2,
+    pair_gate_fallback_score: 75
+  },
+  balanced: {
+    label: 'Balanced',
+    hint: 'Practical default for daily triage with stable noise control.',
+    min_score: 40,
+    top_pairs: 200,
+    max_neighbors_per_ip: 30,
+    bucket_max: 450,
+    bucket_overflow_mode: 'truncate',
+    pair_gate_enabled: true,
+    pair_gate_strong_min: 1,
+    pair_gate_mid_min: 2,
+    pair_gate_fallback_score: 55
+  },
+  aggressive: {
+    label: 'Aggressive',
+    hint: 'Broader exploration with more edges and larger candidate surface.',
+    min_score: 28,
+    top_pairs: 400,
+    max_neighbors_per_ip: 60,
+    bucket_max: 900,
+    bucket_overflow_mode: 'truncate',
+    pair_gate_enabled: true,
+    pair_gate_strong_min: 1,
+    pair_gate_mid_min: 1,
+    pair_gate_fallback_score: 45
+  }
+};
+
+const IP_REL_PROFILE_FIELD_IDS = [
+  'ipRelMinScore',
+  'ipRelTopPairs',
+  'ipRelMaxNeighbors',
+  'ipRelBucketMax',
+  'ipRelBucketOverflowMode',
+  'ipRelPairGateEnabled',
+  'ipRelGateStrongMin',
+  'ipRelGateMidMin',
+  'ipRelGateFallbackScore'
+];
+
+function normalizeIpRelProfileName(name){
+  const key = String(name || '').trim().toLowerCase();
+  if(key === 'custom') return 'custom';
+  if(Object.prototype.hasOwnProperty.call(IP_REL_PROFILE_PRESETS, key)) return key;
+  return 'balanced';
+}
+
+function normalizeIpRelSettings(raw, fallbackProfile){
+  const fb = normalizeIpRelProfileName(fallbackProfile || 'balanced');
+  const base = IP_REL_PROFILE_PRESETS[fb] || IP_REL_PROFILE_PRESETS.balanced;
+  const src = (raw && typeof raw === 'object') ? raw : {};
+  const overflowRaw = String((src.bucket_overflow_mode != null ? src.bucket_overflow_mode : base.bucket_overflow_mode) || 'truncate').trim().toLowerCase();
+  return {
+    min_score: parseBoundedInt((src.min_score != null ? src.min_score : base.min_score), base.min_score, 0, 100),
+    top_pairs: parseBoundedInt((src.top_pairs != null ? src.top_pairs : base.top_pairs), base.top_pairs, 1, 5000),
+    max_neighbors_per_ip: parseBoundedInt((src.max_neighbors_per_ip != null ? src.max_neighbors_per_ip : base.max_neighbors_per_ip), base.max_neighbors_per_ip, 1, 200),
+    bucket_max: parseBoundedInt((src.bucket_max != null ? src.bucket_max : base.bucket_max), base.bucket_max, 50, 2000),
+    bucket_overflow_mode: (overflowRaw === 'skip') ? 'skip' : 'truncate',
+    pair_gate_enabled: !!(src.pair_gate_enabled != null ? src.pair_gate_enabled : base.pair_gate_enabled),
+    pair_gate_strong_min: parseBoundedInt((src.pair_gate_strong_min != null ? src.pair_gate_strong_min : base.pair_gate_strong_min), base.pair_gate_strong_min, 0, 3),
+    pair_gate_mid_min: parseBoundedInt((src.pair_gate_mid_min != null ? src.pair_gate_mid_min : base.pair_gate_mid_min), base.pair_gate_mid_min, 0, 5),
+    pair_gate_fallback_score: parseBoundedInt((src.pair_gate_fallback_score != null ? src.pair_gate_fallback_score : base.pair_gate_fallback_score), base.pair_gate_fallback_score, 0, 100)
+  };
+}
+
+function readIpRelSettingsFromUi(){
+  return normalizeIpRelSettings({
+    min_score: (document.getElementById('ipRelMinScore') || {}).value,
+    top_pairs: (document.getElementById('ipRelTopPairs') || {}).value,
+    max_neighbors_per_ip: (document.getElementById('ipRelMaxNeighbors') || {}).value,
+    bucket_max: (document.getElementById('ipRelBucketMax') || {}).value,
+    bucket_overflow_mode: (document.getElementById('ipRelBucketOverflowMode') || {}).value,
+    pair_gate_enabled: !!(document.getElementById('ipRelPairGateEnabled') && document.getElementById('ipRelPairGateEnabled').checked),
+    pair_gate_strong_min: (document.getElementById('ipRelGateStrongMin') || {}).value,
+    pair_gate_mid_min: (document.getElementById('ipRelGateMidMin') || {}).value,
+    pair_gate_fallback_score: (document.getElementById('ipRelGateFallbackScore') || {}).value
+  }, 'balanced');
+}
+
+function applyIpRelSettingsToUi(settings){
+  const s = normalizeIpRelSettings(settings, 'balanced');
+  const minScoreEl = document.getElementById('ipRelMinScore');
+  const topPairsEl = document.getElementById('ipRelTopPairs');
+  const maxNeighEl = document.getElementById('ipRelMaxNeighbors');
+  const bucketMaxEl = document.getElementById('ipRelBucketMax');
+  const overflowEl = document.getElementById('ipRelBucketOverflowMode');
+  const gateEnabledEl = document.getElementById('ipRelPairGateEnabled');
+  const gateStrongEl = document.getElementById('ipRelGateStrongMin');
+  const gateMidEl = document.getElementById('ipRelGateMidMin');
+  const gateFallbackEl = document.getElementById('ipRelGateFallbackScore');
+
+  if(minScoreEl) minScoreEl.value = String(s.min_score);
+  if(topPairsEl) topPairsEl.value = String(s.top_pairs);
+  if(maxNeighEl) maxNeighEl.value = String(s.max_neighbors_per_ip);
+  if(bucketMaxEl) bucketMaxEl.value = String(s.bucket_max);
+  if(overflowEl) overflowEl.value = String(s.bucket_overflow_mode);
+  if(gateEnabledEl) gateEnabledEl.checked = !!s.pair_gate_enabled;
+  if(gateStrongEl) gateStrongEl.value = String(s.pair_gate_strong_min);
+  if(gateMidEl) gateMidEl.value = String(s.pair_gate_mid_min);
+  if(gateFallbackEl) gateFallbackEl.value = String(s.pair_gate_fallback_score);
+  return s;
+}
+
+function setIpRelProfileHint(text){
+  const hintEl = document.getElementById('ipRelProfileHint');
+  if(hintEl) hintEl.textContent = String(text || '');
+}
+
+function loadCustomIpRelSettings(){
+  const raw = safeLocalStorageGet(IP_REL_CUSTOM_PROFILE_STORAGE_KEY);
+  if(!raw) return null;
+  try{
+    const parsed = JSON.parse(raw);
+    return normalizeIpRelSettings(parsed, 'balanced');
+  }catch(e){
+    return null;
+  }
+}
+
+function saveCustomIpRelSettings(settings){
+  const normalized = normalizeIpRelSettings(settings, 'balanced');
+  return safeLocalStorageSet(IP_REL_CUSTOM_PROFILE_STORAGE_KEY, JSON.stringify(normalized));
+}
+
+function loadSelectedIpRelProfile(){
+  return normalizeIpRelProfileName(safeLocalStorageGet(IP_REL_SELECTED_PROFILE_STORAGE_KEY) || 'balanced');
+}
+
+function saveSelectedIpRelProfile(name){
+  const key = normalizeIpRelProfileName(name);
+  safeLocalStorageSet(IP_REL_SELECTED_PROFILE_STORAGE_KEY, key);
+  return key;
+}
+
+function applyIpRelProfile(name, opts){
+  const options = opts || {};
+  const key = normalizeIpRelProfileName(name);
+  const profileSel = document.getElementById('ipRelProfileSelect');
+  if(profileSel && profileSel.value !== key){
+    profileSel.value = key;
+  }
+
+  if(key === 'custom'){
+    const loaded = loadCustomIpRelSettings();
+    const src = loaded || readIpRelSettingsFromUi();
+    const applied = applyIpRelSettingsToUi(src);
+    saveCustomIpRelSettings(applied);
+    setIpRelProfileHint('Custom: values are saved locally in this browser.');
+  } else {
+    const preset = IP_REL_PROFILE_PRESETS[key] || IP_REL_PROFILE_PRESETS.balanced;
+    applyIpRelSettingsToUi(preset);
+    setIpRelProfileHint(`${preset.label}: ${preset.hint}`);
+  }
+
+  if(options.saveSelected !== false){
+    saveSelectedIpRelProfile(key);
+  }
+  updateIpRelGateUi();
+}
+
+function persistCustomProfileIfSelected(reason){
+  const profileSel = document.getElementById('ipRelProfileSelect');
+  const selected = normalizeIpRelProfileName((profileSel && profileSel.value) || 'balanced');
+  if(selected !== 'custom') return;
+  const saved = saveCustomIpRelSettings(readIpRelSettingsFromUi());
+  if(saved){
+    const ts = new Date().toLocaleTimeString();
+    if(reason === 'button'){
+      setIpRelProfileHint(`Custom: saved at ${ts} (local browser storage).`);
+    } else {
+      setIpRelProfileHint(`Custom: auto-saved at ${ts}.`);
+    }
+  }
+}
+
+function wireIpRelProfileControls(){
+  const profileSel = document.getElementById('ipRelProfileSelect');
+  const saveBtn = document.getElementById('ipRelSaveCustomBtn');
+
+  if(profileSel){
+    profileSel.addEventListener('change', ()=> applyIpRelProfile(profileSel.value, { saveSelected: true }));
+  }
+  if(saveBtn){
+    saveBtn.addEventListener('click', ()=>{
+      const cur = readIpRelSettingsFromUi();
+      saveCustomIpRelSettings(cur);
+      if(profileSel){
+        profileSel.value = 'custom';
+      }
+      applyIpRelProfile('custom', { saveSelected: true });
+      persistCustomProfileIfSelected('button');
+    });
+  }
+
+  IP_REL_PROFILE_FIELD_IDS.forEach(id=>{
+    const el = document.getElementById(id);
+    if(!el) return;
+    const onChange = ()=>{
+      if(id === 'ipRelPairGateEnabled'){
+        updateIpRelGateUi();
+      }
+      persistCustomProfileIfSelected('auto');
+    };
+    el.addEventListener('change', onChange);
+    if(el.tagName !== 'SELECT' && String(el.type || '').toLowerCase() !== 'checkbox'){
+      el.addEventListener('input', onChange);
+    }
+  });
+
+  const initialProfile = profileSel
+    ? normalizeIpRelProfileName(loadSelectedIpRelProfile() || profileSel.value || 'balanced')
+    : 'balanced';
+  applyIpRelProfile(initialProfile, { saveSelected: true });
+}
+
+function updateIpRelGateUi(){
+  const enabled = !!(document.getElementById('ipRelPairGateEnabled') && document.getElementById('ipRelPairGateEnabled').checked);
+  ['ipRelGateStrongMin', 'ipRelGateMidMin', 'ipRelGateFallbackScore'].forEach(id=>{
+    const el = document.getElementById(id);
+    if(el) el.disabled = !enabled;
+  });
+}
 // Ensure buttons are wired after DOM is ready.
 if(document.readyState === 'loading'){
-  document.addEventListener('DOMContentLoaded', ()=> wireIpRelViewButtons());
+  document.addEventListener('DOMContentLoaded', ()=>{
+    wireIpRelViewButtons();
+    wireIpRelPairsToggle();
+    wireIpRelProfileControls();
+  });
 } else {
   wireIpRelViewButtons();
+  wireIpRelPairsToggle();
+  wireIpRelProfileControls();
 }
 
 async function analyzeIpRelationships(){
   const raw = String((document.getElementById('ipIntelInput') || {}).value || '').trim();
+  const inputSignature = computeIpIntelInputSignature(raw);
   const includeVT = !!(document.getElementById('ipIntelIncludeVt') && document.getElementById('ipIntelIncludeVt').checked);
   const vtBudget = parseBoundedInt((document.getElementById('ipIntelVtBudget') || {}).value, 1200, 0, 5000);
   const vtWorkers = parseBoundedInt((document.getElementById('ipIntelVtWorkers') || {}).value, 8, 1, 32);
@@ -3601,6 +4434,14 @@ async function analyzeIpRelationships(){
   const minScore = parseBoundedInt((document.getElementById('ipRelMinScore') || {}).value, 40, 0, 100);
   const topPairs = parseBoundedInt((document.getElementById('ipRelTopPairs') || {}).value, 200, 1, 5000);
   const maxNeighbors = parseBoundedInt((document.getElementById('ipRelMaxNeighbors') || {}).value, 30, 1, 200);
+  const bucketMax = parseBoundedInt((document.getElementById('ipRelBucketMax') || {}).value, 450, 50, 2000);
+  const overflowRaw = String((document.getElementById('ipRelBucketOverflowMode') || {}).value || 'truncate').trim().toLowerCase();
+  const bucketOverflowMode = (overflowRaw === 'skip') ? 'skip' : 'truncate';
+  const pairGateEnabled = !!(document.getElementById('ipRelPairGateEnabled') && document.getElementById('ipRelPairGateEnabled').checked);
+  const pairGateStrongMin = parseBoundedInt((document.getElementById('ipRelGateStrongMin') || {}).value, 1, 0, 3);
+  const pairGateMidMin = parseBoundedInt((document.getElementById('ipRelGateMidMin') || {}).value, 2, 0, 5);
+  const pairGateFallbackScore = parseBoundedInt((document.getElementById('ipRelGateFallbackScore') || {}).value, Math.max(minScore, 55), 0, 100);
+  const profileName = String((document.getElementById('ipRelProfileSelect') || {}).value || 'balanced').trim().toLowerCase();
 
   const meta = document.getElementById('ipRelMeta');
   const pairsBody = document.querySelector('#ipRelPairsTable tbody');
@@ -3610,6 +4451,7 @@ async function analyzeIpRelationships(){
     if(meta) meta.textContent = 'Input IP list first';
     if(pairsBody) setSummaryMessage(pairsBody, 4, 'No data');
     if(clustersBody) setSummaryMessage(clustersBody, 8, 'No data');
+    renderMergedIpIntelHints();
     return;
   }
 
@@ -3621,6 +4463,8 @@ async function analyzeIpRelationships(){
   if(clustersBody) setSummaryMessage(clustersBody, 8, 'Loading...');
 
   try{
+    const pairPanel = document.getElementById('ipRelPairsPanel');
+    const pairPanelWasOpen = !!(pairPanel && pairPanel.style.display !== 'none');
     const r = await fetch('/ip-relationship-analysis', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
@@ -3629,9 +4473,15 @@ async function analyzeIpRelationships(){
         min_score: minScore,
         top_pairs: topPairs,
         max_neighbors_per_ip: maxNeighbors,
+        bucket_max: bucketMax,
+        bucket_overflow_mode: bucketOverflowMode,
         include_vt: includeVT,
         vt_budget: Math.min(vtBudget, 5000),
-        vt_workers: vtWorkers
+        vt_workers: vtWorkers,
+        pair_gate_enabled: pairGateEnabled,
+        pair_gate_strong_min: pairGateStrongMin,
+        pair_gate_mid_min: pairGateMidMin,
+        pair_gate_fallback_score: pairGateFallbackScore
       })
     });
     const j = await r.json();
@@ -3639,19 +4489,31 @@ async function analyzeIpRelationships(){
       if(meta) meta.textContent = `Similarity analysis failed: ${(j && j.error) ? j.error : 'HTTP '+r.status}`;
       if(pairsBody) setSummaryMessage(pairsBody, 4, 'No data');
       if(clustersBody) setSummaryMessage(clustersBody, 8, 'No data');
+      clearIpIntelRelationshipInsights(inputSignature);
       return;
     }
 
     window.IP_REL_CACHE = j;
+    setIpIntelRelationshipInsights(inputSignature, j);
 
     if(meta){
       const pairCount = Number(j.pair_count || 0);
       const clusterCount = Array.isArray(j.clusters) ? j.clusters.length : 0;
       let txt = `valid ${j.valid_count || 0} / edges ${pairCount} / clusters ${clusterCount} / minScore ${j.min_score || minScore}`;
+      txt += ` / profile ${profileName || 'balanced'}`;
       if(j.vt_enabled){
         txt += ` / VT attempted ${j.vt_attempted || 0} (budget ${j.vt_budget || 0}, workers ${j.vt_workers || 0})`;
       } else {
         txt += ' / VT off';
+      }
+      if(j.pair_gate && typeof j.pair_gate === 'object'){
+        txt += ` / gate ${j.pair_gate.enabled ? 'on' : 'off'} keep ${j.pair_gate.kept || 0} drop ${j.pair_gate.dropped || 0}`;
+      }
+      if(Number(j.bucket_oversized_count || 0) > 0){
+        txt += ` / oversized buckets ${j.bucket_oversized_count || 0}`;
+        if(Number(j.bucket_truncated_count || 0) > 0){
+          txt += ` (truncated ${j.bucket_truncated_count || 0})`;
+        }
       }
       if(j.geoip_enabled) txt += ' / GeoIP ok';
       meta.textContent = txt;
@@ -3661,6 +4523,7 @@ async function analyzeIpRelationships(){
     if(pairsBody){
       pairsBody.innerHTML = '';
       const pairs = Array.isArray(j.pairs) ? j.pairs : [];
+      setIpRelPairsPanelVisible(pairPanelWasOpen, { pairCount: pairs.length });
       if(!pairs.length){
         setSummaryMessage(pairsBody, 4, 'No strong pairs found (try lowering min score)');
       } else {
@@ -3689,9 +4552,24 @@ async function analyzeIpRelationships(){
 
           const tdS = document.createElement('td'); tdS.textContent = String(score);
           const tdE = document.createElement('td');
-          tdE.className = 'wrap-cell';
-          tdE.textContent = summarizeEvidence(ev);
-          tdE.title = JSON.stringify(ev || [], null, 0);
+          tdE.className = 'evidence-cell';
+          const evMain = document.createElement('div');
+          evMain.className = 'evidence-main';
+          evMain.textContent = summarizeEvidence(ev);
+          const evSub = document.createElement('div');
+          evSub.className = 'evidence-sub';
+          evSub.textContent = formatEvidenceDetails(ev);
+          tdE.appendChild(evMain);
+          if(evSub.textContent !== '-'){
+            tdE.appendChild(evSub);
+          }
+          if(it && it.gate_reason){
+            const evNote = document.createElement('div');
+            evNote.className = 'evidence-note';
+            evNote.textContent = `gate: ${String(it.gate_reason)}`;
+            tdE.appendChild(evNote);
+          }
+          tdE.title = formatEvidenceDetails(ev);
 
           tr.appendChild(tdA); tr.appendChild(tdB); tr.appendChild(tdS); tr.appendChild(tdE);
           pairsBody.appendChild(tr);
@@ -3724,7 +4602,14 @@ async function analyzeIpRelationships(){
           const tdVt = document.createElement('td'); tdVt.textContent = vtTxt;
 
           tr.style.cursor = 'pointer';
-          tr.title = 'Click to analyze this cluster in Per-IP Details';
+          const fp = [];
+          if(Array.isArray(c.top_network) && c.top_network.length) fp.push('net ' + c.top_network.map(x=>x[0]+'('+x[1]+')').join(', '));
+          if(Array.isArray(c.top_rir) && c.top_rir.length) fp.push('rir ' + c.top_rir.map(x=>x[0]+'('+x[1]+')').join(', '));
+          if(Array.isArray(c.top_jarm) && c.top_jarm.length) fp.push('jarm ' + c.top_jarm.map(x=>x[0]+'('+x[1]+')').join(', '));
+          if(Array.isArray(c.top_cert) && c.top_cert.length) fp.push('cert ' + c.top_cert.map(x=>x[0]+'('+x[1]+')').join(', '));
+          tr.title = fp.length
+            ? `Click to analyze this cluster in Per-IP Details\n${fp.join(' | ')}`
+            : 'Click to analyze this cluster in Per-IP Details';
           tr.onclick = async ()=>{
             const ta = document.getElementById('ipIntelInput');
             if(ta) ta.value = ips.join('\n');
@@ -3739,6 +4624,7 @@ async function analyzeIpRelationships(){
 
     touchOverviewTs();
   }catch(e){
+    clearIpIntelRelationshipInsights(inputSignature);
     if(meta) meta.textContent = 'Similarity analysis error: ' + e;
   }
 }

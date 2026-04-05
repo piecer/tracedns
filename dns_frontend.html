@@ -367,7 +367,7 @@
   <p style="font-size:.78rem;color:#5b6a77;margin:2px 0 10px;">Supports up to 10,000 valid IPs. Per-IP rows are intentionally limited for browser stability.</p>
 
   <h4>Estimated Characteristics</h4>
-  <div id="ipIntelHintsBox" style="background:#f8f9fa;padding:12px;border:1px solid #d7e4eb;border-radius:10px;margin-bottom:10px;"></div>
+  <div id="ipIntelHintsBox" class="ipintel-hints-box"></div>
 
   <div class="summary-card" style="margin-bottom:12px;">
     <h4>Relationship Summary (Similarity, input IPs)</h4>
@@ -391,13 +391,63 @@
       <button id="ipRelViewGraphBtn" type="button">Graph</button>
       <button id="ipRelViewMapBtn" type="button">Map</button>
     </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:8px;">
+      <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
+        Bucket max
+        <input id="ipRelBucketMax" type="number" min="50" max="2000" value="450" style="width:92px;margin-top:0;" />
+      </label>
+      <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
+        Overflow
+        <select id="ipRelBucketOverflowMode" style="width:auto;min-width:96px;">
+          <option value="truncate" selected>truncate</option>
+          <option value="skip">skip</option>
+        </select>
+      </label>
+      <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
+        <input id="ipRelPairGateEnabled" type="checkbox" checked style="width:auto;margin:0;" />
+        Pair gate
+      </label>
+      <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
+        Strong ≥
+        <input id="ipRelGateStrongMin" type="number" min="0" max="3" value="1" style="width:64px;margin-top:0;" />
+      </label>
+      <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
+        Mid ≥
+        <input id="ipRelGateMidMin" type="number" min="0" max="5" value="2" style="width:64px;margin-top:0;" />
+      </label>
+      <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
+        Fallback score
+        <input id="ipRelGateFallbackScore" type="number" min="0" max="100" value="55" style="width:76px;margin-top:0;" />
+      </label>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:8px;">
+      <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
+        Profile
+        <select id="ipRelProfileSelect" style="width:auto;min-width:180px;">
+          <option value="balanced" selected>Balanced (Recommended)</option>
+          <option value="conservative">Conservative</option>
+          <option value="aggressive">Aggressive</option>
+          <option value="custom">Custom (Saved)</option>
+        </select>
+      </label>
+      <button id="ipRelSaveCustomBtn" type="button">Save Current as Custom</button>
+      <span id="ipRelProfileHint" style="font-size:.78rem;color:#5b6a77;">
+        Balanced: practical default for daily triage.
+      </span>
+    </div>
 
     <div id="ipRelTableView" style="margin-top:10px;">
-      <h4 style="margin-top:12px;">Top Similar IP Pairs</h4>
-      <table id="ipRelPairsTable">
-        <thead><tr><th>IP A</th><th>IP B</th><th>Score</th><th>Evidence</th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px;">
+        <h4 style="margin:0;">Top Similar IP Pairs</h4>
+        <span style="flex:1"></span>
+        <button id="ipRelPairsToggleBtn" type="button" aria-expanded="false">Show pairs</button>
+      </div>
+      <div id="ipRelPairsPanel" style="display:none;">
+        <table id="ipRelPairsTable">
+          <thead><tr><th>IP A</th><th>IP B</th><th>Score</th><th>Evidence</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
       <h4 style="margin-top:12px;">Clusters</h4>
       <table id="ipRelClustersTable">
         <thead><tr><th>Cluster</th><th>Size</th><th>Cohesion</th><th>Top ASN</th><th>Top Owner</th><th>Top Country</th><th>Top CSP</th><th>VT Summary</th></tr></thead>
