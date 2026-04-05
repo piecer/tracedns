@@ -24,6 +24,9 @@ class DomainSpec:
     a_decode: Optional[str] = None
     a_xor_key: Optional[str] = None
     ens_text_key: Optional[str] = None
+    ens_decode: Optional[str] = None
+    ens_xor_byte: Optional[str] = None
+    ens_options: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -36,6 +39,9 @@ class Snapshot:
     a_decode: Optional[str] = None
     a_xor_key: Optional[str] = None
     ens_text_key: Optional[str] = None
+    ens_decode: Optional[str] = None
+    ens_xor_byte: Optional[str] = None
+    ens_options: Optional[Dict[str, Any]] = None
 
     def managed_ips(self) -> Set[str]:
         r = str(self.type or '').upper()
@@ -64,6 +70,12 @@ class Snapshot:
             out['a_xor_key'] = self.a_xor_key
         if self.ens_text_key:
             out['ens_text_key'] = self.ens_text_key
+        if self.ens_decode:
+            out['ens_decode'] = self.ens_decode
+        if self.ens_xor_byte is not None and str(self.ens_xor_byte).strip() != '':
+            out['ens_xor_byte'] = self.ens_xor_byte
+        if isinstance(self.ens_options, dict) and self.ens_options:
+            out['ens_options'] = self.ens_options
         return out
 
     @staticmethod
@@ -80,6 +92,9 @@ class Snapshot:
             a_decode=obj.get('a_decode'),
             a_xor_key=obj.get('a_xor_key'),
             ens_text_key=obj.get('ens_text_key'),
+            ens_decode=obj.get('ens_decode'),
+            ens_xor_byte=obj.get('ens_xor_byte'),
+            ens_options=obj.get('ens_options') if isinstance(obj.get('ens_options'), dict) else None,
         )
         return snap
 
@@ -149,6 +164,7 @@ class QueryResult:
     rtype: RecordType
     status: str
     values: List[str]
+    error: Optional[str] = None
 
 
 @dataclass
@@ -192,6 +208,9 @@ def coerce_domains(domains: List[Any]) -> List[DomainSpec]:
                     a_decode=d.get('a_decode'),
                     a_xor_key=d.get('a_xor_key'),
                     ens_text_key=d.get('ens_text_key'),
+                    ens_decode=d.get('ens_decode'),
+                    ens_xor_byte=d.get('ens_xor_byte'),
+                    ens_options=d.get('ens_options') if isinstance(d.get('ens_options'), dict) else None,
                 )
             )
         else:

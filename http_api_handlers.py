@@ -13,7 +13,8 @@ from urllib.parse import parse_qs, urlparse
 from a_decoder import A_DECODE_METHODS, decode_a_hidden_ips
 from config_manager import normalize_domains, read_config, write_config
 from dns_query import query_dns
-from ens_query import fetch_ens_text_record, parse_record
+from ens_decoder import ENS_DECODE_METHODS, decode_ens_hidden_ips, ens_options_signature, parse_ens_options
+from ens_query import EnsQueryError, fetch_ens_text_record, format_ens_error
 from txt_decoder import TXT_DECODE_METHODS, analyze_domain_decoding, decode_txt_hidden_ips
 
 # Refactor: move common handlers into smaller modules.
@@ -143,7 +144,7 @@ def attach_api_handlers(
                             ent['domains'].add(d)
                             ent['count'] += 1
                             ent['last_ts'] = max(ent['last_ts'], ts)
-                        for ip in side_obj.get('decoded_ips', []) if ev.get('type', 'A') in ('TXT', 'A') else []:
+                        for ip in side_obj.get('decoded_ips', []) if ev.get('type', 'A') in ('TXT', 'A', 'ENS') else []:
                             ent = ip_map.setdefault(ip, {'domains': set(), 'count': 0, 'last_ts': 0})
                             ent['domains'].add(d)
                             ent['count'] += 1
@@ -155,7 +156,7 @@ def attach_api_handlers(
                             ent['domains'].add(d)
                             ent['count'] += 1
                             ent['last_ts'] = max(ent['last_ts'], ts)
-                    if ev.get('type', 'A') in ('TXT', 'A'):
+                    if ev.get('type', 'A') in ('TXT', 'A', 'ENS'):
                         for ip in ev.get('decoded_ips', []):
                             ent = ip_map.setdefault(ip, {'domains': set(), 'count': 0, 'last_ts': 0})
                             ent['domains'].add(d)
@@ -442,11 +443,24 @@ def attach_api_handlers(
         a_decode = str(data.get('a_decode') or 'none').strip() or 'none'
         a_xor_key = str(data.get('a_xor_key') or '').strip()
         ens_text_key = str(data.get('ens_text_key') or 'ipv6').strip() or 'ipv6'
+        ens_decode = str(data.get('ens_decode') or 'ipv6_5to8_xor').strip() or 'ipv6_5to8_xor'
+        ens_xor_byte = str(data.get('ens_xor_byte') or '').strip()
+        ens_options_raw = data.get('ens_options')
+        ens_options = {}
+        if requested_type == 'ENS':
+            try:
+                ens_options = parse_ens_options(ens_options_raw, legacy_xor_byte=ens_xor_byte, strict=True)
+            except Exception as e:
+                return self._send_json({'error': f'invalid ens_options: {e}'}, 400)
+        else:
+            ens_options = parse_ens_options(ens_options_raw, legacy_xor_byte=ens_xor_byte, strict=False)
         a_decode_active = a_decode.lower() not in ('', 'none')
         if requested_type in ('AUTO', 'TXT') and txt_decode not in TXT_DECODE_METHODS:
             return self._send_json({'error': f'unknown txt_decode: {txt_decode}'}, 400)
         if requested_type in ('AUTO', 'A') and a_decode_active and a_decode not in A_DECODE_METHODS:
             return self._send_json({'error': f'unknown a_decode: {a_decode}'}, 400)
+        if requested_type == 'ENS' and ens_decode not in ENS_DECODE_METHODS:
+            return self._send_json({'error': f'unknown ens_decode: {ens_decode}'}, 400)
 
         include_vt_raw = data.get('include_vt', True)
         if isinstance(include_vt_raw, str):
@@ -507,19 +521,37 @@ def attach_api_handlers(
 
         for srv in servers:
             for rtype in probe_types:
+                query_error = ''
                 if rtype == 'ENS':
                     vals = []
                     qstatus = 'error'
-                    method = f"ENS:{ens_text_key}"
+                    method = f"ENS:{ens_text_key} / decode:{ens_decode}"
+                    opts_sig = ens_options_signature(ens_options, legacy_xor_byte=ens_xor_byte)
+                    if opts_sig:
+                        method += f" / options:{opts_sig}"
+                    elif ens_xor_byte:
+                        method += f" / xor:{ens_xor_byte}"
                     managed_ips = []
                     if ens_rpc_url:
                         try:
                             raw_value = fetch_ens_text_record(ens_rpc_url, domain, ens_text_key)
                             vals = [str(raw_value)]
-                            managed_ips = parse_record(raw_value)
+                            managed_ips = decode_ens_hidden_ips(
+                                raw_value,
+                                method=ens_decode,
+                                ens_options=ens_options,
+                                domain=domain,
+                                text_key=ens_text_key,
+                            )
                             qstatus = 'ok'
-                        except Exception:
+                        except EnsQueryError as e:
                             qstatus = 'error'
+                            query_error = format_ens_error(e)
+                        except Exception as e:
+                            qstatus = 'error'
+                            query_error = format_ens_error(e)
+                    else:
+                        query_error = 'ens_rpc_url_not_configured: ENS RPC URL is not configured'
                     values = sorted({str(v).strip() for v in vals if str(v).strip()})
                     managed_ips = sorted({str(v).strip() for v in managed_ips if _is_ipv4(v)})
                 else:
@@ -582,6 +614,7 @@ def attach_api_handlers(
                     'values': values,
                     'managed_ips': managed_ips,
                     'method': method,
+                    'error': query_error,
                 })
 
         if requested_type == 'AUTO':
@@ -657,6 +690,13 @@ def attach_api_handlers(
         elif selected_type == 'ENS':
             if ens_text_key:
                 domain_obj['ens_text_key'] = ens_text_key
+            if ens_decode:
+                domain_obj['ens_decode'] = ens_decode
+            if ens_options:
+                domain_obj['ens_options'] = ens_options
+            elif ens_xor_byte:
+                # backward compatibility with old clients
+                domain_obj['ens_options'] = {'xor_byte': ens_xor_byte}
 
         notes = []
         if requested_type == 'AUTO':
@@ -667,6 +707,22 @@ def attach_api_handlers(
             notes.append("TXT values were found but decoder did not produce IPv4 outputs.")
         if selected_type == 'ENS' and not ens_rpc_url:
             notes.append("ENS RPC URL is not configured. Set it in Settings or pass ens_rpc_url.")
+        if selected_type == 'ENS':
+            notes.append(f"ENS decode method: {ens_decode}")
+            opts_sig = ens_options_signature(ens_options, legacy_xor_byte=ens_xor_byte)
+            if opts_sig:
+                notes.append(f"ENS options: {opts_sig}")
+            ens_errs = [
+                str(item.get('error') or '').strip()
+                for item in (by_server or [])
+                if str(item.get('type') or '').upper() == 'ENS' and str(item.get('error') or '').strip()
+            ]
+            if ens_errs:
+                uniq_errs = sorted(set(ens_errs))
+                preview = " | ".join(uniq_errs[:2])
+                if len(uniq_errs) > 2:
+                    preview += f" | +{len(uniq_errs) - 2} more"
+                notes.append(f"ENS query errors: {preview}")
         if not managed_ips and not resolved_ips:
             notes.append("No IPv4 candidate found from current DNS responses.")
         if vt_unavailable_reason:
@@ -896,6 +952,9 @@ def attach_api_handlers(
             'decoder_candidates': decoder_candidates,
             'vt_enabled': vt_enabled,
             'vt_unavailable_reason': vt_unavailable_reason,
+            'ens_decode': ens_decode,
+            'ens_xor_byte': ens_xor_byte,
+            'ens_options': ens_options,
             'resolved_ips': resolved_ips,
             'managed_ips': managed_ips,
             'by_server': by_server,
@@ -1727,7 +1786,7 @@ def attach_api_handlers(
                             'old': ev.get('old'),
                             'new': ev.get('new')
                         })
-                    if rtype in ('TXT', 'A') and (ip in ev.get('new', {}).get('decoded_ips', []) or ip in ev.get('old', {}).get('decoded_ips', [])):
+                    if rtype in ('TXT', 'A', 'ENS') and (ip in ev.get('new', {}).get('decoded_ips', []) or ip in ev.get('old', {}).get('decoded_ips', [])):
                         matches.append({
                             'domain': d,
                             'server': ev.get('server'),
@@ -1747,7 +1806,7 @@ def attach_api_handlers(
                             'ts': ts,
                             'values': ev.get('values')
                         })
-                    if rtype in ('TXT', 'A') and ip in ev.get('decoded_ips', []):
+                    if rtype in ('TXT', 'A', 'ENS') and ip in ev.get('decoded_ips', []):
                         matches.append({
                             'domain': d,
                             'server': ev.get('server'),
@@ -1866,6 +1925,9 @@ def attach_api_handlers(
                                 d['txt_decode'] = prev.get('txt_decode')
                             d.pop('a_decode', None)
                             d.pop('a_xor_key', None)
+                            d.pop('ens_decode', None)
+                            d.pop('ens_xor_byte', None)
+                            d.pop('ens_options', None)
                         elif typ == 'A':
                             if 'a_decode' not in d and prev.get('a_decode') is not None:
                                 d['a_decode'] = prev.get('a_decode')
@@ -1873,9 +1935,29 @@ def attach_api_handlers(
                                 d['a_xor_key'] = prev.get('a_xor_key')
                             d.pop('txt_decode', None)
                             d.pop('ens_text_key', None)
+                            d.pop('ens_decode', None)
+                            d.pop('ens_xor_byte', None)
+                            d.pop('ens_options', None)
                         elif typ == 'ENS':
                             if 'ens_text_key' not in d and prev.get('ens_text_key'):
                                 d['ens_text_key'] = prev.get('ens_text_key')
+                            if 'ens_decode' not in d and prev.get('ens_decode'):
+                                d['ens_decode'] = prev.get('ens_decode')
+                            if 'ens_options' not in d:
+                                if isinstance(prev.get('ens_options'), dict):
+                                    d['ens_options'] = dict(prev.get('ens_options'))
+                                elif prev.get('ens_xor_byte') is not None and str(prev.get('ens_xor_byte')).strip() != '':
+                                    d['ens_options'] = {'xor_byte': str(prev.get('ens_xor_byte')).strip()}
+                            # Canonicalize legacy field to ens_options.
+                            if 'ens_options' not in d and d.get('ens_xor_byte') is not None and str(d.get('ens_xor_byte')).strip() != '':
+                                d['ens_options'] = {'xor_byte': str(d.get('ens_xor_byte')).strip()}
+                            if 'ens_options' in d and not isinstance(d.get('ens_options'), dict):
+                                try:
+                                    parsed_opts = parse_ens_options(d.get('ens_options'), strict=True)
+                                except Exception as exc:
+                                    return self._send_json({'error': f"invalid ens_options for domain '{d.get('name', '')}': {exc}"}, 400)
+                                d['ens_options'] = parsed_opts
+                            d.pop('ens_xor_byte', None)
                             d.pop('txt_decode', None)
                             d.pop('a_decode', None)
                             d.pop('a_xor_key', None)
@@ -1884,6 +1966,9 @@ def attach_api_handlers(
                             d.pop('a_decode', None)
                             d.pop('a_xor_key', None)
                             d.pop('ens_text_key', None)
+                            d.pop('ens_decode', None)
+                            d.pop('ens_xor_byte', None)
+                            d.pop('ens_options', None)
                     next_names = {d.get('name', '').strip() for d in new_domains_normalized if d.get('name')}
                     removed_names = sorted(prev_names - next_names)
                     if removed_names:

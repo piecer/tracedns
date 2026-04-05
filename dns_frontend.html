@@ -65,7 +65,7 @@
   </div>
   <div id="domainSettingsSection">
     <table class="domain-table" id="domainTable">
-      <thead><tr><th>Domain</th><th>Type</th><th>TXT Decode</th><th>A Decode</th><th>A XOR Key</th><th>ENS Key</th><th></th></tr></thead>
+      <thead><tr><th>Domain</th><th>Type</th><th>TXT Decode</th><th>A Decode</th><th>A XOR Key</th><th>ENS Key</th><th>ENS Decode</th><th>ENS Options (JSON)</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
     <button id="addDomain">+ Add Domain</button>
@@ -188,6 +188,12 @@
     </label>
     <label>ENS Key
       <input id="verifyEnsTextKey" type="text" placeholder="ipv6" />
+    </label>
+    <label>ENS Decode
+      <select id="verifyEnsDecode"></select>
+    </label>
+    <label>ENS Options (JSON)
+      <input id="verifyEnsOptions" type="text" placeholder='{"xor_byte":"0xA5"}' />
     </label>
     <label style="display:flex;align-items:center;gap:8px;margin-top:30px;font-weight:700;color:#334c5e;">
       <input id="verifyIncludeVt" type="checkbox" checked style="width:auto;margin:0;" />

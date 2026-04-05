@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from a_decoder import A_DECODE_METHODS
+from ens_decoder import ENS_DECODE_METHODS, ens_options_signature
 from txt_decoder import TXT_DECODE_METHODS
 
 from .context import HttpContext
@@ -45,6 +46,9 @@ def handle_results(ctx: HttpContext, handler, qs: Dict[str, Any]) -> None:
                 'a_decodes': set(),
                 'a_xor_keys': set(),
                 'ens_text_keys': set(),
+                'ens_decodes': set(),
+                'ens_xor_bytes': set(),
+                'ens_options': set(),
             }
 
             for srv, info in m.items():
@@ -75,6 +79,20 @@ def handle_results(ctx: HttpContext, handler, qs: Dict[str, Any]) -> None:
                     if entry is not None:
                         entry['ens_text_key'] = info.get('ens_text_key')
                     agg_entry['ens_text_keys'].add(str(info.get('ens_text_key')))
+                if rtype == 'ENS' and info.get('ens_decode'):
+                    if entry is not None:
+                        entry['ens_decode'] = info.get('ens_decode')
+                    agg_entry['ens_decodes'].add(str(info.get('ens_decode')))
+                if rtype == 'ENS' and info.get('ens_xor_byte') is not None and str(info.get('ens_xor_byte')).strip() != '':
+                    if entry is not None:
+                        entry['ens_xor_byte'] = info.get('ens_xor_byte')
+                    agg_entry['ens_xor_bytes'].add(str(info.get('ens_xor_byte')))
+                if rtype == 'ENS':
+                    opts_sig = ens_options_signature(info.get('ens_options'), legacy_xor_byte=info.get('ens_xor_byte'))
+                    if opts_sig:
+                        if entry is not None:
+                            entry['ens_options'] = info.get('ens_options') if isinstance(info.get('ens_options'), dict) else opts_sig
+                        agg_entry['ens_options'].add(opts_sig)
 
                 if include_raw:
                     data[d][srv] = entry
@@ -105,7 +123,14 @@ def handle_results(ctx: HttpContext, handler, qs: Dict[str, Any]) -> None:
                     a_method += f" ({','.join(sorted(agg_entry['a_xor_keys']))})"
                 method_parts.append(a_method)
             if agg_entry['ens_text_keys']:
-                method_parts.append('ENS:' + ','.join(sorted(agg_entry['ens_text_keys'])))
+                ens_method = 'ENS:' + ','.join(sorted(agg_entry['ens_text_keys']))
+                if agg_entry['ens_decodes']:
+                    ens_method += f" / decode:{','.join(sorted(agg_entry['ens_decodes']))}"
+                if agg_entry['ens_options']:
+                    ens_method += f" / options:{'|'.join(sorted(agg_entry['ens_options']))}"
+                elif agg_entry['ens_xor_bytes']:
+                    ens_method += f" / xor:{','.join(sorted(agg_entry['ens_xor_bytes']))}"
+                method_parts.append(ens_method)
 
             data_agg[d] = {
                 'type': domain_type,
@@ -119,6 +144,9 @@ def handle_results(ctx: HttpContext, handler, qs: Dict[str, Any]) -> None:
                 'a_decodes': sorted(list(agg_entry['a_decodes'])),
                 'a_xor_keys': sorted(list(agg_entry['a_xor_keys'])),
                 'ens_text_keys': sorted(list(agg_entry['ens_text_keys'])),
+                'ens_decodes': sorted(list(agg_entry['ens_decodes'])),
+                'ens_xor_bytes': sorted(list(agg_entry['ens_xor_bytes'])),
+                'ens_options': sorted(list(agg_entry['ens_options'])),
                 'method_summary': ' / '.join(method_parts) if method_parts else '-',
             }
 
@@ -148,6 +176,7 @@ def handle_decoders(ctx: HttpContext, handler) -> None:
     try:
         names = sorted(list(TXT_DECODE_METHODS.keys()))
         a_names = sorted(list(A_DECODE_METHODS.keys()))
+        ens_names = sorted(list(ENS_DECODE_METHODS.keys()))
         txt_custom = list(ctx.shared_config.get('custom_decoders', []) or [])
         a_custom = list(ctx.shared_config.get('custom_a_decoders', []) or [])
         custom_all = []
@@ -169,6 +198,7 @@ def handle_decoders(ctx: HttpContext, handler) -> None:
             'custom_a': a_custom,
             'custom_all': custom_all,
             'a_decoders': a_names,
+            'ens_decoders': ens_names,
         })
     except Exception as e:
         send_json(handler, {'error': str(e)}, 500)

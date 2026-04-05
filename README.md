@@ -7,7 +7,7 @@ A lightweight DNS monitoring toolkit for extracting indicators from TXT records 
 - Monitor domains' DNS TXT/A records and ENS text records for C2-style IP indicators.
 - Multiple built-in TXT decoders (base64, xor variants, BTEA variants, plain IP extraction, etc.).
 - Optional A-record post-processing method (`xor32_ipv4`) with user-supplied XOR key.
-- ENS monitoring: set domain type to `ENS` in Settings, provide `ENS RPC URL`, and optional per-domain `ENS Key` (default `ipv6`).
+- ENS monitoring: set domain type to `ENS` in Settings, provide `ENS RPC URL`, and optional per-domain `ENS Key` (default `ipv6`) + `ENS Decode` method.
 - Register, preview, edit and delete safe custom decoders from the web UI; custom decoders persist in `dns_config.json`.
 - Alerts: Teams webhook and MISP integration for newly discovered IPs.
 - Dashboard UI showing unique IPs and optional VirusTotal lookup (store VT API key in settings).
@@ -93,7 +93,7 @@ Custom decoders use a constrained, validated list of steps (no arbitrary code ex
 
 ## ENS Text Record Decoder Helper
 
-Use `ens_ipv6_decoder.py` to read an ENS text record (default key: `ipv6`) via an Ethereum RPC endpoint and decode fake IPv6 values into IPv4s.
+Use `ens_ipv6_decoder.py` to read an ENS text record (default key: `ipv6`) via an Ethereum RPC endpoint and decode values into IPv4s with selectable ENS decode methods.
 
 ```bash
 python3 ens_ipv6_decoder.py --rpc https://<mainnet-rpc>
@@ -103,6 +103,9 @@ Optional flags:
 
 - `ens_name` positional arg (default: `ukranianhorseriding.eth`)
 - `--key <text-key>` to read another ENS text key
+- `--decode-method <method>` to choose ENS decode method (default: `ipv6_5to8_xor`)
+- `--ens-options <json>` decoder options JSON object (ex: `{"xor_byte":"0xA5"}`)
+- `--xor-byte <byte>` legacy shortcut (mapped to `ens_options.xor_byte` when `--ens-options` is not set)
 - `--raw-only` to print only raw ENS text
 
 ## Contributing

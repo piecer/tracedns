@@ -150,7 +150,18 @@ def run_domain_cycle(
 
             if status == 'error':
                 fail_count = mark_query_failure(query_fail_counts, fail_key)
-                logger.warning("DNS %s query failed for %s (%s) (consecutive=%s)", srv, name, rtype, fail_count)
+                err_msg = str(getattr(collected.query, 'error', '') or '').strip()
+                if err_msg:
+                    logger.warning(
+                        "DNS %s query failed for %s (%s) (consecutive=%s) reason=%s",
+                        srv,
+                        name,
+                        rtype,
+                        fail_count,
+                        err_msg,
+                    )
+                else:
+                    logger.warning("DNS %s query failed for %s (%s) (consecutive=%s)", srv, name, rtype, fail_count)
                 # Drop stale snapshot after consecutive failures.
                 if fail_count >= 3:
                     ts_fail = int(time.time())

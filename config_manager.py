@@ -7,6 +7,23 @@ import json
 import logging
 
 
+def _parse_json_object(value):
+    """Best-effort parse for JSON-object style settings fields."""
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            obj = json.loads(s)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            return None
+    return None
+
+
 def read_config(path):
     """
     Read a JSON config file and return as a dict.
@@ -54,9 +71,11 @@ def normalize_domains(value):
       [{ 'name': 'example.com', 'type': 'A',
          'txt_decode': 'cafebabe_xor_base64',
          'a_decode': 'xor32_ipv4', 'a_xor_key': 'E7708E59',
-         'ens_text_key': 'ipv6' }, ...]
+         'ens_text_key': 'ipv6', 'ens_decode': 'ipv6_5to8_xor',
+         'ens_options': {'xor_byte': '0xA5'} }, ...]
     Accepts strings, lists, or dicts. If an item is a dict and contains
-    `txt_decode` / `a_decode` / `a_xor_key` / `ens_text_key` fields are preserved.
+    `txt_decode` / `a_decode` / `a_xor_key` / `ens_text_key` /
+    `ens_decode` / `ens_options` fields are preserved.
 
     Args:
         value: domain information (string, list, or dict)
@@ -79,6 +98,11 @@ def normalize_domains(value):
             a_decode = it.get('a_decode')
             a_xor_key = it.get('a_xor_key')
             ens_text_key = it.get('ens_text_key')
+            ens_decode = it.get('ens_decode')
+            ens_xor_byte = it.get('ens_xor_byte')
+            ens_options = _parse_json_object(it.get('ens_options'))
+            if ens_options is None and ens_xor_byte is not None and str(ens_xor_byte).strip() != '':
+                ens_options = {'xor_byte': str(ens_xor_byte).strip()}
         else:
             s = str(it)
             # split comma/newline
@@ -89,6 +113,9 @@ def normalize_domains(value):
                 typ = 'A'
                 txt_decode = None
                 ens_text_key = None
+                ens_decode = None
+                ens_xor_byte = None
+                ens_options = None
                 if name and name not in seen:
                     out.append({'name': name, 'type': typ})
                     seen.add(name)
@@ -102,8 +129,16 @@ def normalize_domains(value):
             d['a_decode'] = str(a_decode).strip()
         if a_xor_key is not None and str(a_xor_key).strip() != '':
             d['a_xor_key'] = str(a_xor_key).strip()
-        if ens_text_key is not None and str(ens_text_key).strip() != '':
-            d['ens_text_key'] = str(ens_text_key).strip()
+        if typ == 'ENS':
+            if ens_text_key is not None and str(ens_text_key).strip() != '':
+                d['ens_text_key'] = str(ens_text_key).strip()
+            if ens_decode is not None and str(ens_decode).strip() != '':
+                d['ens_decode'] = str(ens_decode).strip()
+            if isinstance(ens_options, dict) and ens_options:
+                d['ens_options'] = ens_options
+            elif ens_xor_byte is not None and str(ens_xor_byte).strip() != '':
+                # legacy fallback for old config entries
+                d['ens_options'] = {'xor_byte': str(ens_xor_byte).strip()}
         out.append(d)
         seen.add(name)
     return out

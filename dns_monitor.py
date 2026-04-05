@@ -20,13 +20,78 @@ from alerts import init_from_config as alerts_init
 from config_manager import normalize_domains, read_config
 from history_manager import ensure_history_dir, load_history_files
 from http_server import ThreadingHTTPServer, make_handler
-from monitor.engine import reconcile_removed_ips, run_full_cycle
+from monitor.engine import (
+    clear_query_failure as _clear_query_failure_impl,
+    drop_snapshot_for_failed_target as _drop_snapshot_for_failed_target_impl,
+    mark_query_failure as _mark_query_failure_impl,
+    reconcile_removed_ips,
+    run_full_cycle,
+)
+from monitor.lifecycle import update_nxdomain_lifecycle as _update_nxdomain_lifecycle_impl
 from monitor.state_utils import collect_active_ip_map
 from monitor.stores import ConfigStore
 from txt_decoder import register_custom_decoder
 
 
 logger = logging.getLogger(__name__)
+
+
+# Compatibility wrappers for legacy tests/imports.
+def _mark_query_failure(fail_counts, key):
+    return _mark_query_failure_impl(fail_counts, key)
+
+
+def _clear_query_failure(fail_counts, key):
+    return _clear_query_failure_impl(fail_counts, key)
+
+
+def _drop_snapshot_for_failed_target(current_results, history, name, srv, ts=None):
+    return _drop_snapshot_for_failed_target_impl(current_results, history, name, srv, ts=ts)
+
+
+def _update_nxdomain_lifecycle(history, name, query_total, success_count, nxdomain_count, error_count, ts_now):
+    return _update_nxdomain_lifecycle_impl(
+        history,
+        name,
+        query_total=query_total,
+        success_count=success_count,
+        nxdomain_count=nxdomain_count,
+        error_count=error_count,
+        ts_now=ts_now,
+    )
+
+
+def _build_initial_new_ip_tuples(rtype, domain, values=None, decoded_ips=None):
+    if not domain:
+        return []
+    r = str(rtype or '').upper()
+    if r in ('TXT', 'ENS'):
+        ips = sorted(set(decoded_ips or []))
+    elif r == 'A':
+        ips = sorted(set(values or []))
+    else:
+        ips = []
+    return [(ip, domain, r) for ip in ips if str(ip or '').strip()]
+
+
+def _build_changed_new_ip_tuples(
+    rtype,
+    domain,
+    prev_values=None,
+    new_values=None,
+    prev_decoded_ips=None,
+    new_decoded_ips=None,
+):
+    if not domain:
+        return []
+    r = str(rtype or '').upper()
+    if r in ('TXT', 'ENS'):
+        added = sorted(set(new_decoded_ips or []) - set(prev_decoded_ips or []))
+    elif r == 'A':
+        added = sorted(set(new_values or []) - set(prev_values or []))
+    else:
+        added = []
+    return [(ip, domain, r) for ip in added if str(ip or '').strip()]
 
 
 def _setup_logging():
@@ -205,6 +270,12 @@ def main():
                     restored['a_xor_key'] = snap.get('a_xor_key')
                 if snap.get('ens_text_key'):
                     restored['ens_text_key'] = snap.get('ens_text_key')
+                if snap.get('ens_decode'):
+                    restored['ens_decode'] = snap.get('ens_decode')
+                if snap.get('ens_xor_byte') is not None and str(snap.get('ens_xor_byte')).strip() != '':
+                    restored['ens_xor_byte'] = snap.get('ens_xor_byte')
+                if isinstance(snap.get('ens_options'), dict) and snap.get('ens_options'):
+                    restored['ens_options'] = snap.get('ens_options')
                 current_results[domain][srv] = restored
 
     configured_names = {d.get('name', '').strip() for d in normalize_domains(shared_config.get('domains', [])) if isinstance(d, dict) and d.get('name')}

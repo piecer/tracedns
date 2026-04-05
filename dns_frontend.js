@@ -245,9 +245,33 @@ function includeOption(selectEl, value){
   return !!Array.from((selectEl && selectEl.options) || []).find(o=>o.value === value);
 }
 
+function parseJsonObjectInput(rawText, fieldName){
+  const raw = String(rawText || '').trim();
+  if(!raw) return {ok: true, value: null};
+  try{
+    const parsed = JSON.parse(raw);
+    if(!parsed || typeof parsed !== 'object' || Array.isArray(parsed)){
+      return {ok: false, error: `${fieldName} must be a JSON object`};
+    }
+    return {ok: true, value: parsed};
+  }catch(e){
+    return {ok: false, error: `${fieldName} must be valid JSON (${e})`};
+  }
+}
+
+function formatJsonObjectCompact(value){
+  if(!value || typeof value !== 'object' || Array.isArray(value)) return '';
+  try{
+    return JSON.stringify(value);
+  }catch(e){
+    return '';
+  }
+}
+
 function syncDomainVerifyDecoderOptions(){
   const txtFallback = ['cafebabe_xor_base64','plain_base64','btea_variant','xor_ipstring_base64_fixedkey'];
   const aFallback = ['none','xor32_ipv4'];
+  const ensFallback = ['ipv6_5to8_xor'];
   const txtNames = buildDecoderNameList(
     (window.DECODERS && window.DECODERS.length) ? window.DECODERS : txtFallback,
     (window.CUSTOM_DECODERS || []).filter(c => String((c && c.decoder_type) || 'TXT').toUpperCase() === 'TXT'),
@@ -259,12 +283,20 @@ function syncDomainVerifyDecoderOptions(){
     false
   );
   const aNames = ['none'].concat(aNamesRaw.filter(x=>x !== 'none'));
+  const ensNames = buildDecoderNameList(
+    (window.ENS_DECODERS && window.ENS_DECODERS.length) ? window.ENS_DECODERS : ensFallback,
+    [],
+    false
+  );
 
   const txtSel = document.getElementById('verifyTxtDecode');
   const aSel = document.getElementById('verifyADecode');
+  const ensSel = document.getElementById('verifyEnsDecode');
   fillSelectWithOptions(txtSel, txtNames, (txtSel || {}).value || 'cafebabe_xor_base64');
   fillSelectWithOptions(aSel, aNames, (aSel || {}).value || 'none');
+  fillSelectWithOptions(ensSel, ensNames, (ensSel || {}).value || 'ipv6_5to8_xor');
   if(aSel && !aSel.value) aSel.value = 'none';
+  if(ensSel && !ensSel.value) ensSel.value = 'ipv6_5to8_xor';
 }
 
 function updateDomainVerifyInputMode(){
@@ -273,7 +305,9 @@ function updateDomainVerifyInputMode(){
   const aEl = document.getElementById('verifyADecode');
   const xorEl = document.getElementById('verifyAXorKey');
   const ensKeyEl = document.getElementById('verifyEnsTextKey');
-  if(!typeEl || !txtEl || !aEl || !xorEl || !ensKeyEl) return;
+  const ensDecodeEl = document.getElementById('verifyEnsDecode');
+  const ensOptionsEl = document.getElementById('verifyEnsOptions');
+  if(!typeEl || !txtEl || !aEl || !xorEl || !ensKeyEl || !ensDecodeEl || !ensOptionsEl) return;
   const t = String(typeEl.value || 'AUTO').toUpperCase();
   const isAOnly = t === 'A';
   const isTxtOnly = t === 'TXT';
@@ -282,6 +316,8 @@ function updateDomainVerifyInputMode(){
   aEl.disabled = isTxtOnly || isEnsOnly;
   xorEl.disabled = isTxtOnly || isEnsOnly;
   ensKeyEl.disabled = !isEnsOnly;
+  ensDecodeEl.disabled = !isEnsOnly;
+  ensOptionsEl.disabled = !isEnsOnly;
 }
 
 function initDomainVerifyUi(){
@@ -335,6 +371,7 @@ function renderDomainVerifyServerTable(result){
   }
   rows.forEach(row=>{
     const tr = document.createElement('tr');
+    const rowErr = String((row && row.error) || '').trim();
     const tdSrv = document.createElement('td');
     tdSrv.textContent = row.server || '-';
     const tdType = document.createElement('td');
@@ -343,6 +380,7 @@ function renderDomainVerifyServerTable(result){
     const statusBadge = document.createElement('span');
     statusBadge.className = `verify-status-badge ${toVerifyStatusClass(row.status)}`;
     statusBadge.textContent = String(row.status || 'error').toUpperCase();
+    if(rowErr) statusBadge.title = rowErr;
     tdStatus.appendChild(statusBadge);
     const tdVals = document.createElement('td');
     tdVals.className = 'wrap-cell';
@@ -353,8 +391,15 @@ function renderDomainVerifyServerTable(result){
     renderCellWithClickableIps(tdManaged, Array.isArray(row.managed_ips) ? row.managed_ips : [], formatListPreview(row.managed_ips || [], 4), 6);
     const tdMethod = document.createElement('td');
     tdMethod.className = 'wrap-cell';
-    tdMethod.textContent = row.method || '-';
-    tdMethod.title = row.method || '-';
+    if(rowErr){
+      tdMethod.textContent = `${row.method || '-'} | ERROR`;
+      tdMethod.title = `${row.method || '-'}\n${rowErr}`;
+      tdMethod.style.color = '#8b1f1f';
+      tdMethod.style.fontWeight = '700';
+    } else {
+      tdMethod.textContent = row.method || '-';
+      tdMethod.title = row.method || '-';
+    }
     tr.appendChild(tdSrv);
     tr.appendChild(tdType);
     tr.appendChild(tdStatus);
@@ -537,6 +582,17 @@ async function runDomainVerify(){
   const aDecode = String((document.getElementById('verifyADecode') || {}).value || 'none').trim();
   const aXorKey = String((document.getElementById('verifyAXorKey') || {}).value || '').trim();
   const ensTextKey = String((document.getElementById('verifyEnsTextKey') || {}).value || '').trim();
+  const ensDecode = String((document.getElementById('verifyEnsDecode') || {}).value || 'ipv6_5to8_xor').trim();
+  const ensOptionsRaw = String((document.getElementById('verifyEnsOptions') || {}).value || '').trim();
+  let ensOptions = null;
+  if(type === 'ENS'){
+    const parsedEnsOptions = parseJsonObjectInput(ensOptionsRaw, 'ENS options');
+    if(!parsedEnsOptions.ok){
+      setDomainVerifyStatus(parsedEnsOptions.error, 'err');
+      return;
+    }
+    ensOptions = parsedEnsOptions.value;
+  }
   const includeVt = !!((document.getElementById('verifyIncludeVt') || {}).checked);
   const analyzeDecoders = !!((document.getElementById('verifyAnalyzeDecoders') || {}).checked);
   const decoderTopN = parseBoundedInt((document.getElementById('verifyDecoderTopN') || {}).value, 8, 1, 50);
@@ -555,6 +611,8 @@ async function runDomainVerify(){
         a_decode: aDecode,
         a_xor_key: aXorKey,
         ens_text_key: ensTextKey,
+        ens_decode: ensDecode,
+        ens_options: ensOptions,
         include_vt: includeVt,
         analyze_decoders: analyzeDecoders,
         decoder_top_n: decoderTopN,
@@ -1838,6 +1896,7 @@ async function saveAlertSettings(){
 // Global decoder cache
 window.DECODERS = [];
 window.A_DECODERS = [];
+window.ENS_DECODERS = [];
 window.CUSTOM_DECODERS = [];
 window.CUSTOM_A_DECODERS = [];
 
@@ -1855,6 +1914,7 @@ async function loadDecoders(){
         window.CUSTOM_A_DECODERS = j.custom_all.filter(x => String((x && x.decoder_type) || '').toUpperCase() === 'A');
       }
       window.A_DECODERS = Array.isArray(j.a_decoders) ? j.a_decoders : [];
+      window.ENS_DECODERS = Array.isArray(j.ens_decoders) ? j.ens_decoders : [];
     }
   }catch(e){ /* ignore */ }
 }
@@ -1940,6 +2000,44 @@ function addDomainRow(obj){
   inpEnsKey.value = (obj && obj.ens_text_key) ? obj.ens_text_key : '';
   tdEnsKey.appendChild(inpEnsKey);
 
+  // ENS decode select
+  const tdEnsDecode = document.createElement('td');
+  const selEnsDecode = document.createElement('select');
+  selEnsDecode.className = 'ens-decode';
+  const FALLBACK_ENS_DECODERS = ['ipv6_5to8_xor', 'legacy_doc_sample', 'none'];
+  const ensDecsRaw = (window.ENS_DECODERS && window.ENS_DECODERS.length) ? window.ENS_DECODERS.slice() : FALLBACK_ENS_DECODERS.slice();
+  const ensDecs = Array.from(new Set(ensDecsRaw.filter(Boolean)));
+  if(obj && obj.ens_decode && !ensDecs.includes(obj.ens_decode)){
+    ensDecs.push(obj.ens_decode);
+  }
+  ensDecs.forEach(t=>{
+    const o = document.createElement('option');
+    o.value = t;
+    o.text = (t === 'none') ? 'None' : t;
+    selEnsDecode.appendChild(o);
+  });
+  if(obj && obj.ens_decode && ensDecs.includes(obj.ens_decode)){
+    selEnsDecode.value = obj.ens_decode;
+  } else if(ensDecs.includes('ipv6_5to8_xor')){
+    selEnsDecode.value = 'ipv6_5to8_xor';
+  }
+  tdEnsDecode.appendChild(selEnsDecode);
+
+  // ENS options JSON input
+  const tdEnsOptions = document.createElement('td');
+  const inpEnsOptions = document.createElement('input');
+  inpEnsOptions.type = 'text';
+  inpEnsOptions.className = 'ens-options';
+  inpEnsOptions.placeholder = '{"xor_byte":"0xA5"}';
+  let ensOptionsText = '';
+  if(obj && obj.ens_options && typeof obj.ens_options === 'object' && !Array.isArray(obj.ens_options)){
+    ensOptionsText = formatJsonObjectCompact(obj.ens_options);
+  } else if(obj && obj.ens_xor_byte){
+    ensOptionsText = formatJsonObjectCompact({xor_byte: obj.ens_xor_byte});
+  }
+  inpEnsOptions.value = ensOptionsText;
+  tdEnsOptions.appendChild(inpEnsOptions);
+
   // Toggle decoder fields by record type
   const toggleDecodeInputs = function(){
     const typ = (sel.value || 'A').toUpperCase();
@@ -1950,6 +2048,8 @@ function addDomainRow(obj){
     selADecode.disabled = !isA;
     inpAKey.disabled = !isA;
     inpEnsKey.disabled = !isENS;
+    selEnsDecode.disabled = !isENS;
+    inpEnsOptions.disabled = !isENS;
   };
   sel.onchange = toggleDecodeInputs;
   toggleDecodeInputs();
@@ -1962,14 +2062,14 @@ function addDomainRow(obj){
     tr.remove();
     uiOverview.configured = document.querySelectorAll('#domainTable tbody tr').length;
     updateOverviewPanel();
-    // 자동으로 저장
-    const payload = {
-      domains: collectDomainsFromUI(),
-      servers: document.getElementById('servers').value.split(',').map(s=>s.trim()).filter(Boolean),
-      interval: parseInt(document.getElementById('interval').value) || 60,
-      ens_rpc_url: ((document.getElementById('ensRpcUrl') || {}).value || '').trim()
-    };
     try{
+      // 자동으로 저장
+      const payload = {
+        domains: collectDomainsFromUI(),
+        servers: document.getElementById('servers').value.split(',').map(s=>s.trim()).filter(Boolean),
+        interval: parseInt(document.getElementById('interval').value) || 60,
+        ens_rpc_url: ((document.getElementById('ensRpcUrl') || {}).value || '').trim()
+      };
       const r = await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
       const j = await r.json();
       log('Removed domain and saved');
@@ -1984,6 +2084,8 @@ function addDomainRow(obj){
   tr.appendChild(tdADecode);
   tr.appendChild(tdAKey);
   tr.appendChild(tdEnsKey);
+  tr.appendChild(tdEnsDecode);
+  tr.appendChild(tdEnsOptions);
   tr.appendChild(tdBtn);
   tbody.appendChild(tr);
   uiOverview.configured = document.querySelectorAll('#domainTable tbody tr').length;
@@ -2046,6 +2148,8 @@ function collectDomainsFromUI(){
     const a_decode = ((r.querySelector('.a-decode') || {}).value || 'none').trim();
     const a_xor_key = ((r.querySelector('.a-xor-key') || {}).value || '').trim();
     const ens_text_key = ((r.querySelector('.ens-text-key') || {}).value || '').trim();
+    const ens_decode = ((r.querySelector('.ens-decode') || {}).value || 'ipv6_5to8_xor').trim();
+    const ens_options_raw = ((r.querySelector('.ens-options') || {}).value || '').trim();
     if(name) {
       const obj = {name: name, type: typ};
       if(typ === 'TXT'){
@@ -2059,6 +2163,15 @@ function collectDomainsFromUI(){
         }
       } else if(typ === 'ENS'){
         if(ens_text_key) obj.ens_text_key = ens_text_key;
+        if(ens_decode) obj.ens_decode = ens_decode;
+        const parsed = parseJsonObjectInput(ens_options_raw, `ENS options (${name})`);
+        if(!parsed.ok){
+          throw new Error(parsed.error);
+        }
+        if(parsed.value){
+          if(!obj.ens_decode) obj.ens_decode = 'ipv6_5to8_xor';
+          obj.ens_options = parsed.value;
+        }
       }
       out.push(obj);
     }
@@ -2094,15 +2207,15 @@ async function loadCfg(){
 document.getElementById('load').onclick = loadCfg;
 
 document.getElementById('save').onclick = async ()=>{
-  const payload = {
-    domains: collectDomainsFromUI(),
-    servers: document.getElementById('servers').value.split(',').map(s=>s.trim()).filter(Boolean),
-    interval: parseInt(document.getElementById('interval').value) || 60,
-    ens_rpc_url: ((document.getElementById('ensRpcUrl') || {}).value || '').trim()
-  };
-  uiOverview.configured = payload.domains.length;
-  updateOverviewPanel();
   try{
+    const payload = {
+      domains: collectDomainsFromUI(),
+      servers: document.getElementById('servers').value.split(',').map(s=>s.trim()).filter(Boolean),
+      interval: parseInt(document.getElementById('interval').value) || 60,
+      ens_rpc_url: ((document.getElementById('ensRpcUrl') || {}).value || '').trim()
+    };
+    uiOverview.configured = payload.domains.length;
+    updateOverviewPanel();
     const r = await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     const j = await r.json();
     log('Saved: ' + JSON.stringify(j));
@@ -2110,8 +2223,8 @@ document.getElementById('save').onclick = async ()=>{
 };
 
 document.getElementById('force').onclick = async ()=>{
-  const domains = collectDomainsFromUI();
   try{
+    const domains = collectDomainsFromUI();
     const r = await fetch('/resolve', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({domains: domains})});
     const j = await r.json();
     log('Force requested: '+JSON.stringify(j));
@@ -2120,10 +2233,10 @@ document.getElementById('force').onclick = async ()=>{
 };
 
 document.getElementById('verifyBtn').onclick = async ()=>{
-  const domains = collectDomainsFromUI();
   const el = document.getElementById('verifyResult');
   el.textContent = 'Running verify...';
   try{
+    const domains = collectDomainsFromUI();
     const r = await fetch('/verify', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({domains: domains})});
     if(!r.ok){ el.textContent = 'Verify request failed: '+r.status; return; }
     const j = await r.json();
@@ -2906,13 +3019,17 @@ window.addEventListener('load', ()=>{
       const aEl = document.getElementById('verifyADecode');
       const keyEl = document.getElementById('verifyAXorKey');
       const ensKeyEl = document.getElementById('verifyEnsTextKey');
+      const ensDecodeEl = document.getElementById('verifyEnsDecode');
+      const ensOptionsEl = document.getElementById('verifyEnsOptions');
       const includeVtEl = document.getElementById('verifyIncludeVt');
       if(domainEl) domainEl.value = '';
       if(typeEl) typeEl.value = 'AUTO';
       if(txtEl && includeOption(txtEl, 'cafebabe_xor_base64')) txtEl.value = 'cafebabe_xor_base64';
       if(aEl && includeOption(aEl, 'none')) aEl.value = 'none';
       if(keyEl) keyEl.value = '';
-      if(ensKeyEl) ensKeyEl.value = '';
+      if(ensKeyEl) ensKeyEl.value = 'ipv6';
+      if(ensDecodeEl && includeOption(ensDecodeEl, 'ipv6_5to8_xor')) ensDecodeEl.value = 'ipv6_5to8_xor';
+      if(ensOptionsEl) ensOptionsEl.value = '';
       if(includeVtEl) includeVtEl.checked = true;
       updateDomainVerifyInputMode();
       clearDomainVerifyResult();
