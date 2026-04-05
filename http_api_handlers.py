@@ -1041,6 +1041,49 @@ def attach_api_handlers(
                 if any(n in ltxt for n in needles):
                     return {'csp': csp_id, 'csp_label': label, 'csp_major': bool(major)}
             return {'csp': 'other', 'csp_label': 'Other/Unknown', 'csp_major': False}
+
+        def _extract_vt_attrs(rep):
+            if not isinstance(rep, dict):
+                return {}
+            raw = rep.get('raw')
+            if not isinstance(raw, dict):
+                return {}
+            data = raw.get('data')
+            if not isinstance(data, dict):
+                return {}
+            attrs = data.get('attributes')
+            return attrs if isinstance(attrs, dict) else {}
+
+        def _normalize_hash(value):
+            s = str(value or '').strip().lower()
+            if not s:
+                return ''
+            return _re.sub(r'[^0-9a-f]', '', s)
+
+        def _short_hash(value, head=10, tail=6):
+            s = str(value or '').strip()
+            if len(s) <= (head + tail + 2):
+                return s or '-'
+            return f"{s[:head]}..{s[-tail:]}"
+
+        def _ipv4_prefix24(ip):
+            s = str(ip or '').strip()
+            if ':' in s:
+                return None
+            parts = s.split('.')
+            if len(parts) != 4:
+                return None
+            return f"{parts[0]}.{parts[1]}.{parts[2]}.0/24"
+
+        def _counter_inc(counter, key):
+            if not key:
+                return
+            counter[key] = counter.get(key, 0) + 1
+
+        def _counter_top(counter):
+            if not counter:
+                return (None, 0)
+            return max(counter.items(), key=lambda kv: (int(kv[1] or 0), str(kv[0])))
     
         tokens = []
         if isinstance(raw_ips, str):
@@ -1096,6 +1139,15 @@ def attach_api_handlers(
         country_map = {}
         as_country_map = {}
         csp_map = {}
+        network_counter = {}
+        prefix24_counter = {}
+        jarm_counter = {}
+        cert_counter = {}
+        rdap_name_counter = {}
+        rir_counter = {}
+        positive_engine_counter = {}
+        vt_attrs_count = 0
+        positive_engine_rows = 0
         vt_missing_count = 0
         vt_lookup_attempted = 0
         vt_budget_limited = False
@@ -1170,7 +1222,7 @@ def attach_api_handlers(
                 malicious = int(rep.get('malicious', 0) or 0) if isinstance(rep, dict) else 0
                 suspicious = int(rep.get('suspicious', 0) or 0) if isinstance(rep, dict) else 0
                 csp_info = _classify_csp(as_owner)
-    
+
                 row = {
                     'ip': ip,
                     'asn': str(asn) if asn is not None else '-',
@@ -1194,6 +1246,50 @@ def attach_api_handlers(
                 # Summaries are based on entries with at least one VT context field.
                 if not isinstance(rep, dict):
                     continue
+
+                vt_attrs_count += 1
+                attrs = _extract_vt_attrs(rep)
+                network = str(attrs.get('network') or '').strip()
+                jarm = _normalize_hash(attrs.get('jarm'))
+                cert_sha256 = ''
+                cert_obj = attrs.get('last_https_certificate')
+                if isinstance(cert_obj, dict):
+                    cert_sha256 = _normalize_hash(cert_obj.get('thumbprint_sha256'))
+                rir = str(attrs.get('regional_internet_registry') or '').strip().upper()
+                rdap = attrs.get('rdap')
+                rdap_name = ''
+                if isinstance(rdap, dict):
+                    rdap_name = str(rdap.get('name') or '').strip()
+                p24 = _ipv4_prefix24(ip)
+                if p24:
+                    _counter_inc(prefix24_counter, p24)
+                if network and network not in ('-', 'N/A'):
+                    _counter_inc(network_counter, network)
+                if jarm:
+                    _counter_inc(jarm_counter, jarm)
+                if cert_sha256:
+                    _counter_inc(cert_counter, cert_sha256)
+                if rdap_name and rdap_name not in ('-', 'N/A'):
+                    _counter_inc(rdap_name_counter, rdap_name)
+                if rir and rir not in ('-', 'N/A'):
+                    _counter_inc(rir_counter, rir)
+
+                lar = attrs.get('last_analysis_results')
+                if isinstance(lar, dict):
+                    row_positive_engines = set()
+                    for eng_name, eng_obj in lar.items():
+                        if not isinstance(eng_obj, dict):
+                            continue
+                        cat = str(eng_obj.get('category') or '').strip().lower()
+                        if cat in ('malicious', 'suspicious'):
+                            eng_key = str(eng_name or '').strip()
+                            if eng_key:
+                                row_positive_engines.add(eng_key)
+                    if row_positive_engines:
+                        positive_engine_rows += 1
+                        for eng_key in row_positive_engines:
+                            _counter_inc(positive_engine_counter, eng_key)
+
                 asn_key = str(asn) if asn is not None else 'N/A'
                 owner_key = str(as_owner) if as_owner else '-'
                 country_key = str(country) if country else 'N/A'
@@ -1315,9 +1411,12 @@ def attach_api_handlers(
         csp_summary.sort(key=lambda x: (-x['ip_count'], -x['malicious_ips'], (0 if x.get('csp_major') else 1), x['csp_label']))
     
         hints = []
-    
-        def _add_hint(level, title, detail):
-            hints.append({'level': level, 'title': title, 'detail': detail})
+
+        def _add_hint(level, title, detail, signal=None):
+            item = {'level': level, 'title': title, 'detail': detail}
+            if signal:
+                item['signal'] = signal
+            hints.append(item)
     
         valid_count = len(valid_ips)
         if valid_count == 0:
@@ -1382,12 +1481,54 @@ def attach_api_handlers(
                     major_total = sum(int(x.get('ip_count', 0) or 0) for x in major_csp_entries)
                     major_ratio = major_total / max(1, known_n)
                     if major_ratio >= 0.40:
-                        _add_hint('warn', 'Major CSP Footprint', f'{major_total}/{known_n} enriched IPs are on major CSP infrastructure. Scope blocking carefully.')
+                        _add_hint('warn', 'Major CSP Footprint', f'{major_total}/{known_n} enriched IPs are on major CSP infrastructure. Scope blocking carefully.', signal='csp_major')
                     else:
-                        _add_hint('info', 'CSP Footprint', f'{major_total}/{known_n} enriched IPs map to major CSP providers.')
+                        _add_hint('info', 'CSP Footprint', f'{major_total}/{known_n} enriched IPs map to major CSP providers.', signal='csp_major')
             else:
                 if include_vt and not vt_unavailable_reason:
                     _add_hint('warn', 'Limited Context', 'No ASN/Country fields available to profile infrastructure.')
+
+            if vt_attrs_count > 0:
+                top_network, top_network_count = _counter_top(network_counter)
+                if top_network and top_network_count >= 3:
+                    top_network_ratio = top_network_count / max(1, vt_attrs_count)
+                    if top_network_ratio >= 0.50:
+                        _add_hint('high', 'Network Block Concentration', f'{top_network_count}/{vt_attrs_count} VT-enriched IPs share network {top_network}.', signal='network')
+                    else:
+                        _add_hint('mid', 'Shared Network Block', f'{top_network_count}/{vt_attrs_count} VT-enriched IPs share network {top_network}.', signal='network')
+
+                top_p24, top_p24_count = _counter_top(prefix24_counter)
+                if top_p24 and top_p24_count >= 3:
+                    p24_ratio = top_p24_count / max(1, len(valid_ips))
+                    if p24_ratio >= 0.35:
+                        _add_hint('mid', 'Prefix Reuse', f'{top_p24_count}/{len(valid_ips)} valid IPs fall in {top_p24}.', signal='prefix24')
+
+                top_jarm, top_jarm_count = _counter_top(jarm_counter)
+                if top_jarm and top_jarm_count >= 3:
+                    _add_hint('high', 'TLS Fingerprint Reuse', f'{top_jarm_count} IPs share JARM {_short_hash(top_jarm)}.', signal='jarm')
+                elif top_jarm and top_jarm_count == 2:
+                    _add_hint('mid', 'TLS Fingerprint Reuse', f'2 IPs share JARM {_short_hash(top_jarm)}.', signal='jarm')
+
+                top_cert, top_cert_count = _counter_top(cert_counter)
+                if top_cert and top_cert_count >= 2:
+                    level = 'high' if top_cert_count >= 3 else 'mid'
+                    _add_hint(level, 'Certificate Reuse', f'{top_cert_count} IPs share certificate SHA256 {_short_hash(top_cert)}.', signal='cert_sha256')
+
+                top_rdap_name, top_rdap_count = _counter_top(rdap_name_counter)
+                if top_rdap_name and top_rdap_count >= 3:
+                    _add_hint('mid', 'Shared RDAP Entity', f'{top_rdap_count} IPs map to RDAP name "{top_rdap_name}".', signal='rdap_name')
+
+                top_rir, top_rir_count = _counter_top(rir_counter)
+                if top_rir and top_rir_count >= 4:
+                    rir_ratio = top_rir_count / max(1, vt_attrs_count)
+                    if rir_ratio >= 0.70:
+                        _add_hint('mid', 'RIR Concentration', f'{top_rir_count}/{vt_attrs_count} VT-enriched IPs are in {top_rir}.', signal='rir')
+
+                top_engine, top_engine_count = _counter_top(positive_engine_counter)
+                if top_engine and positive_engine_rows >= 3:
+                    engine_ratio = top_engine_count / max(1, positive_engine_rows)
+                    if engine_ratio >= 0.50:
+                        _add_hint('info', 'Detector Consensus', f'Engine "{top_engine}" flags {top_engine_count}/{positive_engine_rows} positive-engine IPs.', signal='vt_engine')
     
         if vt_enabled and vt_budget_limited:
             _add_hint('warn', 'VT Lookup Budget Applied', f'Live VT lookups were limited to {vt_lookup_budget}; remaining IPs were processed in cache-only mode.')
@@ -1412,6 +1553,25 @@ def attach_api_handlers(
             _add_hint('info', 'Country Summary Limited', f'Country summary output is limited to top {len(shown_country_summary)} rows.')
         if as_country_summary_total > len(shown_as_country_summary):
             _add_hint('info', 'AS×Country Summary Limited', f'AS×Country summary output is limited to top {len(shown_as_country_summary)} rows.')
+
+        top_network, top_network_count = _counter_top(network_counter)
+        top_p24, top_p24_count = _counter_top(prefix24_counter)
+        top_jarm, top_jarm_count = _counter_top(jarm_counter)
+        top_cert, top_cert_count = _counter_top(cert_counter)
+        top_rdap, top_rdap_count = _counter_top(rdap_name_counter)
+        top_rir, top_rir_count = _counter_top(rir_counter)
+        top_engine, top_engine_count = _counter_top(positive_engine_counter)
+
+        characteristics = {
+            'vt_enriched_count': int(vt_attrs_count),
+            'network': {'value': top_network, 'count': int(top_network_count)},
+            'prefix24': {'value': top_p24, 'count': int(top_p24_count)},
+            'jarm': {'value': _short_hash(top_jarm) if top_jarm else None, 'count': int(top_jarm_count)},
+            'cert_sha256': {'value': _short_hash(top_cert) if top_cert else None, 'count': int(top_cert_count)},
+            'rdap_name': {'value': top_rdap, 'count': int(top_rdap_count)},
+            'rir': {'value': top_rir, 'count': int(top_rir_count)},
+            'vt_engine': {'value': top_engine, 'count': int(top_engine_count), 'rows': int(positive_engine_rows)},
+        }
     
         return self._send_json({
             'submitted_count': submitted_count,
@@ -1443,6 +1603,7 @@ def attach_api_handlers(
             'country_summary': shown_country_summary,
             'as_country_summary': shown_as_country_summary,
             'csp_summary': csp_summary,
+            'characteristics': characteristics,
             'hints': hints
         })
     
