@@ -12,7 +12,8 @@ It attempts to send a Teams webhook (if configured) and to add IPs to
 the configured MISP event using functions in `mispupdate_code.py`.
 """
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
+from collections import Counter
 from typing import List, Tuple
 import requests
 
@@ -193,6 +194,7 @@ def _normalize_ip_tuples(ip_tuples):
     """Return deduplicated (ip, label, source_type) tuples."""
     out = []
     seen = set()
+    allowed_types = {'TXT', 'A', 'ENS'}
     for item in ip_tuples or []:
         ip = ''
         label = 'unknown'
@@ -208,7 +210,7 @@ def _normalize_ip_tuples(ip_tuples):
             ip = str(item or '').strip()
         if not ip:
             continue
-        if source_type not in ('TXT', 'A'):
+        if source_type not in allowed_types:
             source_type = 'TXT'
         key = (ip, label, source_type)
         if key in seen:
@@ -218,26 +220,75 @@ def _normalize_ip_tuples(ip_tuples):
     return sorted(out, key=lambda x: (x[0], x[1], x[2]))
 
 
-def _build_alert_body(action: str, ip_tuples):
-    """Build a structured Teams alert body."""
+def _split_labels(label: str):
+    text = str(label or '').strip()
+    if not text:
+        return ['unknown']
+    parts = [x.strip() for x in text.split(',') if x and x.strip()]
+    return parts or ['unknown']
+
+
+def _format_local_timestamp():
+    now = datetime.now().astimezone()
+    tz_name = str(now.tzname() or '').strip()
+    ts = now.strftime('%Y-%m-%d %H:%M:%S')
+    offset = now.strftime('%z')
+    if tz_name:
+        return f"{ts} {tz_name} ({offset})"
+    return f"{ts} ({offset})"
+
+
+def _build_alert_body(action: str, ip_tuples, context=None):
+    """Build a structured Teams alert body with local-time operational summary."""
     entries = _normalize_ip_tuples(ip_tuples)
-    ts_utc = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
+    ts_local = _format_local_timestamp()
+
+    unique_ips = sorted({ip for ip, _label, _stype in entries})
+    source_counter = Counter()
+    domain_counter = Counter()
+    for _ip, label, source_type in entries:
+        source_counter[str(source_type or 'TXT').upper()] += 1
+        for dom in _split_labels(label):
+            domain_counter[dom] += 1
+
+    source_summary = ", ".join([f"{k}:{source_counter.get(k, 0)}" for k in ('TXT', 'A', 'ENS') if source_counter.get(k, 0) > 0]) or '-'
+    domain_summary = ", ".join([f"{dom}({cnt})" for dom, cnt in domain_counter.most_common(5)]) or '-'
+    unique_domain_count = len(domain_counter)
 
     lines = [
         f"Action: {action}",
-        f"Time (UTC): {ts_utc}",
-        f"Count: {len(entries)}",
-        "Items:",
+        f"Time (Local): {ts_local}",
+        f"Entries: {len(entries)}",
+        f"Unique IPs: {len(unique_ips)}",
+        f"Unique Domains: {unique_domain_count}",
+        f"Source Types: {source_summary}",
+        f"Top Domains: {domain_summary}",
     ]
-    for ip, label, _source_type in entries:
-        lines.append(f"- {ip} | source={label}")
+    if isinstance(context, dict):
+        scope = str(context.get('scan_scope') or '').strip()
+        domain_targets = context.get('domain_targets')
+        server_targets = context.get('server_targets')
+        if scope or domain_targets is not None or server_targets is not None:
+            lines.append(
+                "Cycle Scope: "
+                + (scope or 'unknown')
+                + f" | domains={domain_targets if domain_targets is not None else '-'}"
+                + f" | servers={server_targets if server_targets is not None else '-'}"
+            )
+
+    max_items = 60
+    lines.append(f"Items (first {max_items}):")
+    for ip, label, source_type in entries[:max_items]:
+        lines.append(f"- [{source_type}] {ip} | source={label}")
+    if len(entries) > max_items:
+        lines.append(f"... +{len(entries) - max_items} more")
     return "\n".join(lines)
 
 
-def alert_new_ips(ip_tuples: List[Tuple[str, str]]):
+def alert_new_ips(ip_tuples: List[Tuple[str, str]], context=None):
     """Alert about newly discovered C2 IPs.
 
-    ip_tuples: list of (ip, label/domain[, source_type])
+    ip_tuples: list of (ip, label/domain[, source_type]) where source_type is TXT/A/ENS
     Behavior:
       - Sends a Teams webhook (best-effort)
       - Calls mispupdate_code.add_unique_ips(event_id, ip_tuples) if event configured
@@ -248,7 +299,7 @@ def alert_new_ips(ip_tuples: List[Tuple[str, str]]):
     if not entries:
         return
 
-    body = _build_alert_body('Added', entries)
+    body = _build_alert_body('Added', entries, context=context)
 
     # Teams alert (best effort)
     _send_teams(body, title='C2 IOC Add Alert')
@@ -267,10 +318,10 @@ def alert_new_ips(ip_tuples: List[Tuple[str, str]]):
             logger.warning("MISP push failed: %s", e)
 
 
-def alert_removed_ips(ip_tuples: List[Tuple[str, str]]):
+def alert_removed_ips(ip_tuples: List[Tuple[str, str]], context=None):
     """Alert about removed C2 IPs.
 
-    ip_tuples: list of (ip, label/domain[, source_type])
+    ip_tuples: list of (ip, label/domain[, source_type]) where source_type is TXT/A/ENS
     Behavior:
       - Sends a Teams webhook (best-effort)
       - Calls mispupdate_code.remove_ips(event_id, ip_tuples) if event configured
@@ -281,7 +332,7 @@ def alert_removed_ips(ip_tuples: List[Tuple[str, str]]):
     if not entries:
         return
 
-    body = _build_alert_body('Removed', entries)
+    body = _build_alert_body('Removed', entries, context=context)
 
     _send_teams(body, title='C2 IOC Remove Alert')
 

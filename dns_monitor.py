@@ -317,7 +317,15 @@ def main():
 
         # reconcile removed IPs only for full scans
         if not (snap.force_req and 'domains' in (snap.force_req or {})):
-            active_ip_map_prev = reconcile_removed_ips(active_ip_map_prev, active_ip_map_now)
+            active_ip_map_prev = reconcile_removed_ips(
+                active_ip_map_prev,
+                active_ip_map_now,
+                context={
+                    'scan_scope': 'full',
+                    'domain_targets': len(domains or []),
+                    'server_targets': len([str(x).strip() for x in (snap.servers or []) if str(x).strip()]),
+                },
+            )
 
         # sleep ticks
         for _ in range(max(1, snap.interval)):

@@ -88,6 +88,8 @@ Custom decoders use a constrained, validated list of steps (no arbitrary code ex
 
 - Teams: provide a `teams_webhook` URL in settings to receive notifications when new IPs are discovered.
 - MISP: existing helper functions integrate with MISP to add attributes/sightings; configure MISP-related fields in `alerts`.
+- Alert messages include local-time timestamps and cycle summaries (unique IP/domain counts, source-type breakdown).
+- New-IP alerts are batched and sent once after each full resolve cycle across configured domains.
 
 
 

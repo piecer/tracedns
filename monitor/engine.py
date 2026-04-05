@@ -102,23 +102,25 @@ def run_domain_cycle(
     history_dir: str,
     query_fail_counts: Dict[Any, int],
     max_workers: int = 8,
-) -> None:
+) -> List[Tuple[str, str, str]]:
     """Run one cycle for a single domain across all servers.
 
     Updates current_results + history in-place.
-    Sends alert_new_ips for any newly added managed IPs (domain-level aggregate).
+    Returns newly added managed IP tuples for this domain:
+      [(ip, domain, source_type), ...]
     Updates NXDOMAIN lifecycle.
     """
     name = domain.name
     rtype = str(domain.type or 'A').upper()
     if not name:
-        return
+        return []
 
     with _STATE_LOCK:
         current_results.setdefault(name, {})
         history.setdefault(name, {'meta': {}, 'events': [], 'current': {}})
 
     domain_prev_managed_ips = collect_domain_managed_ips(current_results, name, rtype=rtype)
+    added_alert_tuples: List[Tuple[str, str, str]] = []
 
     # Query all servers in parallel (bounded).
     # Note: dnspython releases the GIL during network IO; threading helps.
@@ -272,17 +274,15 @@ def run_domain_cycle(
     except Exception:
         pass
 
-    # Domain-level alerting: aggregate all DNS server results and send once per domain cycle.
+    # Domain-level change extraction (alert sending happens at full-cycle level).
     try:
         domain_now_managed_ips = collect_domain_managed_ips(current_results, name, rtype=rtype)
         added_ips = sorted(domain_now_managed_ips - domain_prev_managed_ips)
         if added_ips:
-            tuples = [(ip, name, rtype) for ip in added_ips]
-            tuples = _dedupe_alert('Added', tuples)
-            if tuples:
-                alert_new_ips(tuples)
+            added_alert_tuples.extend([(ip, name, rtype) for ip in added_ips])
     except Exception:
         pass
+    return added_alert_tuples
 
 
 def run_full_cycle(
@@ -317,6 +317,7 @@ def run_full_cycle(
             current_results.setdefault(ds.name, {})
             history.setdefault(ds.name, {'meta': {}, 'events': [], 'current': {}})
 
+    cycle_added_tuples: List[Tuple[str, str, str]] = []
     for ds in target_domains:
         if str(ds.type or 'A').upper() == 'ENS':
             ens_targets = []
@@ -331,7 +332,7 @@ def run_full_cycle(
             svr_list = target_servers_override or list(servers)
         if not svr_list:
             continue
-        run_domain_cycle(
+        domain_added = run_domain_cycle(
             domain=ds,
             servers=svr_list,
             current_results=current_results,
@@ -340,6 +341,29 @@ def run_full_cycle(
             query_fail_counts=query_fail_counts,
             max_workers=max_workers,
         )
+        if domain_added:
+            cycle_added_tuples.extend(domain_added)
+
+    # Added-IP alerts are sent once per full cycle (not per domain/server).
+    if cycle_added_tuples:
+        deduped_added = _dedupe_alert('Added', cycle_added_tuples)
+        if deduped_added:
+            try:
+                scope = 'force' if (force_req and 'domains' in force_req) else 'full'
+                if target_servers_override is not None:
+                    server_targets = len([str(x).strip() for x in (target_servers_override or []) if str(x).strip()])
+                else:
+                    server_targets = len([str(x).strip() for x in (servers or []) if str(x).strip()])
+                alert_new_ips(
+                    deduped_added,
+                    context={
+                        'scan_scope': scope,
+                        'domain_targets': len(target_domains),
+                        'server_targets': int(server_targets),
+                    },
+                )
+            except Exception:
+                pass
 
     # Removal reconciliation only after full configured scan (not force subset)
     full_domain_scan = not (force_req and 'domains' in force_req)
@@ -352,7 +376,7 @@ def run_full_cycle(
     return collect_active_ip_map(current_results, configured_names)
 
 
-def reconcile_removed_ips(active_ip_map_prev: Dict[str, Any], active_ip_map_now: Dict[str, Any]) -> Dict[str, Any]:
+def reconcile_removed_ips(active_ip_map_prev: Dict[str, Any], active_ip_map_now: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     removed_ips = sorted(set(active_ip_map_prev.keys()) - set(active_ip_map_now.keys()))
     if removed_ips:
         removed_tuples = []
@@ -362,7 +386,7 @@ def reconcile_removed_ips(active_ip_map_prev: Dict[str, Any], active_ip_map_now:
         removed_tuples = _dedupe_alert('Removed', removed_tuples)
         if removed_tuples:
             try:
-                alert_removed_ips([(ip, label) for (ip, label, _t) in removed_tuples])
+                alert_removed_ips([(ip, label, _t) for (ip, label, _t) in removed_tuples], context=context)
             except Exception:
                 pass
     return active_ip_map_now
