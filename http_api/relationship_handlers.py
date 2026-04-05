@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import os
 import re
-import time
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -131,9 +131,124 @@ def _geoip_country(reader, ip: str) -> Optional[str]:
     return None
 
 
-def _compare_features(a_ip: str, b_ip: str, fa: Dict[str, Any], fb: Dict[str, Any]) -> Tuple[int, List[Dict[str, Any]]]:
+def _normalize_text(value: Any) -> str:
+    s = str(value or "").strip().lower()
+    if not s:
+        return ""
+    return re.sub(r"\s+", " ", s)
+
+
+def _normalize_hash(value: Any) -> str:
+    s = str(value or "").strip().lower()
+    if not s:
+        return ""
+    return re.sub(r"[^0-9a-f]", "", s)
+
+
+def _short_token(value: Any, *, head: int = 12, tail: int = 8) -> str:
+    s = str(value or "").strip()
+    if not s:
+        return "-"
+    if len(s) <= (head + tail + 2):
+        return s
+    return f"{s[:head]}..{s[-tail:]}"
+
+
+def _extract_vt_attrs(report: Any) -> Dict[str, Any]:
+    if not isinstance(report, dict):
+        return {}
+    raw = report.get("raw")
+    if not isinstance(raw, dict):
+        return {}
+    data = raw.get("data")
+    if not isinstance(data, dict):
+        return {}
+    attrs = data.get("attributes")
+    if not isinstance(attrs, dict):
+        return {}
+    return attrs
+
+
+def _extract_positive_vt_engines(attrs: Dict[str, Any]) -> Set[str]:
+    out: Set[str] = set()
+    if not isinstance(attrs, dict):
+        return out
+    lar = attrs.get("last_analysis_results")
+    if not isinstance(lar, dict):
+        return out
+    for eng, ent in lar.items():
+        if not isinstance(ent, dict):
+            continue
+        cat = str(ent.get("category") or "").strip().lower()
+        if cat in ("malicious", "suspicious"):
+            e = str(eng or "").strip()
+            if e:
+                out.add(e)
+    return out
+
+
+def _parse_network_cidr(network_txt: Any):
+    s = str(network_txt or "").strip()
+    if not s:
+        return None
+    try:
+        return ipaddress.ip_network(s, strict=False)
+    except Exception:
+        return None
+
+
+def _pair_gate_decision(
+    score: int,
+    evidence: List[Dict[str, Any]],
+    min_score: int,
+    *,
+    enabled: bool = True,
+    strong_min: int = 1,
+    mid_min: int = 2,
+    fallback_score: Optional[int] = None,
+) -> Tuple[bool, str]:
+    if not enabled:
+        return True, "gate_disabled"
+
+    strong_types = {"same_jarm", "same_cert_sha256", "same_network_exact"}
+    mid_types = {
+        "same_asn",
+        "same_owner",
+        "same_csp",
+        "same_rdap_name",
+        "vt_detector_overlap",
+        "same_prefix24",
+        "same_network_overlap",
+    }
+    e_types = [str((x or {}).get("type") or "").strip() for x in (evidence or [])]
+    strong_n = sum(1 for t in e_types if t in strong_types)
+    mid_n = sum(1 for t in e_types if t in mid_types)
+    strong_min_n = max(0, int(strong_min or 0))
+    mid_min_n = max(0, int(mid_min or 0))
+    fallback_n = int(fallback_score if fallback_score is not None else max(int(min_score or 0), 55))
+
+    if strong_n >= strong_min_n and strong_min_n > 0:
+        return True, "strong_signal"
+    if mid_n >= mid_min_n and mid_min_n > 0:
+        return True, "multi_mid_signals"
+    if int(score or 0) >= fallback_n:
+        return True, "high_score_fallback"
+    return False, "weak_pair_filtered"
+
+
+def _compare_features(
+    a_ip: str,
+    b_ip: str,
+    fa: Dict[str, Any],
+    fb: Dict[str, Any],
+    *,
+    ca: Optional[Dict[str, Any]] = None,
+    cb: Optional[Dict[str, Any]] = None,
+) -> Tuple[int, List[Dict[str, Any]]]:
     """Return (score, evidence list). Score is capped to 100."""
 
+    ca = ca or {}
+    cb = cb or {}
     score = 0
     ev: List[Dict[str, Any]] = []
 
@@ -145,6 +260,20 @@ def _compare_features(a_ip: str, b_ip: str, fa: Dict[str, Any], fb: Dict[str, An
     b_csp = str(fb.get("csp") or "").strip()
     a_country = str(fa.get("country") or "").strip().upper()
     b_country = str(fb.get("country") or "").strip().upper()
+    a_network = str(fa.get("network") or "").strip()
+    b_network = str(fb.get("network") or "").strip()
+    a_rir = str(fa.get("rir") or "").strip().upper()
+    b_rir = str(fb.get("rir") or "").strip().upper()
+    a_jarm = _normalize_hash(fa.get("jarm"))
+    b_jarm = _normalize_hash(fb.get("jarm"))
+    a_cert = _normalize_hash(fa.get("cert_sha256"))
+    b_cert = _normalize_hash(fb.get("cert_sha256"))
+    a_rdap_name = str(fa.get("rdap_name_norm") or "").strip()
+    b_rdap_name = str(fb.get("rdap_name_norm") or "").strip()
+    a_rdap_type = str(fa.get("rdap_type") or "").strip()
+    b_rdap_type = str(fb.get("rdap_type") or "").strip()
+    a_net_obj = ca.get("network_obj")
+    b_net_obj = cb.get("network_obj")
 
     # Infra similarity signals
     if a_asn and b_asn and a_asn == b_asn:
@@ -162,6 +291,42 @@ def _compare_features(a_ip: str, b_ip: str, fa: Dict[str, Any], fb: Dict[str, An
     if a_country and b_country and a_country == b_country and a_country != "-":
         score += 5
         ev.append({"type": "same_country", "value": a_country, "weight": 5})
+
+    if a_network and b_network and a_network == b_network:
+        score += 24
+        ev.append({"type": "same_network_exact", "value": a_network, "weight": 24})
+    elif a_net_obj is not None and b_net_obj is not None:
+        try:
+            if a_net_obj.version == b_net_obj.version and a_net_obj.overlaps(b_net_obj):
+                w = 10 if (a_net_obj.prefixlen <= 20 or b_net_obj.prefixlen <= 20) else 7
+                score += w
+                ev.append({
+                    "type": "same_network_overlap",
+                    "value": f"{a_network or '-'}~{b_network or '-'}",
+                    "weight": w,
+                })
+        except Exception:
+            pass
+
+    if a_jarm and b_jarm and a_jarm == b_jarm:
+        score += 34
+        ev.append({"type": "same_jarm", "value": _short_token(a_jarm), "weight": 34})
+
+    if a_cert and b_cert and a_cert == b_cert:
+        score += 36
+        ev.append({"type": "same_cert_sha256", "value": _short_token(a_cert), "weight": 36})
+
+    if a_rdap_name and b_rdap_name and a_rdap_name == b_rdap_name:
+        score += 12
+        ev.append({"type": "same_rdap_name", "value": fa.get("rdap_name") or "-", "weight": 12})
+
+    if a_rdap_type and b_rdap_type and a_rdap_type == b_rdap_type and a_rdap_type not in ("-", "n/a"):
+        score += 3
+        ev.append({"type": "same_rdap_type", "value": a_rdap_type, "weight": 3})
+
+    if a_rir and b_rir and a_rir == b_rir and a_rir not in ("-", "N/A"):
+        score += 4
+        ev.append({"type": "same_rir", "value": a_rir, "weight": 4})
 
     # Network proximity: can be misleading for infected hosts on residential/mobile ISPs.
     # Make it strong only when the IPs look like hosted infrastructure.
@@ -191,6 +356,37 @@ def _compare_features(a_ip: str, b_ip: str, fa: Dict[str, Any], fb: Dict[str, An
     if sa > 0 and sb > 0:
         score += 4
         ev.append({"type": "vt_suspicious_both", "value": f"{sa}/{sb}", "weight": 4})
+
+    a_eng = ca.get("positive_engines") or set()
+    b_eng = cb.get("positive_engines") or set()
+    if isinstance(a_eng, set) and isinstance(b_eng, set) and a_eng and b_eng:
+        inter = a_eng.intersection(b_eng)
+        if inter:
+            union_n = len(a_eng.union(b_eng))
+            ratio = len(inter) / max(1, union_n)
+            if ratio >= 0.65:
+                w = 14
+            elif ratio >= 0.40:
+                w = 10
+            else:
+                w = 6
+            score += w
+            sample = ",".join(sorted(inter)[:3])
+            val = f"{len(inter)}/{union_n}"
+            if sample:
+                val += f" ({sample})"
+            ev.append({"type": "vt_detector_overlap", "value": val, "weight": w})
+
+    ta = int(fa.get("last_analysis_date") or 0)
+    tb = int(fb.get("last_analysis_date") or 0)
+    if ta > 0 and tb > 0:
+        delta = abs(ta - tb)
+        if delta <= 86400:
+            score += 4
+            ev.append({"type": "vt_time_proximity", "value": "<=1d", "weight": 4})
+        elif delta <= (3 * 86400):
+            score += 2
+            ev.append({"type": "vt_time_proximity", "value": "<=3d", "weight": 2})
 
     if score > 100:
         score = 100
@@ -252,6 +448,19 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
             n = max_v
         return n
 
+    def _to_bool(name, default=False):
+        raw = data.get(name, default)
+        if isinstance(raw, bool):
+            return raw
+        if raw is None:
+            return bool(default)
+        s = str(raw).strip().lower()
+        if s in ("1", "true", "t", "yes", "y", "on"):
+            return True
+        if s in ("0", "false", "f", "no", "n", "off", ""):
+            return False
+        return bool(default)
+
     min_score = _to_int("min_score", 40, 0, 100)
     top_pairs = _to_int("top_pairs", 200, 1, 5000)
     max_neighbors_per_ip = _to_int("max_neighbors_per_ip", 30, 1, 200)
@@ -259,6 +468,10 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
     include_vt = bool(data.get("include_vt", True))
     vt_workers = _to_int("vt_workers", 8, 1, 32)
     vt_budget = _to_int("vt_budget", 2000, 0, 5000)
+    pair_gate_enabled = _to_bool("pair_gate_enabled", True)
+    pair_gate_strong_min = _to_int("pair_gate_strong_min", 1, 0, 3)
+    pair_gate_mid_min = _to_int("pair_gate_mid_min", 2, 0, 5)
+    pair_gate_fallback_score = _to_int("pair_gate_fallback_score", max(min_score, 55), 0, 100)
 
     # GeoIP config (best-effort; optional)
     geoip_mmdb_path = None
@@ -335,6 +548,7 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
 
     # Extract per-IP features
     ip_features: Dict[str, Dict[str, Any]] = {}
+    ip_similarity_context: Dict[str, Dict[str, Any]] = {}
     country_map = defaultdict(lambda: {"country": "-", "ip_count": 0, "malicious_ips": 0, "suspicious_ips": 0, "asn_count": 0, "asns": set()})
 
     for ip in valid_ips:
@@ -345,6 +559,26 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
         vt_country = rep.get("country") if isinstance(rep, dict) else None
         malicious = int(rep.get("malicious", 0) or 0) if isinstance(rep, dict) else 0
         suspicious = int(rep.get("suspicious", 0) or 0) if isinstance(rep, dict) else 0
+        attrs = _extract_vt_attrs(rep) if isinstance(rep, dict) else {}
+        network = str(attrs.get("network") or "").strip()
+        network_obj = _parse_network_cidr(network)
+        rir = str(attrs.get("regional_internet_registry") or "").strip().upper()
+        jarm = _normalize_hash(attrs.get("jarm"))
+        cert_obj = attrs.get("last_https_certificate")
+        cert_sha256 = ""
+        if isinstance(cert_obj, dict):
+            cert_sha256 = _normalize_hash(cert_obj.get("thumbprint_sha256"))
+        rdap = attrs.get("rdap")
+        if not isinstance(rdap, dict):
+            rdap = {}
+        rdap_name = str(rdap.get("name") or "").strip()
+        rdap_name_norm = _normalize_text(rdap_name)
+        rdap_type = _normalize_text(rdap.get("type"))
+        positive_engines = _extract_positive_vt_engines(attrs)
+        try:
+            last_analysis_date = int((rep or {}).get("last_analysis_date") or attrs.get("last_analysis_date") or 0)
+        except Exception:
+            last_analysis_date = 0
 
         # country fallback
         country = str(vt_country).upper() if vt_country else None
@@ -369,9 +603,22 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
             "country": str(country) if country else "-",
             "malicious": malicious,
             "suspicious": suspicious,
+            "network": network if network else "-",
+            "rir": rir if rir else "-",
+            "rdap_name": rdap_name if rdap_name else "-",
+            "rdap_name_norm": rdap_name_norm,
+            "rdap_type": rdap_type if rdap_type else "-",
+            "jarm": jarm if jarm else "",
+            "cert_sha256": cert_sha256 if cert_sha256 else "",
+            "last_analysis_date": last_analysis_date if last_analysis_date > 0 else None,
+            "vt_engine_positive_count": len(positive_engines),
             "vt_present": bool(isinstance(rep, dict)),
         }
         ip_features[ip] = feat
+        ip_similarity_context[ip] = {
+            "network_obj": network_obj,
+            "positive_engines": positive_engines,
+        }
 
         # country summary for map
         ckey = feat.get("country") or "-"
@@ -400,7 +647,7 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
     buckets: Dict[str, List[str]] = {}
 
     def _add_bucket(prefix: str, key: str, ip: str):
-        if not key or key == "-":
+        if not key or key in ("-", "N/A"):
             return
         buckets.setdefault(f"{prefix}:{key}", []).append(ip)
 
@@ -409,6 +656,11 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
         _add_bucket("owner", str(f.get("as_owner_norm") or ""), ip)
         _add_bucket("csp", str(f.get("csp") or ""), ip)
         _add_bucket("country", str(f.get("country") or ""), ip)
+        _add_bucket("network", str(f.get("network") or ""), ip)
+        _add_bucket("rir", str(f.get("rir") or ""), ip)
+        _add_bucket("rdap", str(f.get("rdap_name_norm") or ""), ip)
+        _add_bucket("jarm", str(f.get("jarm") or ""), ip)
+        _add_bucket("cert", str(f.get("cert_sha256") or ""), ip)
         p24 = _ipv4_prefix24(ip)
         if p24:
             _add_bucket("p24", p24, ip)
@@ -420,16 +672,25 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
     if BUCKET_MAX > 2000:
         BUCKET_MAX = 2000
 
+    bucket_overflow_mode = str(data.get("bucket_overflow_mode", "truncate") or "truncate").strip().lower()
+    if bucket_overflow_mode not in ("truncate", "skip"):
+        bucket_overflow_mode = "truncate"
+    bucket_oversized_count = 0
+    bucket_truncated_count = 0
+
     # Candidate pairs set: store per pair computed once
     candidates: Set[Tuple[str, str]] = set()
 
     for k, ips in buckets.items():
         if not ips or len(ips) < 2:
             continue
-        if len(ips) > BUCKET_MAX:
-            # Skip huge buckets (usually country buckets) to keep runtime bounded.
-            continue
         uniq = sorted(set(ips))
+        if len(uniq) > BUCKET_MAX:
+            bucket_oversized_count += 1
+            if bucket_overflow_mode == "skip":
+                continue
+            uniq = uniq[:BUCKET_MAX]
+            bucket_truncated_count += 1
         for i in range(len(uniq)):
             a = uniq[i]
             for j in range(i + 1, len(uniq)):
@@ -437,17 +698,38 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
                 candidates.add((a, b))
 
     # Compare candidates; keep top neighbors per IP
-    per_ip_neighbors: Dict[str, List[Tuple[int, str, str, List[Dict[str, Any]]]]] = defaultdict(list)
     all_pairs: List[Dict[str, Any]] = []
+    pair_gate_kept = 0
+    pair_gate_dropped = 0
 
     for (a, b) in candidates:
         fa = ip_features.get(a) or {}
         fb = ip_features.get(b) or {}
-        sc, ev = _compare_features(a, b, fa, fb)
+        sc, ev = _compare_features(
+            a,
+            b,
+            fa,
+            fb,
+            ca=ip_similarity_context.get(a),
+            cb=ip_similarity_context.get(b),
+        )
         if sc <= 0:
             continue
+        gate_ok, gate_reason = _pair_gate_decision(
+            sc,
+            ev,
+            min_score,
+            enabled=pair_gate_enabled,
+            strong_min=pair_gate_strong_min,
+            mid_min=pair_gate_mid_min,
+            fallback_score=pair_gate_fallback_score,
+        )
+        if not gate_ok:
+            pair_gate_dropped += 1
+            continue
+        pair_gate_kept += 1
         # We still compute all, then filter by per-ip neighbor cap below
-        item = {"a": a, "b": b, "score": sc, "evidence": ev}
+        item = {"a": a, "b": b, "score": sc, "evidence": ev, "gate_reason": gate_reason}
         all_pairs.append(item)
 
     # Sort by score desc
@@ -527,6 +809,12 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
         top_owner = _top_k([f.get("as_owner") for f in feats])
         top_country = _top_k([f.get("country") for f in feats])
         top_csp = _top_k([f.get("csp_label") for f in feats])
+        top_network = _top_k([f.get("network") for f in feats])
+        top_rir = _top_k([f.get("rir") for f in feats])
+        top_jarm_raw = _top_k([f.get("jarm") for f in feats])
+        top_cert_raw = _top_k([f.get("cert_sha256") for f in feats])
+        top_jarm = [(_short_token(x[0]), x[1]) for x in top_jarm_raw]
+        top_cert = [(_short_token(x[0]), x[1]) for x in top_cert_raw]
 
         # VT summary per cluster
         ms = 0
@@ -550,6 +838,10 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
             "top_owner": top_owner,
             "top_country": top_country,
             "top_csp": top_csp,
+            "top_network": top_network,
+            "top_rir": top_rir,
+            "top_jarm": top_jarm,
+            "top_cert": top_cert,
             "vt_summary": {
                 "malicious_total": ms,
                 "suspicious_total": ss,
@@ -575,8 +867,19 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
         "top_pairs": int(top_pairs),
         "max_neighbors_per_ip": int(max_neighbors_per_ip),
         "bucket_max": int(BUCKET_MAX),
+        "bucket_overflow_mode": bucket_overflow_mode,
+        "bucket_oversized_count": int(bucket_oversized_count),
+        "bucket_truncated_count": int(bucket_truncated_count),
         "pairs": kept,
         "pair_count": len(kept),
+        "pair_gate": {
+            "enabled": bool(pair_gate_enabled),
+            "kept": int(pair_gate_kept),
+            "dropped": int(pair_gate_dropped),
+            "strong_min": int(pair_gate_strong_min),
+            "mid_min": int(pair_gate_mid_min),
+            "fallback_score": int(pair_gate_fallback_score),
+        },
         "clusters": cluster_list,
         "vt_enabled": vt_enabled,
         "vt_attempted": vt_attempted,
