@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict
 
 
@@ -14,3 +14,5 @@ class HttpContext:
     current_results: Dict[str, Any]
     history: Dict[str, Any]
     purge_removed_domains_state: Callable[..., Any]
+    cache_lock: Any = None
+    results_cache: Dict[str, Any] = field(default_factory=dict)

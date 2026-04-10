@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import time
 import logging
-import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -12,6 +11,7 @@ from models import DomainSpec, coerce_domains, Snapshot
 
 from .collect import collect_snapshot
 from .lifecycle import update_nxdomain_lifecycle
+from .runtime_state import bump_state_version, clone_history_entry, state_lock
 from .state_utils import collect_active_ip_map, collect_domain_managed_ips
 
 
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Safety: protect shared mutable state when we later add domain-level parallelism.
 # Even with current per-domain threading, keeping writes guarded makes behavior deterministic.
-_STATE_LOCK = threading.RLock()
+_STATE_LOCK = state_lock()
 
 # Best-effort alert dedupe to prevent bursts/duplicates when concurrency increases.
 # key: (action, domain, ip) -> last_ts
@@ -62,6 +62,8 @@ def drop_snapshot_for_failed_target(current_results: Dict[str, Any], history: Di
                 hist_obj.setdefault('meta', {})['last_changed'] = int(ts)
             except Exception:
                 pass
+        if removed:
+            bump_state_version()
         return removed
 
 
@@ -169,6 +171,9 @@ def run_domain_cycle(
                     ts_fail = int(time.time())
                     removed = drop_snapshot_for_failed_target(current_results, history, name, srv, ts=ts_fail)
                     if removed:
+                        hist_to_persist = None
+                        with _STATE_LOCK:
+                            hist_to_persist = clone_history_entry(history.get(name))
                         logger.info(
                             "Removed stale snapshot after %s consecutive DNS failures: %s (%s) @ %s",
                             fail_count,
@@ -177,7 +182,7 @@ def run_domain_cycle(
                             srv,
                         )
                         try:
-                            persist_history_entry(history_dir, name, history.get(name))
+                            persist_history_entry(history_dir, name, hist_to_persist)
                         except Exception:
                             pass
                 continue
@@ -194,16 +199,18 @@ def run_domain_cycle(
             hist_obj = history[name]
             # initial population
             if prev_obj is None:
+                hist_to_persist = None
                 with _STATE_LOCK:
                     current_results.setdefault(name, {})[srv] = _snapshot_dict(snap)
                     hist_obj.setdefault('current', {})[srv] = _snapshot_dict(snap)
                     meta = hist_obj.setdefault('meta', {})
                     meta.setdefault('first_seen', ts)
                     meta.setdefault('last_changed', ts)
+                    bump_state_version()
+                    hist_to_persist = clone_history_entry(hist_obj)
                 logger.info("INIT %s (%s) @ %s -> %s decoded=%s", name, rtype, srv, snap.values, snap.decoded_ips)
                 try:
-                    with _STATE_LOCK:
-                        persist_history_entry(history_dir, name, hist_obj)
+                    persist_history_entry(history_dir, name, hist_to_persist)
                 except Exception:
                     pass
                 continue
@@ -220,6 +227,7 @@ def run_domain_cycle(
             )
 
             if changed:
+                hist_to_persist = None
                 ev = {
                     'ts': ts,
                     'server': srv,
@@ -238,6 +246,8 @@ def run_domain_cycle(
                     meta.setdefault('first_seen', ev['old'].get('ts', ts) if isinstance(ev.get('old'), dict) else ts)
                     hist_obj.setdefault('current', {})[srv] = _snapshot_dict(snap)
                     current_results[name][srv] = _snapshot_dict(snap)
+                    bump_state_version()
+                    hist_to_persist = clone_history_entry(hist_obj)
                 logger.info(
                     "CHANGED %s (%s) @ %s: %s -> %s decoded=%s",
                     name,
@@ -248,27 +258,30 @@ def run_domain_cycle(
                     snap.decoded_ips,
                 )
                 try:
-                    with _STATE_LOCK:
-                        persist_history_entry(history_dir, name, hist_obj)
+                    persist_history_entry(history_dir, name, hist_to_persist)
                 except Exception:
                     pass
 
     # Update per-domain NXDOMAIN lifecycle metadata once per domain cycle.
     try:
         ts_cycle = int(time.time())
-        lifecycle_changed = update_nxdomain_lifecycle(
-            history,
-            name,
-            domain_query_total,
-            domain_success_count,
-            domain_nxdomain_count,
-            domain_error_count,
-            ts_cycle,
-        )
+        hist_to_persist = None
+        with _STATE_LOCK:
+            lifecycle_changed = update_nxdomain_lifecycle(
+                history,
+                name,
+                domain_query_total,
+                domain_success_count,
+                domain_nxdomain_count,
+                domain_error_count,
+                ts_cycle,
+            )
+            if lifecycle_changed:
+                bump_state_version()
+                hist_to_persist = clone_history_entry(history.get(name))
         if lifecycle_changed:
             try:
-                with _STATE_LOCK:
-                    persist_history_entry(history_dir, name, history.get(name))
+                persist_history_entry(history_dir, name, hist_to_persist)
             except Exception:
                 pass
     except Exception:

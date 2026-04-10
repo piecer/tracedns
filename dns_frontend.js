@@ -2809,18 +2809,22 @@ function formatDnsServerSummary(servers){
   return `${arr.length} servers (${arr.slice(0, 3).join(', ')}...)`;
 }
 
-function buildStatusFingerprint(resultsAgg){
+function buildStatusFingerprint(resultsAgg, domainMeta){
   const keys = Object.keys(resultsAgg || {}).sort();
   const parts = [];
   keys.forEach(d=>{
     const it = resultsAgg[d] || {};
+    const meta = (domainMeta && domainMeta[d]) || {};
     parts.push([
       d,
       Number(it.ts || 0),
       Array.isArray(it.values) ? it.values.length : 0,
       Array.isArray(it.decoded_ips) ? it.decoded_ips.length : 0,
       Array.isArray(it.servers) ? it.servers.length : 0,
-      String(it.method_summary || '')
+      String(it.method_summary || ''),
+      meta.nxdomain_active ? 1 : 0,
+      Number(meta.nxdomain_since || 0),
+      Number(meta.nxdomain_cleared_ts || 0),
     ].join('|'));
   });
   return `${keys.length}#${parts.join('||')}`;
@@ -2882,7 +2886,7 @@ async function refreshResults(){
     uiOverview.statusRows = domains.length;
     uiOverview.managedIps = managedSet.size;
 
-    const statusFp = buildStatusFingerprint(resultsAgg);
+    const statusFp = buildStatusFingerprint(resultsAgg, domainMeta);
     if(statusFp === lastStatusRenderFingerprint){
       touchOverviewTs();
       return;

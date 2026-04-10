@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 
 from http_api_handlers import attach_api_handlers
+from monitor.runtime_state import bump_state_version, state_lock
 
 
 def purge_removed_domains_state(current_results, history, history_dir, removed_domains):
@@ -13,17 +14,22 @@ def purge_removed_domains_state(current_results, history, history_dir, removed_d
     removed = [str(d or '').strip() for d in (removed_domains or []) if str(d or '').strip()]
     if not removed:
         return
+    removed_any = False
+    with state_lock():
+        for domain in removed:
+            try:
+                if isinstance(current_results, dict) and current_results.pop(domain, None) is not None:
+                    removed_any = True
+            except Exception:
+                pass
+            try:
+                if isinstance(history, dict) and history.pop(domain, None) is not None:
+                    removed_any = True
+            except Exception:
+                pass
+        if removed_any:
+            bump_state_version()
     for domain in removed:
-        try:
-            if isinstance(current_results, dict):
-                current_results.pop(domain, None)
-        except Exception:
-            pass
-        try:
-            if isinstance(history, dict):
-                history.pop(domain, None)
-        except Exception:
-            pass
         try:
             if history_dir:
                 fp = os.path.join(history_dir, f"{domain}.json")

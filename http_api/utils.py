@@ -6,7 +6,7 @@ from typing import Any, Dict
 
 def send_json(handler, obj: Any, code: int = 200) -> None:
     """Send a JSON response with proper UTF-8 headers."""
-    b = json.dumps(obj, ensure_ascii=False).encode('utf-8')
+    b = json.dumps(obj, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
     handler.send_response(code)
     handler.send_header('Content-Type', 'application/json; charset=utf-8')
     handler.send_header('Content-Length', str(len(b)))

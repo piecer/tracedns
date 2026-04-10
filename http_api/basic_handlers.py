@@ -4,6 +4,7 @@ from typing import Any, Dict
 
 from a_decoder import A_DECODE_METHODS
 from ens_decoder import ENS_DECODE_METHODS, ens_options_signature
+from monitor.runtime_state import get_state_version, snapshot_results_inputs
 from txt_decoder import TXT_DECODE_METHODS
 
 from .context import HttpContext
@@ -24,149 +25,168 @@ def handle_config(ctx: HttpContext, handler) -> None:
     send_json(handler, cfg)
 
 
+def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Dict[str, Any], include_raw: bool) -> Dict[str, Any]:
+    data = {} if include_raw else None
+    data_agg: Dict[str, Any] = {}
+
+    for d, m in current_results.items():
+        if include_raw:
+            data[d] = {}
+
+        agg_entry = {
+            'record_types': set(),
+            'values': set(),
+            'decoded_ips': set(),
+            'servers': set(),
+            'ts': 0,
+            'txt_decodes': set(),
+            'a_decodes': set(),
+            'a_xor_keys': set(),
+            'ens_text_keys': set(),
+            'ens_decodes': set(),
+            'ens_xor_bytes': set(),
+            'ens_options': set(),
+        }
+
+        for srv, info in m.items():
+            rtype = str(info.get('type') or 'A').upper()
+            values = [str(v) for v in (info.get('values', []) or []) if str(v or '').strip()]
+            decoded_ips = [str(v) for v in (info.get('decoded_ips', []) or []) if str(v or '').strip()]
+
+            entry = None
+            if include_raw:
+                entry = {'type': rtype, 'values': values, 'decoded_ips': decoded_ips, 'ts': info.get('ts')}
+
+            if rtype == 'TXT' and info.get('txt_decode'):
+                if entry is not None:
+                    entry['txt_decode'] = info.get('txt_decode')
+                agg_entry['txt_decodes'].add(str(info.get('txt_decode')))
+
+            if rtype == 'A' and info.get('a_decode'):
+                if entry is not None:
+                    entry['a_decode'] = info.get('a_decode')
+                agg_entry['a_decodes'].add(str(info.get('a_decode')))
+
+            if rtype == 'A' and info.get('a_xor_key'):
+                if entry is not None:
+                    entry['a_xor_key'] = info.get('a_xor_key')
+                agg_entry['a_xor_keys'].add(str(info.get('a_xor_key')))
+
+            if rtype == 'ENS' and info.get('ens_text_key'):
+                if entry is not None:
+                    entry['ens_text_key'] = info.get('ens_text_key')
+                agg_entry['ens_text_keys'].add(str(info.get('ens_text_key')))
+            if rtype == 'ENS' and info.get('ens_decode'):
+                if entry is not None:
+                    entry['ens_decode'] = info.get('ens_decode')
+                agg_entry['ens_decodes'].add(str(info.get('ens_decode')))
+            if rtype == 'ENS' and info.get('ens_xor_byte') is not None and str(info.get('ens_xor_byte')).strip() != '':
+                if entry is not None:
+                    entry['ens_xor_byte'] = info.get('ens_xor_byte')
+                agg_entry['ens_xor_bytes'].add(str(info.get('ens_xor_byte')))
+            if rtype == 'ENS':
+                opts_sig = ens_options_signature(info.get('ens_options'), legacy_xor_byte=info.get('ens_xor_byte'))
+                if opts_sig:
+                    if entry is not None:
+                        entry['ens_options'] = info.get('ens_options') if isinstance(info.get('ens_options'), dict) else opts_sig
+                    agg_entry['ens_options'].add(opts_sig)
+
+            if include_raw:
+                data[d][srv] = entry
+
+            agg_entry['record_types'].add(rtype)
+            agg_entry['values'].update(values)
+            agg_entry['decoded_ips'].update(decoded_ips)
+            agg_entry['servers'].add(str(srv))
+            try:
+                agg_entry['ts'] = max(int(agg_entry['ts']), int(info.get('ts') or 0))
+            except Exception:
+                pass
+
+        record_types = sorted(list(agg_entry['record_types']))
+        if len(record_types) == 1:
+            domain_type = record_types[0]
+        elif not record_types:
+            domain_type = 'A'
+        else:
+            domain_type = 'MIXED'
+
+        method_parts = []
+        if agg_entry['txt_decodes']:
+            method_parts.append('TXT:' + ','.join(sorted(agg_entry['txt_decodes'])))
+        if agg_entry['a_decodes']:
+            a_method = 'A:' + ','.join(sorted(agg_entry['a_decodes']))
+            if agg_entry['a_xor_keys']:
+                a_method += f" ({','.join(sorted(agg_entry['a_xor_keys']))})"
+            method_parts.append(a_method)
+        if agg_entry['ens_text_keys']:
+            ens_method = 'ENS:' + ','.join(sorted(agg_entry['ens_text_keys']))
+            if agg_entry['ens_decodes']:
+                ens_method += f" / decode:{','.join(sorted(agg_entry['ens_decodes']))}"
+            if agg_entry['ens_options']:
+                ens_method += f" / options:{'|'.join(sorted(agg_entry['ens_options']))}"
+            elif agg_entry['ens_xor_bytes']:
+                ens_method += f" / xor:{','.join(sorted(agg_entry['ens_xor_bytes']))}"
+            method_parts.append(ens_method)
+
+        data_agg[d] = {
+            'type': domain_type,
+            'record_types': record_types,
+            'values': sorted(list(agg_entry['values'])),
+            'decoded_ips': sorted(list(agg_entry['decoded_ips'])),
+            'servers': sorted(list(agg_entry['servers'])),
+            'server_count': len(agg_entry['servers']),
+            'ts': int(agg_entry['ts'] or 0),
+            'txt_decodes': sorted(list(agg_entry['txt_decodes'])),
+            'a_decodes': sorted(list(agg_entry['a_decodes'])),
+            'a_xor_keys': sorted(list(agg_entry['a_xor_keys'])),
+            'ens_text_keys': sorted(list(agg_entry['ens_text_keys'])),
+            'ens_decodes': sorted(list(agg_entry['ens_decodes'])),
+            'ens_xor_bytes': sorted(list(agg_entry['ens_xor_bytes'])),
+            'ens_options': sorted(list(agg_entry['ens_options'])),
+            'method_summary': ' / '.join(method_parts) if method_parts else '-',
+        }
+
+    domain_meta = {}
+    for d, meta in (history_meta_map or {}).items():
+        if not isinstance(meta, dict) or not meta:
+            continue
+        domain_meta[d] = {
+            'nxdomain_active': bool(meta.get('nxdomain_active', False)),
+            'nxdomain_since': int(meta.get('nxdomain_since') or 0) if meta.get('nxdomain_since') else 0,
+            'nxdomain_first_seen': int(meta.get('nxdomain_first_seen') or 0) if meta.get('nxdomain_first_seen') else 0,
+            'nxdomain_cleared_ts': int(meta.get('nxdomain_cleared_ts') or 0) if meta.get('nxdomain_cleared_ts') else 0,
+        }
+
+    payload = {'results_agg': data_agg, 'domain_meta': domain_meta}
+    if include_raw:
+        payload['results'] = data
+    return payload
+
+
 def handle_results(ctx: HttpContext, handler, qs: Dict[str, Any]) -> None:
     try:
         agg_only = qs_bool(qs, 'aggregate', default=False)
         include_raw = qs_bool(qs, 'include_raw', default=(not agg_only))
+        cache_key = 'raw' if include_raw else 'agg'
+        version = get_state_version()
 
-        data = {} if include_raw else None
-        data_agg: Dict[str, Any] = {}
+        if ctx.cache_lock is not None:
+            with ctx.cache_lock:
+                cached = ctx.results_cache.get(cache_key)
+                if isinstance(cached, dict) and int(cached.get('version') or 0) == version:
+                    return send_json(handler, cached.get('payload', {}))
 
-        for d, m in ctx.current_results.items():
-            if include_raw:
-                data[d] = {}
+        snap_version, current_snapshot, history_meta_snapshot = snapshot_results_inputs(ctx.current_results, ctx.history)
+        payload = _build_results_payload(current_snapshot, history_meta_snapshot, include_raw=include_raw)
 
-            agg_entry = {
-                'record_types': set(),
-                'values': set(),
-                'decoded_ips': set(),
-                'servers': set(),
-                'ts': 0,
-                'txt_decodes': set(),
-                'a_decodes': set(),
-                'a_xor_keys': set(),
-                'ens_text_keys': set(),
-                'ens_decodes': set(),
-                'ens_xor_bytes': set(),
-                'ens_options': set(),
-            }
+        if ctx.cache_lock is not None:
+            with ctx.cache_lock:
+                ctx.results_cache[cache_key] = {
+                    'version': snap_version,
+                    'payload': payload,
+                }
 
-            for srv, info in m.items():
-                rtype = str(info.get('type') or 'A').upper()
-                values = [str(v) for v in (info.get('values', []) or []) if str(v or '').strip()]
-                decoded_ips = [str(v) for v in (info.get('decoded_ips', []) or []) if str(v or '').strip()]
-
-                entry = None
-                if include_raw:
-                    entry = {'type': rtype, 'values': values, 'decoded_ips': decoded_ips, 'ts': info.get('ts')}
-
-                if rtype == 'TXT' and info.get('txt_decode'):
-                    if entry is not None:
-                        entry['txt_decode'] = info.get('txt_decode')
-                    agg_entry['txt_decodes'].add(str(info.get('txt_decode')))
-
-                if rtype == 'A' and info.get('a_decode'):
-                    if entry is not None:
-                        entry['a_decode'] = info.get('a_decode')
-                    agg_entry['a_decodes'].add(str(info.get('a_decode')))
-
-                if rtype == 'A' and info.get('a_xor_key'):
-                    if entry is not None:
-                        entry['a_xor_key'] = info.get('a_xor_key')
-                    agg_entry['a_xor_keys'].add(str(info.get('a_xor_key')))
-
-                if rtype == 'ENS' and info.get('ens_text_key'):
-                    if entry is not None:
-                        entry['ens_text_key'] = info.get('ens_text_key')
-                    agg_entry['ens_text_keys'].add(str(info.get('ens_text_key')))
-                if rtype == 'ENS' and info.get('ens_decode'):
-                    if entry is not None:
-                        entry['ens_decode'] = info.get('ens_decode')
-                    agg_entry['ens_decodes'].add(str(info.get('ens_decode')))
-                if rtype == 'ENS' and info.get('ens_xor_byte') is not None and str(info.get('ens_xor_byte')).strip() != '':
-                    if entry is not None:
-                        entry['ens_xor_byte'] = info.get('ens_xor_byte')
-                    agg_entry['ens_xor_bytes'].add(str(info.get('ens_xor_byte')))
-                if rtype == 'ENS':
-                    opts_sig = ens_options_signature(info.get('ens_options'), legacy_xor_byte=info.get('ens_xor_byte'))
-                    if opts_sig:
-                        if entry is not None:
-                            entry['ens_options'] = info.get('ens_options') if isinstance(info.get('ens_options'), dict) else opts_sig
-                        agg_entry['ens_options'].add(opts_sig)
-
-                if include_raw:
-                    data[d][srv] = entry
-
-                agg_entry['record_types'].add(rtype)
-                agg_entry['values'].update(values)
-                agg_entry['decoded_ips'].update(decoded_ips)
-                agg_entry['servers'].add(str(srv))
-                try:
-                    agg_entry['ts'] = max(int(agg_entry['ts']), int(info.get('ts') or 0))
-                except Exception:
-                    pass
-
-            record_types = sorted(list(agg_entry['record_types']))
-            if len(record_types) == 1:
-                domain_type = record_types[0]
-            elif not record_types:
-                domain_type = 'A'
-            else:
-                domain_type = 'MIXED'
-
-            method_parts = []
-            if agg_entry['txt_decodes']:
-                method_parts.append('TXT:' + ','.join(sorted(agg_entry['txt_decodes'])))
-            if agg_entry['a_decodes']:
-                a_method = 'A:' + ','.join(sorted(agg_entry['a_decodes']))
-                if agg_entry['a_xor_keys']:
-                    a_method += f" ({','.join(sorted(agg_entry['a_xor_keys']))})"
-                method_parts.append(a_method)
-            if agg_entry['ens_text_keys']:
-                ens_method = 'ENS:' + ','.join(sorted(agg_entry['ens_text_keys']))
-                if agg_entry['ens_decodes']:
-                    ens_method += f" / decode:{','.join(sorted(agg_entry['ens_decodes']))}"
-                if agg_entry['ens_options']:
-                    ens_method += f" / options:{'|'.join(sorted(agg_entry['ens_options']))}"
-                elif agg_entry['ens_xor_bytes']:
-                    ens_method += f" / xor:{','.join(sorted(agg_entry['ens_xor_bytes']))}"
-                method_parts.append(ens_method)
-
-            data_agg[d] = {
-                'type': domain_type,
-                'record_types': record_types,
-                'values': sorted(list(agg_entry['values'])),
-                'decoded_ips': sorted(list(agg_entry['decoded_ips'])),
-                'servers': sorted(list(agg_entry['servers'])),
-                'server_count': len(agg_entry['servers']),
-                'ts': int(agg_entry['ts'] or 0),
-                'txt_decodes': sorted(list(agg_entry['txt_decodes'])),
-                'a_decodes': sorted(list(agg_entry['a_decodes'])),
-                'a_xor_keys': sorted(list(agg_entry['a_xor_keys'])),
-                'ens_text_keys': sorted(list(agg_entry['ens_text_keys'])),
-                'ens_decodes': sorted(list(agg_entry['ens_decodes'])),
-                'ens_xor_bytes': sorted(list(agg_entry['ens_xor_bytes'])),
-                'ens_options': sorted(list(agg_entry['ens_options'])),
-                'method_summary': ' / '.join(method_parts) if method_parts else '-',
-            }
-
-        domain_meta = {}
-        for d, h in (ctx.history or {}).items():
-            if not isinstance(h, dict):
-                continue
-            meta = h.get('meta', {}) if isinstance(h.get('meta', {}), dict) else {}
-            if not meta:
-                continue
-            domain_meta[d] = {
-                'nxdomain_active': bool(meta.get('nxdomain_active', False)),
-                'nxdomain_since': int(meta.get('nxdomain_since') or 0) if meta.get('nxdomain_since') else 0,
-                'nxdomain_first_seen': int(meta.get('nxdomain_first_seen') or 0) if meta.get('nxdomain_first_seen') else 0,
-                'nxdomain_cleared_ts': int(meta.get('nxdomain_cleared_ts') or 0) if meta.get('nxdomain_cleared_ts') else 0,
-            }
-
-        payload = {'results_agg': data_agg, 'domain_meta': domain_meta}
-        if include_raw:
-            payload['results'] = data
         send_json(handler, payload)
     except Exception as e:
         send_json(handler, {'error': str(e)}, 500)

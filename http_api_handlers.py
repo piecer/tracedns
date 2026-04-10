@@ -7,6 +7,7 @@ This module contains the web API handler methods extracted from http_server.py.
 import json
 import mimetypes
 import os
+import threading
 import time
 from urllib.parse import parse_qs, urlparse
 
@@ -26,6 +27,13 @@ from http_api.utils import send_json as _send_json_basic
 from http_api.settings_handlers import handle_settings_get as _handle_settings_get_basic
 from http_api.settings_handlers import handle_settings_post as _handle_settings_post_basic
 from http_api.relationship_handlers import handle_ip_relationship_analysis as _handle_ip_relationship_analysis
+from monitor.runtime_state import (
+    get_state_version,
+    snapshot_current_and_history_events,
+    snapshot_current_results_only,
+    snapshot_history_domain,
+    snapshot_history_meta_only,
+)
 
 
 try:
@@ -76,6 +84,7 @@ def attach_api_handlers(
     history,
     purge_removed_domains_state,
 ):
+    cache_lock = threading.RLock()
     ctx = HttpContext(
         frontend_html=frontend_html,
         shared_config=shared_config,
@@ -85,7 +94,10 @@ def attach_api_handlers(
         current_results=current_results,
         history=history,
         purge_removed_domains_state=purge_removed_domains_state,
+        cache_lock=cache_lock,
+        results_cache={},
     )
+    ips_cache = {'version': 0, 'rows': []}
 
     # Expose shared_config on the handler instance for specialized endpoints
     # (e.g. GeoIP mmdb path used by relationship/similarity analysis).
@@ -115,11 +127,19 @@ def attach_api_handlers(
     def _handle_settings_post(self):
         return _handle_settings_post_basic(ctx, self)
     
-    def _gather_ip_map(self):
+    def _gather_ip_rows(self):
+        version = get_state_version()
+        with cache_lock:
+            cached_version = int(ips_cache.get('version') or 0)
+            cached_rows = ips_cache.get('rows')
+            if cached_version == version and isinstance(cached_rows, list):
+                return cached_rows
+
+        snap_version, current_snapshot, history_snapshot = snapshot_current_and_history_events(current_results, history)
         ip_map = {}
-        # current results
-        for d, m in current_results.items():
-            for srv, info in m.items():
+
+        for d, m in current_snapshot.items():
+            for _srv, info in m.items():
                 for ip in info.get('values', []) if info.get('type') == 'A' else []:
                     ent = ip_map.setdefault(ip, {'domains': set(), 'count': 0, 'last_ts': 0})
                     ent['domains'].add(d)
@@ -130,10 +150,9 @@ def attach_api_handlers(
                     ent['domains'].add(d)
                     ent['count'] += 1
                     ent['last_ts'] = max(ent['last_ts'], info.get('ts', 0))
-    
-        # history events
-        for d, hist_obj in history.items():
-            events = hist_obj.get('events', []) if isinstance(hist_obj, dict) else (hist_obj or [])
+
+        for d, hist_obj in history_snapshot.items():
+            events = hist_obj.get('events', []) if isinstance(hist_obj, dict) else []
             for ev in events:
                 ts = ev.get('ts', 0)
                 if 'new' in ev or 'old' in ev:
@@ -162,6 +181,41 @@ def attach_api_handlers(
                             ent['domains'].add(d)
                             ent['count'] += 1
                             ent['last_ts'] = max(ent['last_ts'], ts)
+
+        rows = []
+        for ip, v in ip_map.items():
+            valid = True
+            try:
+                import ipaddress as _ip
+
+                _ip.ip_address(ip)
+            except Exception:
+                valid = False
+            rows.append({
+                'ip': ip,
+                'domains': sorted(list(v['domains'])),
+                'count': v['count'],
+                'last_ts': v['last_ts'],
+                'valid': valid,
+            })
+
+        rows.sort(key=lambda x: (-x['count'], -x['last_ts']))
+        with cache_lock:
+            ips_cache['version'] = snap_version
+            ips_cache['rows'] = rows
+        return rows
+
+    def _gather_ip_map(self):
+        ip_map = {}
+        for row in self._gather_ip_rows():
+            ip = str(row.get('ip') or '').strip()
+            if not ip:
+                continue
+            ip_map[ip] = {
+                'domains': set(row.get('domains') or []),
+                'count': int(row.get('count') or 0),
+                'last_ts': int(row.get('last_ts') or 0),
+            }
         return ip_map
     
     def _handle_domains(self):
@@ -173,10 +227,12 @@ def attach_api_handlers(
             domains = []
             # shared_config stores domains as list (name or dict)
             cfg_domains = shared_config.get('domains', []) or []
+            _, current_snapshot = snapshot_current_results_only(current_results)
+            _, history_meta_snapshot = snapshot_history_meta_only(history)
             seen_map = {}
             lifecycle_map = {}
             # determine last_ts per domain from current_results
-            for d, m in current_results.items():
+            for d, m in current_snapshot.items():
                 maxts = 0
                 servers = []
                 samples = []
@@ -191,9 +247,8 @@ def attach_api_handlers(
                 seen_map[d] = {'last_ts': maxts, 'servers': servers, 'samples': samples}
     
             # also check history meta last_changed/first_seen
-            for d, hist_obj in history.items():
+            for d, meta in history_meta_snapshot.items():
                 try:
-                    meta = hist_obj.get('meta', {}) if isinstance(hist_obj, dict) else {}
                     last_changed = meta.get('last_changed') or meta.get('first_seen') or 0
                     entry = seen_map.setdefault(d, {'last_ts': 0, 'servers': [], 'samples': []})
                     entry['last_ts'] = max(entry.get('last_ts', 0), int(last_changed or 0))
@@ -261,6 +316,8 @@ def attach_api_handlers(
                     include_vt = True
     
             cfg_domains = shared_config.get('domains', []) or []
+            _, current_snapshot = snapshot_current_results_only(current_results)
+            _, history_meta_snapshot = snapshot_history_meta_only(history)
             cfg_type_map = {}
             lifecycle_map = {}
             for d in cfg_domains:
@@ -273,9 +330,8 @@ def attach_api_handlers(
                 if name:
                     cfg_type_map[name] = typ
     
-            for d, hist_obj in (history or {}).items():
+            for d, meta in history_meta_snapshot.items():
                 try:
-                    meta = hist_obj.get('meta', {}) if isinstance(hist_obj, dict) else {}
                     lifecycle_map[d] = {
                         'nxdomain_active': bool(meta.get('nxdomain_active', False)),
                         'nxdomain_since': int(meta.get('nxdomain_since') or 0) if meta.get('nxdomain_since') else 0,
@@ -299,7 +355,7 @@ def attach_api_handlers(
                     'dns_error_only_active': bool(life.get('dns_error_only_active', False)),
                 }
     
-            for d, m in current_results.items():
+            for d, m in current_snapshot.items():
                 life = lifecycle_map.get(d, {})
                 ent = domain_map.setdefault(d, {
                     'domain': d,
@@ -1798,7 +1854,7 @@ def attach_api_handlers(
         - VT lookups can be parallelized via vt_workers.
         """
         try:
-            ip_map = self._gather_ip_map()
+            base_rows = self._gather_ip_rows()
 
             # apply 'since' filter if requested (seconds)
             since_val = qs.get('since', [None])[0]
@@ -1830,29 +1886,9 @@ def attach_api_handlers(
             vt_workers = _qs_int('vt_workers', 8, 1, 32)
             vt_budget = _qs_int('vt_budget', limit, 0, 5000)
 
-            out = []
-            for ip, v in ip_map.items():
-                # validate IP syntax
-                valid = True
-                try:
-                    import ipaddress as _ip
-                    _ip.ip_address(ip)
-                except Exception:
-                    valid = False
-                if cutoff is not None and v.get('last_ts', 0) < cutoff:
-                    continue
-                out.append({
-                    'ip': ip,
-                    'domains': sorted(list(v['domains'])),
-                    'count': v['count'],
-                    'last_ts': v['last_ts'],
-                    'valid': valid,
-                })
-
-            out.sort(key=lambda x: (-x['count'], -x['last_ts']))
-
+            out = [dict(row) for row in base_rows if cutoff is None or row.get('last_ts', 0) >= cutoff]
             total = len(out)
-            page = out[offset: offset + limit]
+            page = [dict(row) for row in out[offset: offset + limit]]
             truncated = (offset + limit) < total
 
             # VT enrichment only for the visible page (bounded + optionally parallel)
@@ -1900,15 +1936,16 @@ def attach_api_handlers(
     def _handle_history(self, domain):
         if not domain:
             return self._send_json({'error': 'domain required'}, 400)
-        h_obj = history.get(domain, {'meta': {}, 'events': [], 'current': {}})
+        _version, h_obj = snapshot_history_domain(history, domain)
         return self._send_json({'domain': domain, 'history': h_obj})
     
     def _handle_ip_query(self, ip):
         if not ip:
             return self._send_json({'error': 'ip required'}, 400)
+        _version, current_snapshot, history_snapshot = snapshot_current_and_history_events(current_results, history)
         matches = []
         # current results
-        for d, m in current_results.items():
+        for d, m in current_snapshot.items():
             for srv, info in m.items():
                 if info.get('type') == 'A' and ip in info.get('values', []):
                     matches.append({
@@ -1931,7 +1968,7 @@ def attach_api_handlers(
                     })
     
         # history
-        for d, hist_obj in history.items():
+        for d, hist_obj in history_snapshot.items():
             events = hist_obj.get('events', []) if isinstance(hist_obj, dict) else (hist_obj or [])
             for ev in events:
                 rtype = ev.get('type', 'A')
@@ -2247,29 +2284,7 @@ def attach_api_handlers(
             ip = data.get('ip')
             if not ip:
                 return self._send_json({'error': 'ip required'}, 400)
-            matches = []
-            for d, m in current_results.items():
-                for srv, info in m.items():
-                    if info.get('type') == 'A' and ip in info.get('values', []):
-                        matches.append({
-                            'domain': d,
-                            'server': srv,
-                            'type': 'current',
-                            'rtype': 'A',
-                            'ts': info.get('ts'),
-                            'values': list(info.get('values', []))
-                        })
-            for d, hist_obj in history.items():
-                events = hist_obj.get('events', []) if isinstance(hist_obj, dict) else (hist_obj or [])
-                for ev in events:
-                    rtype = ev.get('type', 'A')
-                    if 'new' in ev:
-                        if rtype == 'A' and (ip in ev.get('new', {}).get('values', []) or ip in ev.get('old', {}).get('values', [])):
-                            matches.append({'domain': d, 'server': ev.get('server'), 'type': 'history', 'rtype': rtype, 'ts': ev.get('ts'), 'old': ev.get('old'), 'new': ev.get('new')})
-                    elif 'values' in ev:
-                        if rtype == 'A' and ip in ev.get('values', []):
-                            matches.append({'domain': d, 'server': ev.get('server'), 'type': 'history', 'rtype': rtype, 'ts': ev.get('ts'), 'values': ev.get('values')})
-            return self._send_json({'ip': ip, 'matches': matches})
+            return self._handle_ip_query(ip)
     
         if parsed.path == '/analyze':
             length = int(self.headers.get('Content-Length', '0'))
@@ -2624,6 +2639,7 @@ def attach_api_handlers(
     handler_cls._handle_decoders = _handle_decoders
     handler_cls._handle_settings_get = _handle_settings_get
     handler_cls._handle_settings_post = _handle_settings_post
+    handler_cls._gather_ip_rows = _gather_ip_rows
     handler_cls._gather_ip_map = _gather_ip_map
     handler_cls._handle_domains = _handle_domains
     handler_cls._handle_domain_analysis = _handle_domain_analysis
