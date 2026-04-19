@@ -58,10 +58,42 @@ document.getElementById('menuValidIPs').onclick = ()=> showSection('validips');
 
 function log(msg){ document.getElementById('log').textContent += msg + "\n"; }
 const IPV4_PATTERN = /^(\d{1,3}\.){3}\d{1,3}$/;
+const IP_REL_PAIR_TABLE_RENDER_LIMIT = 1000;
+const IP_REL_CLUSTER_TABLE_RENDER_LIMIT = 1000;
+const IP_REL_GRAPH_EDGE_RENDER_LIMIT = 600;
+const IP_REL_GRAPH_NODE_RENDER_LIMIT = 400;
+const IP_REL_GRAPH_COSE_NODE_LIMIT = 180;
+const IP_REL_GRAPH_COSE_EDGE_LIMIT = 300;
 window.DOMAIN_ANALYSIS_CACHE = [];
 window.DOMAIN_ANALYSIS_INCLUDE_VT = true;
 window.DOMAIN_ANALYSIS_SELECTED_REMOVE = window.DOMAIN_ANALYSIS_SELECTED_REMOVE || new Set();
 window.DOMAIN_VERIFY_LAST = null;
+window.IP_REL_GRAPH_SIGNATURE = '';
+window.IP_REL_MAP_SIGNATURE = '';
+window.IP_REL_COUNTRY_CENTROIDS = null;
+window.IP_REL_COUNTRY_CENTROIDS_PROMISE = null;
+window.IP_REL_WORLD_GEOJSON = null;
+window.IP_REL_WORLD_GEOJSON_PROMISE = null;
+
+let ipIntelAnalyzeController = null;
+let ipIntelAnalyzeSeq = 0;
+let ipRelAnalyzeController = null;
+let ipRelAnalyzeSeq = 0;
+let ipIntelBusyCount = 0;
+let refreshDomainAnalysisInFlight = false;
+
+function setIpIntelBusy(isBusy){
+  ipIntelBusyCount = Math.max(0, ipIntelBusyCount + (isBusy ? 1 : -1));
+  const busy = ipIntelBusyCount > 0;
+  ['runIpIntelBtn', 'runIpRelationshipBtn', 'loadIpIntelMispBtn'].forEach(id=>{
+    const el = document.getElementById(id);
+    if(el) el.disabled = busy;
+  });
+}
+
+function isAbortError(e){
+  return !!(e && String(e.name || '') === 'AbortError');
+}
 
 function isIPv4(value){
   const s = String(value || '').trim();
@@ -916,6 +948,16 @@ function setSummaryMessage(tbody, colSpan, message){
   tbody.appendChild(tr);
 }
 
+function appendSummaryRow(tbody, colSpan, message){
+  if(!tbody) return;
+  const tr = document.createElement('tr');
+  const td = document.createElement('td');
+  td.colSpan = colSpan;
+  td.textContent = message;
+  tr.appendChild(td);
+  tbody.appendChild(tr);
+}
+
 function formatListPreview(values, maxItems){
   const maxN = Math.max(1, Number(maxItems || 3));
   const arr = Array.from(new Set((values || []).map(v=>String(v || '').trim()).filter(Boolean)));
@@ -1481,6 +1523,8 @@ async function removeSelectedNonResolvingDomains(){
 }
 
 async function refreshDomainAnalysis(){
+  if(refreshDomainAnalysisInFlight) return;
+  refreshDomainAnalysisInFlight = true;
   try{
     const includeVT = !!(document.getElementById('domain_analysis_include_vt') && document.getElementById('domain_analysis_include_vt').checked);
     const r = await fetch('/domain-analysis?include_vt=' + (includeVT ? '1' : '0'));
@@ -1496,6 +1540,8 @@ async function refreshDomainAnalysis(){
     applyDomainAnalysisFilter();
   }catch(e){
     console.log('refreshDomainAnalysis error', e);
+  }finally{
+    refreshDomainAnalysisInFlight = false;
   }
 }
 
@@ -1947,17 +1993,30 @@ async function analyzeIpIntel(){
   const acBody = document.querySelector('#ipIntelAsCountrySummaryTable tbody');
   const cspBody = document.querySelector('#ipIntelCspSummaryTable tbody');
 
+  if(ipIntelAnalyzeController){
+    try{ ipIntelAnalyzeController.abort(); }catch(e){}
+  }
+  ipIntelAnalyzeSeq += 1;
+
   if(!raw){
     if(meta) meta.textContent = 'Input IP list first';
     renderMergedIpIntelHints();
     return;
   }
+
+  const controller = (typeof AbortController === 'function') ? new AbortController() : null;
+  ipIntelAnalyzeController = controller;
+  const requestSeq = ipIntelAnalyzeSeq;
+  const isStale = ()=> requestSeq !== ipIntelAnalyzeSeq || ipIntelAnalyzeController !== controller;
+  setIpIntelBusy(true);
+
   if(meta) meta.textContent = 'Analyzing...';
 
   try{
     const r = await fetch('/ip-list-analysis', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
+      signal: controller ? controller.signal : undefined,
       body: JSON.stringify({
         ips: raw,
         include_vt: includeVT,
@@ -1967,6 +2026,7 @@ async function analyzeIpIntel(){
       })
     });
     const j = await r.json();
+    if(isStale()) return;
     if(!r.ok){
       if(meta) meta.textContent = `Analyze failed: ${(j && j.error) ? j.error : 'HTTP '+r.status}`;
       if(ipBody) setSummaryMessage(ipBody, 6, 'No data');
@@ -2119,8 +2179,14 @@ async function analyzeIpIntel(){
     }
     touchOverviewTs();
   }catch(e){
+    if(isAbortError(e) || isStale()) return;
     setIpIntelInfraInsights(inputSignature, [], null);
     if(meta) meta.textContent = 'Analyze error: ' + e;
+  }finally{
+    if(ipIntelAnalyzeController === controller){
+      ipIntelAnalyzeController = null;
+    }
+    setIpIntelBusy(false);
   }
 }
 
@@ -3398,6 +3464,7 @@ async function refreshValidIPs(){
     }
   }, 15000);
   setInterval(()=>{
+    if(isPaused()) return;
     const sec = document.getElementById('domainanalysis');
     if(!sec) return;
     if(sec.classList.contains('active')) refreshDomainAnalysis();
@@ -3772,12 +3839,64 @@ function getClusterColor(clusterIndex, clusterCount){
   return `hsl(${hue}, 66%, 46%)`;
 }
 
+function resetIpRelVisualCaches(){
+  window.IP_REL_GRAPH_SIGNATURE = '';
+  window.IP_REL_MAP_SIGNATURE = '';
+  if(window.IP_REL_GRAPH){
+    try{ window.IP_REL_GRAPH.destroy(); }catch(e){}
+    window.IP_REL_GRAPH = null;
+  }
+}
+
+function selectIpRelGraphPairs(rawPairs){
+  const pairs = (Array.isArray(rawPairs) ? rawPairs : [])
+    .filter(p=>p && String(p.a || '').trim() && String(p.b || '').trim())
+    .slice()
+    .sort((a, b)=>(
+      Number((b && b.score) || 0) - Number((a && a.score) || 0)
+    ) || String((a && a.a) || '').localeCompare(String((b && b.a) || '')) || String((a && a.b) || '').localeCompare(String((b && b.b) || '')));
+  const selected = [];
+  const nodesSet = new Set();
+  for(const p of pairs){
+    const a = String(p.a || '').trim();
+    const b = String(p.b || '').trim();
+    if(!a || !b || a === b) continue;
+    let addCount = 0;
+    if(!nodesSet.has(a)) addCount += 1;
+    if(!nodesSet.has(b)) addCount += 1;
+    if(nodesSet.size + addCount > IP_REL_GRAPH_NODE_RENDER_LIMIT) continue;
+    selected.push(p);
+    nodesSet.add(a);
+    nodesSet.add(b);
+    if(selected.length >= IP_REL_GRAPH_EDGE_RENDER_LIMIT) break;
+  }
+  return {pairs: selected, nodesSet};
+}
+
+function buildIpRelGraphSignature(cache, selectedPairs, nodesSet){
+  const pairSig = (selectedPairs || []).map(p=>[
+    String((p && p.a) || ''),
+    String((p && p.b) || ''),
+    Number((p && p.score) || 0)
+  ].join(':')).join('|');
+  return [
+    Number((cache && cache.valid_count) || 0),
+    Number((cache && cache.pair_count) || 0),
+    Number((cache && cache.min_score) || 0),
+    Number((cache && cache.top_pairs) || 0),
+    (nodesSet && nodesSet.size) || 0,
+    (selectedPairs || []).length,
+    pairSig
+  ].join('#');
+}
+
 function renderIpRelGraphFromCache(){
   const cache = window.IP_REL_CACHE;
   const el = document.getElementById('ipRelGraph');
   const details = document.getElementById('ipRelGraphDetails');
   if(!el) return;
   if(!cache || !Array.isArray(cache.pairs)){
+    resetIpRelVisualCaches();
     el.innerHTML = '<div style="padding:12px;color:#5b6a77;">Run Relationships first.</div>';
     return;
   }
@@ -3786,11 +3905,30 @@ function renderIpRelGraphFromCache(){
     return;
   }
 
-  const pairs = cache.pairs || [];
+  const graphSelection = selectIpRelGraphPairs(cache.pairs || []);
+  const pairs = graphSelection.pairs;
+  const nodesSet = graphSelection.nodesSet;
+  const graphSignature = buildIpRelGraphSignature(cache, pairs, nodesSet);
   const clusters = Array.isArray(cache.clusters) ? cache.clusters : [];
   const minScore = Number(cache.min_score || 40);
-  const nodesSet = new Set();
-  pairs.forEach(p=>{ nodesSet.add(String(p.a||'')); nodesSet.add(String(p.b||'')); });
+  const totalPairs = Array.isArray(cache.pairs) ? cache.pairs.length : 0;
+  if(!pairs.length){
+    resetIpRelVisualCaches();
+    el.innerHTML = '<div style="padding:12px;color:#5b6a77;">No pairs available for graph rendering.</div>';
+    if(details) details.textContent = `No graphable pairs.\nPairs: ${totalPairs} / MinScore: ${minScore}`;
+    return;
+  }
+  if(window.IP_REL_GRAPH && window.IP_REL_GRAPH_SIGNATURE === graphSignature){
+    try{
+      window.IP_REL_GRAPH.resize();
+      window.IP_REL_GRAPH.fit(undefined, 30);
+    }catch(e){}
+    if(details){
+      const limited = (pairs.length < totalPairs) ? `\nRendered with caps: ${nodesSet.size}/${IP_REL_GRAPH_NODE_RENDER_LIMIT} nodes, ${pairs.length}/${totalPairs} edges.` : '';
+      details.textContent = `Click a node/edge to see details.\nClusters: ${clusters.length} / MinScore: ${minScore}${limited}`;
+    }
+    return;
+  }
   const ipToCluster = new Map();
   clusters.forEach((c, idx)=>{
     const ips = Array.isArray(c && c.ips) ? c.ips : [];
@@ -3849,6 +3987,11 @@ function renderIpRelGraphFromCache(){
     window.IP_REL_GRAPH = null;
   }
 
+  const layout =
+    (nodesSet.size <= IP_REL_GRAPH_COSE_NODE_LIMIT && pairs.length <= IP_REL_GRAPH_COSE_EDGE_LIMIT)
+      ? { name: 'cose', animate: false, padding: 30, componentSpacing: 80, nodeRepulsion: 5000 }
+      : { name: 'grid', animate: false, fit: true, padding: 30 };
+
   window.IP_REL_GRAPH = cytoscape({
     container: el,
     elements,
@@ -3873,11 +4016,15 @@ function renderIpRelGraphFromCache(){
       { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#ffb703' } },
       { selector: 'edge:selected', style: { 'line-color': '#ff006e', 'opacity': 1.0 } }
     ],
-    layout: { name: 'cose', animate: false, padding: 30, componentSpacing: 80, nodeRepulsion: 5000 }
+    layout
   });
+  window.IP_REL_GRAPH_SIGNATURE = graphSignature;
 
   const cy = window.IP_REL_GRAPH;
-  if(details) details.textContent = `Click a node/edge to see details.\nClusters: ${clusters.length} / MinScore: ${minScore}`;
+  if(details){
+    const limited = (pairs.length < totalPairs) ? `\nRendered with caps: ${nodesSet.size}/${IP_REL_GRAPH_NODE_RENDER_LIMIT} nodes, ${pairs.length}/${totalPairs} edges.` : '';
+    details.textContent = `Click a node/edge to see details.\nClusters: ${clusters.length} / MinScore: ${minScore} / Layout: ${layout.name}${limited}`;
+  }
 
   cy.on('tap', 'node', (evt)=>{
     const d = evt.target.data();
@@ -3920,25 +4067,45 @@ function renderIpRelGraphFromCache(){
 
 async function loadCountryCentroids(){
   // Served as a static file (see ALLOWED_STATIC_FILES in server)
-  try{
-    const r = await fetch('/country_centroids.json');
-    if(!r.ok) return null;
-    const j = await r.json();
-    return j;
-  }catch(e){
-    return null;
-  }
+  if(window.IP_REL_COUNTRY_CENTROIDS) return window.IP_REL_COUNTRY_CENTROIDS;
+  if(window.IP_REL_COUNTRY_CENTROIDS_PROMISE) return window.IP_REL_COUNTRY_CENTROIDS_PROMISE;
+  window.IP_REL_COUNTRY_CENTROIDS_PROMISE = (async ()=>{
+    try{
+      const r = await fetch('/country_centroids.json');
+      if(!r.ok){
+        window.IP_REL_COUNTRY_CENTROIDS_PROMISE = null;
+        return null;
+      }
+      const j = await r.json();
+      window.IP_REL_COUNTRY_CENTROIDS = j;
+      return j;
+    }catch(e){
+      window.IP_REL_COUNTRY_CENTROIDS_PROMISE = null;
+      return null;
+    }
+  })();
+  return window.IP_REL_COUNTRY_CENTROIDS_PROMISE;
 }
 
 async function loadWorldGeoJson(){
-  try{
-    const r = await fetch('/world_countries_110m.geojson');
-    if(!r.ok) return null;
-    const j = await r.json();
-    return j;
-  }catch(e){
-    return null;
-  }
+  if(window.IP_REL_WORLD_GEOJSON) return window.IP_REL_WORLD_GEOJSON;
+  if(window.IP_REL_WORLD_GEOJSON_PROMISE) return window.IP_REL_WORLD_GEOJSON_PROMISE;
+  window.IP_REL_WORLD_GEOJSON_PROMISE = (async ()=>{
+    try{
+      const r = await fetch('/world_countries_110m.geojson');
+      if(!r.ok){
+        window.IP_REL_WORLD_GEOJSON_PROMISE = null;
+        return null;
+      }
+      const j = await r.json();
+      window.IP_REL_WORLD_GEOJSON = j;
+      return j;
+    }catch(e){
+      window.IP_REL_WORLD_GEOJSON_PROMISE = null;
+      return null;
+    }
+  })();
+  return window.IP_REL_WORLD_GEOJSON_PROMISE;
 }
 
 function clearIpRelMapMarkers(){
@@ -3947,6 +4114,7 @@ function clearIpRelMapMarkers(){
   }catch(e){}
   window.IP_REL_MAP_MARKERS = [];
   window.IP_REL_MAP_SVG = null;
+  window.IP_REL_MAP_SIGNATURE = '';
 }
 
 function projectLatLon(lat, lon, width, height){
@@ -4036,23 +4204,42 @@ function geojsonToPath(feature, width, height){
   return parts.join('');
 }
 
+function buildIpRelMapSignature(cache, width, height){
+  const rows = Array.isArray(cache && cache.country_summary) ? cache.country_summary.slice() : [];
+  rows.sort((a, b)=>String((a && a.country) || '').localeCompare(String((b && b.country) || '')));
+  const rowSig = rows.map(row=>[
+    String((row && row.country) || ''),
+    Number((row && row.ip_count) || 0),
+    Number((row && row.malicious_ips) || 0),
+    Number((row && row.suspicious_ips) || 0),
+    Number((row && row.asn_count) || 0)
+  ].join(':')).join('|');
+  return [Number(width || 0), Number(height || 0), rowSig].join('#');
+}
+
 async function renderIpRelMapFromCache(){
   const cache = window.IP_REL_CACHE;
   const el = document.getElementById('ipRelMap');
   if(!el) return;
   if(!cache || !Array.isArray(cache.country_summary)){
+    window.IP_REL_MAP_SVG = null;
+    window.IP_REL_MAP_SIGNATURE = '';
     el.innerHTML = '<div style="padding:12px;color:#5b6a77;">Run Relationships first.</div>';
     return;
   }
 
   const centroids = await loadCountryCentroids();
   if(!centroids){
+    window.IP_REL_MAP_SVG = null;
+    window.IP_REL_MAP_SIGNATURE = '';
     el.innerHTML = '<div style="padding:12px;color:#5b6a77;">country_centroids.json not available.</div>';
     return;
   }
 
   const world = await loadWorldGeoJson();
   if(!world || !Array.isArray(world.features)){
+    window.IP_REL_MAP_SVG = null;
+    window.IP_REL_MAP_SIGNATURE = '';
     el.innerHTML = '<div style="padding:12px;color:#5b6a77;">world_countries_110m.geojson not available.</div>';
     return;
   }
@@ -4060,8 +4247,13 @@ async function renderIpRelMapFromCache(){
   const rect = el.getBoundingClientRect();
   const width = Math.max(520, Math.round(rect.width || 520));
   const height = Math.max(520, Math.round(rect.height || 520));
+  const mapSignature = buildIpRelMapSignature(cache, width, height);
+  if(window.IP_REL_MAP_SVG && window.IP_REL_MAP_SIGNATURE === mapSignature){
+    return;
+  }
   const svg = buildSvgMap(el, width, height);
   window.IP_REL_MAP_SVG = svg;
+  window.IP_REL_MAP_SIGNATURE = mapSignature;
 
   const landGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
   landGroup.setAttribute('fill', '#eef3f8');
@@ -4415,6 +4607,125 @@ function updateIpRelGateUi(){
     if(el) el.disabled = !enabled;
   });
 }
+
+function renderIpRelationshipPairsTable(tbody, pairs){
+  if(!tbody) return;
+  tbody.innerHTML = '';
+  const allPairs = Array.isArray(pairs) ? pairs : [];
+  if(!allPairs.length){
+    setSummaryMessage(tbody, 4, 'No strong pairs found (try lowering min score)');
+    return;
+  }
+  const shownPairs = allPairs.slice(0, IP_REL_PAIR_TABLE_RENDER_LIMIT);
+  const frag = document.createDocumentFragment();
+  shownPairs.forEach(it=>{
+    const tr = document.createElement('tr');
+    const a = String((it && it.a) || '');
+    const b = String((it && it.b) || '');
+    const score = Number((it && it.score) || 0);
+    const ev = it && it.evidence;
+
+    const tdA = document.createElement('td');
+    tdA.textContent = a;
+    if(isIPv4(a)){
+      tdA.style.cursor = 'pointer';
+      tdA.title = 'Open in Query';
+      tdA.onclick = ()=> openQueryForValue(a);
+    }
+
+    const tdB = document.createElement('td');
+    tdB.textContent = b;
+    if(isIPv4(b)){
+      tdB.style.cursor = 'pointer';
+      tdB.title = 'Open in Query';
+      tdB.onclick = ()=> openQueryForValue(b);
+    }
+
+    const tdS = document.createElement('td'); tdS.textContent = String(score);
+    const tdE = document.createElement('td');
+    tdE.className = 'evidence-cell';
+    const evMain = document.createElement('div');
+    evMain.className = 'evidence-main';
+    evMain.textContent = summarizeEvidence(ev);
+    const evSub = document.createElement('div');
+    evSub.className = 'evidence-sub';
+    evSub.textContent = formatEvidenceDetails(ev);
+    tdE.appendChild(evMain);
+    if(evSub.textContent !== '-'){
+      tdE.appendChild(evSub);
+    }
+    if(it && it.gate_reason){
+      const evNote = document.createElement('div');
+      evNote.className = 'evidence-note';
+      evNote.textContent = `gate: ${String(it.gate_reason)}`;
+      tdE.appendChild(evNote);
+    }
+    tdE.title = formatEvidenceDetails(ev);
+
+    tr.appendChild(tdA); tr.appendChild(tdB); tr.appendChild(tdS); tr.appendChild(tdE);
+    frag.appendChild(tr);
+  });
+  tbody.appendChild(frag);
+  if(allPairs.length > shownPairs.length){
+    appendSummaryRow(tbody, 4, `Showing top ${shownPairs.length} of ${allPairs.length} pairs for browser stability.`);
+  }
+}
+
+function renderIpRelationshipClustersTable(tbody, clusters, vtEnabled){
+  if(!tbody) return;
+  tbody.innerHTML = '';
+  const allClusters = (Array.isArray(clusters) ? clusters : []).slice().sort((a, b)=>{
+    const aMulti = Number((a && a.size) || 0) >= 2 ? 1 : 0;
+    const bMulti = Number((b && b.size) || 0) >= 2 ? 1 : 0;
+    if(aMulti !== bMulti) return bMulti - aMulti;
+    return Number((b && b.size) || 0) - Number((a && a.size) || 0);
+  });
+  if(!allClusters.length){
+    setSummaryMessage(tbody, 8, 'No clusters');
+    return;
+  }
+  const shownClusters = allClusters.slice(0, IP_REL_CLUSTER_TABLE_RENDER_LIMIT);
+  const frag = document.createDocumentFragment();
+  shownClusters.forEach((c, idx)=>{
+    const tr = document.createElement('tr');
+    const ips = Array.isArray(c && c.ips) ? c.ips : [];
+    const vt = c && c.vt_summary || null;
+    const vtTxt = vt
+      ? `M:${vt.malicious_total || 0} S:${vt.suspicious_total || 0}`
+      : (vtEnabled ? '-' : 'VT off');
+
+    const tdId = document.createElement('td'); tdId.textContent = String(idx + 1);
+    const tdSz = document.createElement('td'); tdSz.textContent = String((c && c.size) || ips.length || 0);
+    const tdCoh = document.createElement('td'); tdCoh.textContent = (c && c.cohesion != null) ? Number(c.cohesion).toFixed(1) : '-';
+    const tdAsn = document.createElement('td'); tdAsn.textContent = ((c && c.top_asn) || []).map(x=>x[0]+'('+x[1]+')').join(', ') || '-';
+    const tdOwn = document.createElement('td'); tdOwn.textContent = ((c && c.top_owner) || []).map(x=>x[0]+'('+x[1]+')').join(', ') || '-';
+    const tdCty = document.createElement('td'); tdCty.textContent = ((c && c.top_country) || []).map(x=>x[0]+'('+x[1]+')').join(', ') || '-';
+    const tdCsp = document.createElement('td'); tdCsp.textContent = ((c && c.top_csp) || []).map(x=>x[0]+'('+x[1]+')').join(', ') || '-';
+    const tdVt = document.createElement('td'); tdVt.textContent = vtTxt;
+
+    tr.style.cursor = 'pointer';
+    const fp = [];
+    if(Array.isArray(c && c.top_network) && c.top_network.length) fp.push('net ' + c.top_network.map(x=>x[0]+'('+x[1]+')').join(', '));
+    if(Array.isArray(c && c.top_rir) && c.top_rir.length) fp.push('rir ' + c.top_rir.map(x=>x[0]+'('+x[1]+')').join(', '));
+    if(Array.isArray(c && c.top_jarm) && c.top_jarm.length) fp.push('jarm ' + c.top_jarm.map(x=>x[0]+'('+x[1]+')').join(', '));
+    if(Array.isArray(c && c.top_cert) && c.top_cert.length) fp.push('cert ' + c.top_cert.map(x=>x[0]+'('+x[1]+')').join(', '));
+    tr.title = fp.length
+      ? `Click to analyze this cluster in Per-IP Details\n${fp.join(' | ')}`
+      : 'Click to analyze this cluster in Per-IP Details';
+    tr.onclick = async ()=>{
+      const ta = document.getElementById('ipIntelInput');
+      if(ta) ta.value = ips.join('\n');
+      await analyzeIpIntel();
+    };
+
+    tr.appendChild(tdId); tr.appendChild(tdSz); tr.appendChild(tdCoh); tr.appendChild(tdAsn); tr.appendChild(tdOwn); tr.appendChild(tdCty); tr.appendChild(tdCsp); tr.appendChild(tdVt);
+    frag.appendChild(tr);
+  });
+  tbody.appendChild(frag);
+  if(allClusters.length > shownClusters.length){
+    appendSummaryRow(tbody, 8, `Showing top ${shownClusters.length} of ${allClusters.length} clusters for browser stability.`);
+  }
+}
 // Ensure buttons are wired after DOM is ready.
 if(document.readyState === 'loading'){
   document.addEventListener('DOMContentLoaded', ()=>{
@@ -4451,13 +4762,25 @@ async function analyzeIpRelationships(){
   const pairsBody = document.querySelector('#ipRelPairsTable tbody');
   const clustersBody = document.querySelector('#ipRelClustersTable tbody');
 
+  if(ipRelAnalyzeController){
+    try{ ipRelAnalyzeController.abort(); }catch(e){}
+  }
+  ipRelAnalyzeSeq += 1;
+
   if(!raw){
+    resetIpRelVisualCaches();
     if(meta) meta.textContent = 'Input IP list first';
     if(pairsBody) setSummaryMessage(pairsBody, 4, 'No data');
     if(clustersBody) setSummaryMessage(clustersBody, 8, 'No data');
     renderMergedIpIntelHints();
     return;
   }
+
+  const controller = (typeof AbortController === 'function') ? new AbortController() : null;
+  ipRelAnalyzeController = controller;
+  const requestSeq = ipRelAnalyzeSeq;
+  const isStale = ()=> requestSeq !== ipRelAnalyzeSeq || ipRelAnalyzeController !== controller;
+  setIpIntelBusy(true);
 
   // default view
   setIpRelView('table');
@@ -4472,6 +4795,7 @@ async function analyzeIpRelationships(){
     const r = await fetch('/ip-relationship-analysis', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
+      signal: controller ? controller.signal : undefined,
       body: JSON.stringify({
         ips: raw,
         min_score: minScore,
@@ -4489,6 +4813,7 @@ async function analyzeIpRelationships(){
       })
     });
     const j = await r.json();
+    if(isStale()) return;
     if(!r.ok || !j || j.status !== 'ok'){
       if(meta) meta.textContent = `Similarity analysis failed: ${(j && j.error) ? j.error : 'HTTP '+r.status}`;
       if(pairsBody) setSummaryMessage(pairsBody, 4, 'No data');
@@ -4498,6 +4823,7 @@ async function analyzeIpRelationships(){
     }
 
     window.IP_REL_CACHE = j;
+    resetIpRelVisualCaches();
     setIpIntelRelationshipInsights(inputSignature, j);
 
     if(meta){
@@ -4525,110 +4851,26 @@ async function analyzeIpRelationships(){
 
     // pairs
     if(pairsBody){
-      pairsBody.innerHTML = '';
       const pairs = Array.isArray(j.pairs) ? j.pairs : [];
       setIpRelPairsPanelVisible(pairPanelWasOpen, { pairCount: pairs.length });
-      if(!pairs.length){
-        setSummaryMessage(pairsBody, 4, 'No strong pairs found (try lowering min score)');
-      } else {
-        pairs.forEach(it=>{
-          const tr = document.createElement('tr');
-          const a = String((it && it.a) || '');
-          const b = String((it && it.b) || '');
-          const score = Number((it && it.score) || 0);
-          const ev = it && it.evidence;
-
-          const tdA = document.createElement('td');
-          tdA.textContent = a;
-          if(isIPv4(a)){
-            tdA.style.cursor = 'pointer';
-            tdA.title = 'Open in Query';
-            tdA.onclick = ()=> openQueryForValue(a);
-          }
-
-          const tdB = document.createElement('td');
-          tdB.textContent = b;
-          if(isIPv4(b)){
-            tdB.style.cursor = 'pointer';
-            tdB.title = 'Open in Query';
-            tdB.onclick = ()=> openQueryForValue(b);
-          }
-
-          const tdS = document.createElement('td'); tdS.textContent = String(score);
-          const tdE = document.createElement('td');
-          tdE.className = 'evidence-cell';
-          const evMain = document.createElement('div');
-          evMain.className = 'evidence-main';
-          evMain.textContent = summarizeEvidence(ev);
-          const evSub = document.createElement('div');
-          evSub.className = 'evidence-sub';
-          evSub.textContent = formatEvidenceDetails(ev);
-          tdE.appendChild(evMain);
-          if(evSub.textContent !== '-'){
-            tdE.appendChild(evSub);
-          }
-          if(it && it.gate_reason){
-            const evNote = document.createElement('div');
-            evNote.className = 'evidence-note';
-            evNote.textContent = `gate: ${String(it.gate_reason)}`;
-            tdE.appendChild(evNote);
-          }
-          tdE.title = formatEvidenceDetails(ev);
-
-          tr.appendChild(tdA); tr.appendChild(tdB); tr.appendChild(tdS); tr.appendChild(tdE);
-          pairsBody.appendChild(tr);
-        });
-      }
+      renderIpRelationshipPairsTable(pairsBody, pairs);
     }
 
     // clusters
     if(clustersBody){
-      clustersBody.innerHTML = '';
       const clusters = Array.isArray(j.clusters) ? j.clusters : [];
-      if(!clusters.length){
-        setSummaryMessage(clustersBody, 8, 'No clusters');
-      } else {
-        clusters.forEach((c, idx)=>{
-          const tr = document.createElement('tr');
-          const ips = Array.isArray(c.ips) ? c.ips : [];
-          const vt = c.vt_summary || null;
-          const vtTxt = vt
-            ? `M:${vt.malicious_total || 0} S:${vt.suspicious_total || 0}`
-            : (j.vt_enabled ? '-' : 'VT off');
-
-          const tdId = document.createElement('td'); tdId.textContent = String(idx + 1);
-          const tdSz = document.createElement('td'); tdSz.textContent = String(c.size || ips.length || 0);
-          const tdCoh = document.createElement('td'); tdCoh.textContent = (c.cohesion != null) ? Number(c.cohesion).toFixed(1) : '-';
-          const tdAsn = document.createElement('td'); tdAsn.textContent = (c.top_asn||[]).map(x=>x[0]+'('+x[1]+')').join(', ') || '-';
-          const tdOwn = document.createElement('td'); tdOwn.textContent = (c.top_owner||[]).map(x=>x[0]+'('+x[1]+')').join(', ') || '-';
-          const tdCty = document.createElement('td'); tdCty.textContent = (c.top_country||[]).map(x=>x[0]+'('+x[1]+')').join(', ') || '-';
-          const tdCsp = document.createElement('td'); tdCsp.textContent = (c.top_csp||[]).map(x=>x[0]+'('+x[1]+')').join(', ') || '-';
-          const tdVt = document.createElement('td'); tdVt.textContent = vtTxt;
-
-          tr.style.cursor = 'pointer';
-          const fp = [];
-          if(Array.isArray(c.top_network) && c.top_network.length) fp.push('net ' + c.top_network.map(x=>x[0]+'('+x[1]+')').join(', '));
-          if(Array.isArray(c.top_rir) && c.top_rir.length) fp.push('rir ' + c.top_rir.map(x=>x[0]+'('+x[1]+')').join(', '));
-          if(Array.isArray(c.top_jarm) && c.top_jarm.length) fp.push('jarm ' + c.top_jarm.map(x=>x[0]+'('+x[1]+')').join(', '));
-          if(Array.isArray(c.top_cert) && c.top_cert.length) fp.push('cert ' + c.top_cert.map(x=>x[0]+'('+x[1]+')').join(', '));
-          tr.title = fp.length
-            ? `Click to analyze this cluster in Per-IP Details\n${fp.join(' | ')}`
-            : 'Click to analyze this cluster in Per-IP Details';
-          tr.onclick = async ()=>{
-            const ta = document.getElementById('ipIntelInput');
-            if(ta) ta.value = ips.join('\n');
-            await analyzeIpIntel();
-          };
-
-          tr.appendChild(tdId); tr.appendChild(tdSz); tr.appendChild(tdCoh); tr.appendChild(tdAsn); tr.appendChild(tdOwn); tr.appendChild(tdCty); tr.appendChild(tdCsp); tr.appendChild(tdVt);
-          clustersBody.appendChild(tr);
-        });
-      }
+      renderIpRelationshipClustersTable(clustersBody, clusters, !!j.vt_enabled);
     }
 
     touchOverviewTs();
   }catch(e){
+    if(isAbortError(e) || isStale()) return;
     clearIpIntelRelationshipInsights(inputSignature);
     if(meta) meta.textContent = 'Similarity analysis error: ' + e;
+  }finally{
+    if(ipRelAnalyzeController === controller){
+      ipRelAnalyzeController = null;
+    }
+    setIpIntelBusy(false);
   }
 }

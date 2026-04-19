@@ -5,6 +5,9 @@ __pycache__/
 *.bak
 
 .gdb_history
+.codex
+.codex/
+venv/
 
 # Runtime/cache artifacts
 vt_cache.json
@@ -13,6 +16,7 @@ dns_history/
 dns_config.json
 dns_config.json.history/
 dns_config.json.history_backup/
+dns_config.json.history_backup_*/
 dns_config.json.history_backup_260214/
 dns_config.json.history_backup_260217/
 dns_config.json.history_xxx/

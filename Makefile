@@ -6,6 +6,9 @@ PIP := pip3
 install:
 	$(PIP) install -r requirements.txt
 
+test:
+	PYTHONPATH=$(abspath ..) $(PYTHON) -m unittest discover -s tests -p 'test_*.py' -v
+
 run:
 	$(PYTHON) dns_monitor.py
 
