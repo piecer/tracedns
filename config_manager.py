@@ -24,6 +24,35 @@ def _parse_json_object(value):
     return None
 
 
+def domain_identity(value):
+    """Return a stable identity for one configured domain target.
+
+    A plain domain name remains unique by name for legacy DNS records. ENS
+    targets may monitor multiple text records on the same ENS name, so their
+    identity also includes the ENS text record key.
+    """
+    if isinstance(value, dict):
+        name = str(value.get('name', '')).strip().rstrip('.').lower()
+        typ = str(value.get('type') or 'A').strip().upper() or 'A'
+        if typ == 'ENS':
+            text_key = str(value.get('ens_text_key') or 'ipv6').strip().lower() or 'ipv6'
+            return f"{name}|ENS|{text_key}"
+        return name
+    return str(value or '').strip().rstrip('.').lower()
+
+
+def domain_storage_name(value):
+    """Return the runtime/history key used to store one configured target."""
+    if isinstance(value, dict):
+        name = str(value.get('name', '')).strip().rstrip('.')
+        typ = str(value.get('type') or 'A').strip().upper() or 'A'
+        if typ == 'ENS':
+            text_key = str(value.get('ens_text_key') or 'ipv6').strip() or 'ipv6'
+            return f"{name} [ENS:{text_key}]"
+        return name
+    return str(value or '').strip().rstrip('.')
+
+
 def read_config(path):
     """
     Read a JSON config file and return as a dict.
@@ -116,11 +145,13 @@ def normalize_domains(value):
                 ens_decode = None
                 ens_xor_byte = None
                 ens_options = None
-                if name and name not in seen:
-                    out.append({'name': name, 'type': typ})
-                    seen.add(name)
+                item = {'name': name, 'type': typ}
+                ident = domain_identity(item)
+                if name and ident not in seen:
+                    out.append(item)
+                    seen.add(ident)
             continue
-        if not name or name in seen:
+        if not name:
             continue
         d = {'name': name, 'type': typ}
         if txt_decode:
@@ -139,6 +170,9 @@ def normalize_domains(value):
             elif ens_xor_byte is not None and str(ens_xor_byte).strip() != '':
                 # legacy fallback for old config entries
                 d['ens_options'] = {'xor_byte': str(ens_xor_byte).strip()}
+        ident = domain_identity(d)
+        if ident in seen:
+            continue
         out.append(d)
-        seen.add(name)
+        seen.add(ident)
     return out
