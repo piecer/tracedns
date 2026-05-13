@@ -1,6 +1,16 @@
 import unittest
+import os
+import sys
+import ipaddress
+import json
+from pathlib import Path
 
-from tracedns import ens_decoder
+HERE = os.path.dirname(__file__)
+ROOT = os.path.abspath(os.path.join(HERE, ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+import ens_decoder
 
 
 class TestEnsDecoder(unittest.TestCase):
@@ -28,6 +38,23 @@ class TestEnsDecoder(unittest.TestCase):
         opts = ens_decoder.parse_ens_options('{"xor_byte":"0xA5","segment":"5to8"}', strict=True)
         self.assertEqual(opts.get("xor_byte"), "0xA5")
         self.assertEqual(opts.get("segment"), "5to8")
+
+    def test_ROL3210_decode_decodes_prefixed_raw_record(self):
+        rec = "network\x02%2001:db8:6547:cae0::1"
+        out = ens_decoder.decode_ens_hidden_ips(rec, method="ROL3210_decode")
+        self.assertEqual(out, ["43.157.149.8"])
+
+    def test_ROL3210_decode_matches_preserved_corpus(self):
+        artifact_path = Path(ROOT) / "docs" / "ens" / "betavpn-network-full-decoder.json"
+        artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+        for entry in artifact["mappings"]:
+            packed = ipaddress.IPv6Address(entry["network_value"]).packed[4:8].hex()
+            out = ens_decoder.decode_ens_hidden_ips(entry["network_value"], method="ROL3210_decode")
+            self.assertEqual(
+                out,
+                [entry["decoded_ipv4"]],
+                msg=f"failed to decode {entry['network_value']} from {packed}",
+            )
 
     def test_unknown_method_returns_empty(self):
         out = ens_decoder.decode_ens_hidden_ips("2001:db8:1234:5678::1", method="unknown")

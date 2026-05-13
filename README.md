@@ -110,6 +110,13 @@ Optional flags:
 - `--xor-byte <byte>` legacy shortcut (mapped to `ens_options.xor_byte` when `--ens-options` is not set)
 - `--raw-only` to print only raw ENS text
 
+Notable ENS methods:
+
+- `ipv6_5to8_xor`: take IPv6 bytes 5:8 and XOR each byte into an IPv4.
+- `ROL3210_decode`: take IPv6 bytes 5:8 and apply the board-supplied `rol8`/bitmask transform used by the current betavpn `network` cluster.
+
+The exact 25-entry betavpn `network` source-to-IOC corpus is still preserved under `docs/ens/` for traceability and IOC extraction.
+
 ## Contributing
 
 Contributions are welcome. Please open issues or PRs with focused changes. When editing or translating user-facing strings, avoid renaming programmatic keys in `dns_config.json`.

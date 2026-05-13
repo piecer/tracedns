@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, List
 
 
 ENS_DECODE_METHODS: Dict[str, Callable[..., List[str]]] = {}
+_IPV6_CANDIDATE_RE = re.compile(r"[0-9A-Fa-f:]{2,}")
 
 
 def ens_decode_register(name: str):
@@ -101,8 +102,51 @@ def _split_tokens(record: str) -> List[str]:
     return [x.strip() for x in s.split(',') if x and x.strip()]
 
 
+def _extract_ipv6_token(value: str) -> str | None:
+    text = str(value or '').strip()
+    if not text:
+        return None
+    candidates = [text]
+    candidates.extend(match.group(0) for match in _IPV6_CANDIDATE_RE.finditer(text))
+    for candidate in candidates:
+        if candidate.count(':') < 2:
+            continue
+        try:
+            return str(ipaddress.IPv6Address(candidate))
+        except Exception:
+            continue
+    return None
+
+
 def _ipv6_packed(token: str) -> bytes:
     return ipaddress.IPv6Address(str(token).strip()).packed
+
+
+def _decode_ipv6_5to8(record: str, decoder: Callable[[bytes], bytes]) -> List[str]:
+    out = []
+    seen = set()
+    for tok in _split_tokens(record):
+        ipv6_token = _extract_ipv6_token(tok)
+        if not ipv6_token:
+            continue
+        try:
+            src = _ipv6_packed(ipv6_token)[4:8]
+            if len(src) != 4:
+                continue
+            ip = str(ipaddress.IPv4Address(decoder(src)))
+            if ip not in seen:
+                seen.add(ip)
+                out.append(ip)
+        except Exception:
+            continue
+    return sorted(out)
+
+
+def _rol8(value: int, shift: int) -> int:
+    shift = int(shift) % 8
+    if shift == 0:
+        return int(value) & 0xFF
+    return ((int(value) << shift) | (int(value) >> (8 - shift))) & 0xFF
 
 
 @ens_decode_register('none')
@@ -120,22 +164,27 @@ def decode_ens_ipv6_5to8_xor(record: str, xor_byte=None, **kwargs) -> List[str]:
       - output bytes: source ^ xor_byte (default 0xA5)
     """
     xb = _parse_xor_byte(xor_byte, default=0xA5)
-    out = []
-    seen = set()
-    for tok in _split_tokens(record):
-        try:
-            packed = _ipv6_packed(tok)
-            src = packed[4:8]
-            if len(src) != 4:
-                continue
-            dec = bytes([(b ^ xb) & 0xFF for b in src])
-            ip = str(ipaddress.IPv4Address(dec))
-            if ip not in seen:
-                seen.add(ip)
-                out.append(ip)
-        except Exception:
-            continue
-    return sorted(out)
+    return _decode_ipv6_5to8(
+        record,
+        lambda src: bytes([(b ^ xb) & 0xFF for b in src]),
+    )
+
+
+@ens_decode_register('ROL3210_decode')
+def decode_ens_ROL3210_decode(record: str, **kwargs) -> List[str]:
+    """Board-supplied betavpn `network` decoder using IPv6 bytes 5~8."""
+
+    def _decode(src: bytes) -> bytes:
+        xx, yy, zz, ww = src
+        ip0 = _rol8(xx, 3)
+        yy_eff = yy ^ 0x20 if xx in (0x65, 0x71) else yy
+        ip1 = _rol8(yy_eff, 2)
+        base2 = _rol8(zz, 1)
+        ip2 = (base2 + ((~(base2 << 1)) & 0x08)) & 0xFF
+        ip3 = (ww + ((~(ww << 1)) & 0xA8)) & 0xFF
+        return bytes([ip0, ip1, ip2, ip3])
+
+    return _decode_ipv6_5to8(record, _decode)
 
 
 @ens_decode_register('legacy_doc_sample')

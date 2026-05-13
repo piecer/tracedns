@@ -1,6 +1,13 @@
 import unittest
+import os
+import sys
 
-from tracedns import config_manager as cm
+HERE = os.path.dirname(__file__)
+ROOT = os.path.abspath(os.path.join(HERE, ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+import config_manager as cm
 
 
 class TestConfigManager(unittest.TestCase):
