@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from alerts import alert_new_ips, alert_removed_ips
+from config_manager import domain_storage_name
 from history_manager import persist_history_entry
 from models import DomainSpec, coerce_domains, Snapshot
 
@@ -112,9 +113,14 @@ def run_domain_cycle(
       [(ip, domain, source_type), ...]
     Updates NXDOMAIN lifecycle.
     """
-    name = domain.name
+    query_name = domain.name
     rtype = str(domain.type or 'A').upper()
-    if not name:
+    name = domain_storage_name({
+        'name': query_name,
+        'type': rtype,
+        'ens_text_key': domain.ens_text_key,
+    })
+    if not query_name or not name:
         return []
 
     with _STATE_LOCK:
@@ -146,7 +152,7 @@ def run_domain_cycle(
 
             if status == 'nxdomain':
                 domain_nxdomain_count += 1
-                logger.info("DNS %s returned NXDOMAIN for %s (%s)", srv, name, rtype)
+                logger.info("DNS %s returned NXDOMAIN for %s (%s)", srv, query_name, rtype)
             elif status in ('ok', 'nodata'):
                 domain_success_count += 1
             elif status == 'error':
@@ -327,8 +333,13 @@ def run_full_cycle(
     # Ensure entries
     for ds in domains:
         if ds.name:
-            current_results.setdefault(ds.name, {})
-            history.setdefault(ds.name, {'meta': {}, 'events': [], 'current': {}})
+            storage_name = domain_storage_name({
+                'name': ds.name,
+                'type': ds.type,
+                'ens_text_key': ds.ens_text_key,
+            })
+            current_results.setdefault(storage_name, {})
+            history.setdefault(storage_name, {'meta': {}, 'events': [], 'current': {}})
 
     cycle_added_tuples: List[Tuple[str, str, str]] = []
     for ds in target_domains:
@@ -381,11 +392,19 @@ def run_full_cycle(
     # Removal reconciliation only after full configured scan (not force subset)
     full_domain_scan = not (force_req and 'domains' in force_req)
     if full_domain_scan:
-        configured_names = {ds.name for ds in domains if ds.name}
+        configured_names = {
+            domain_storage_name({'name': ds.name, 'type': ds.type, 'ens_text_key': ds.ens_text_key})
+            for ds in domains
+            if ds.name
+        }
         return collect_active_ip_map(current_results, configured_names)
 
     # For forced subset, don't update baseline
-    configured_names = {ds.name for ds in domains if ds.name}
+    configured_names = {
+        domain_storage_name({'name': ds.name, 'type': ds.type, 'ens_text_key': ds.ens_text_key})
+        for ds in domains
+        if ds.name
+    }
     return collect_active_ip_map(current_results, configured_names)
 
 

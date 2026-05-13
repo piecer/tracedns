@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from config_manager import domain_identity
+
 
 RecordType = str  # 'A' | 'TXT' | 'ENS' | 'MIXED'
 
@@ -217,12 +219,18 @@ def coerce_domains(domains: List[Any]) -> List[DomainSpec]:
             s = str(d or '').strip()
             if s:
                 out.append(DomainSpec(name=s, type='A'))
-    # de-dup by name
+    # De-duplicate by configured target identity. ENS may monitor multiple
+    # records on the same name, so include the ENS text key for those targets.
     seen = set()
     uniq = []
     for ds in out:
-        if ds.name in seen:
+        ident = domain_identity({
+            'name': ds.name,
+            'type': ds.type,
+            'ens_text_key': ds.ens_text_key,
+        })
+        if ident in seen:
             continue
-        seen.add(ds.name)
+        seen.add(ident)
         uniq.append(ds)
     return uniq

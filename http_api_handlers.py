@@ -12,7 +12,7 @@ import time
 from urllib.parse import parse_qs, urlparse
 
 from a_decoder import A_DECODE_METHODS, decode_a_hidden_ips
-from config_manager import normalize_domains, read_config, write_config
+from config_manager import domain_identity, domain_storage_name, normalize_domains, read_config, write_config
 from dns_query import query_dns
 from ens_decoder import ENS_DECODE_METHODS, decode_ens_hidden_ips, ens_options_signature, parse_ens_options
 from ens_query import EnsQueryError, fetch_ens_text_record, format_ens_error
@@ -264,8 +264,9 @@ def attach_api_handlers(
             for d in cfg_domains:
                 name = d.get('name') if isinstance(d, dict) else d
                 name = name or ''
-                info = seen_map.get(name, {'last_ts': 0, 'servers': [], 'samples': []})
-                life = lifecycle_map.get(name, {})
+                storage_name = domain_storage_name(d) if isinstance(d, dict) else str(name).strip().rstrip('.')
+                info = seen_map.get(storage_name, seen_map.get(name, {'last_ts': 0, 'servers': [], 'samples': []}))
+                life = lifecycle_map.get(storage_name, lifecycle_map.get(name, {}))
                 # resolving if there is a non-empty sample or last_ts present
                 resolving = False
                 if info.get('samples'):
@@ -273,7 +274,7 @@ def attach_api_handlers(
                 elif info.get('last_ts', 0) and info.get('last_ts', 0) > 0:
                     resolving = True
                 domains.append({
-                    'name': name,
+                    'name': storage_name if storage_name != name else name,
                     'type': (d.get('type') if isinstance(d, dict) else 'A'),
                     'resolving': bool(resolving),
                     'last_ts': info.get('last_ts', 0),
@@ -322,7 +323,7 @@ def attach_api_handlers(
             lifecycle_map = {}
             for d in cfg_domains:
                 if isinstance(d, dict):
-                    name = str(d.get('name') or '').strip()
+                    name = domain_storage_name(d)
                     typ = str(d.get('type') or 'A').upper()
                 else:
                     name = str(d or '').strip()
@@ -2110,13 +2111,13 @@ def attach_api_handlers(
                     new_domains_raw = data['domains']
                     # Get current domains for reference (to preserve decoder options)
                     current_domains = shared_config.get('domains', [])
-                    current_map = {d['name']: d for d in current_domains if isinstance(d, dict)}
-                    prev_names = {d.get('name', '').strip() for d in normalize_domains(current_domains) if d.get('name')}
+                    current_map = {domain_identity(d): d for d in current_domains if isinstance(d, dict)}
+                    prev_names = {domain_storage_name(d) for d in normalize_domains(current_domains) if d.get('name')}
                     
                     # Normalize new domains but preserve decode settings from current.
                     new_domains_normalized = normalize_domains(new_domains_raw)
                     for d in new_domains_normalized:
-                        prev = current_map.get(d.get('name'), {})
+                        prev = current_map.get(domain_identity(d), {})
                         typ = str(d.get('type', 'A')).upper()
                         if typ == 'TXT':
                             if 'txt_decode' not in d and prev.get('txt_decode'):
@@ -2167,19 +2168,19 @@ def attach_api_handlers(
                             d.pop('ens_decode', None)
                             d.pop('ens_xor_byte', None)
                             d.pop('ens_options', None)
-                    next_names = {d.get('name', '').strip() for d in new_domains_normalized if d.get('name')}
+                    next_names = {domain_storage_name(d) for d in new_domains_normalized if d.get('name')}
                     removed_names = sorted(prev_names - next_names)
                     if removed_names:
                         purge_removed_domains_state(current_results, history, history_dir, removed_names)
                         print(f"[DEBUG] /config POST: Purged removed domain state: {removed_names}")
 
                     shared_config['domains'] = new_domains_normalized
-                    print(f"[DEBUG] /config POST: Updated domains to {[d['name'] for d in new_domains_normalized]}")
+                    print(f"[DEBUG] /config POST: Updated domains to {[domain_storage_name(d) for d in new_domains_normalized]}")
 
                     # Safety purge: remove any orphan in-memory/disk state not present in current config.
                     # This prevents stale history/current rows from surviving due naming mismatches.
                     configured_canon = {
-                        _canon_domain_name(d.get('name', ''))
+                        _canon_domain_name(domain_storage_name(d))
                         for d in new_domains_normalized
                         if d.get('name')
                     }

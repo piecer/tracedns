@@ -224,6 +224,19 @@ function normalizeDomainName(domain){
   return String(domain || '').trim().replace(/\.$/, '').toLowerCase();
 }
 
+function domainConfigIdentity(domainObj){
+  if(!domainObj || typeof domainObj !== 'object'){
+    return normalizeDomainName(domainObj);
+  }
+  const name = normalizeDomainName(domainObj.name);
+  const type = String(domainObj.type || 'A').trim().toUpperCase() || 'A';
+  if(type === 'ENS'){
+    const textKey = String(domainObj.ens_text_key || 'ipv6').trim().toLowerCase() || 'ipv6';
+    return `${name}|ENS|${textKey}`;
+  }
+  return name;
+}
+
 function buildDecoderNameList(baseList, customList, includeNoneFirst){
   const out = [];
   const seen = new Set();
@@ -699,7 +712,7 @@ async function addVerifiedDomainToConfig(){
       return;
     }
     const existing = Array.isArray(cfgJson.domains) ? cfgJson.domains : [];
-    const normTarget = normalizeDomainName(domainObj.name);
+    const targetIdentity = domainConfigIdentity(domainObj);
     const normalizedDomains = existing.map(item=>{
       if(typeof item === 'string'){
         return {name: item, type: 'A'};
@@ -707,7 +720,7 @@ async function addVerifiedDomainToConfig(){
       return (item && typeof item === 'object') ? {...item} : null;
     }).filter(Boolean);
 
-    const idx = normalizedDomains.findIndex(d=> normalizeDomainName(d.name) === normTarget);
+    const idx = normalizedDomains.findIndex(d=> domainConfigIdentity(d) === targetIdentity);
     if(idx >= 0){
       normalizedDomains[idx] = {...domainObj};
     } else {

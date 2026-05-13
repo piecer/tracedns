@@ -53,6 +53,24 @@ class TestConfigManager(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].get("ens_options"), {"xor_byte": "0xB6"})
 
+    def test_normalize_domains_allows_same_ens_name_with_different_records(self):
+        value = [
+            {"name": "example.eth", "type": "ENS", "ens_text_key": "ipv6", "ens_decode": "ipv6_5to8_xor"},
+            {"name": "example.eth", "type": "ENS", "ens_text_key": "network", "ens_decode": "ROL3210_decode"},
+        ]
+        out = cm.normalize_domains(value)
+        self.assertEqual(len(out), 2)
+        self.assertEqual([x.get("ens_text_key") for x in out], ["ipv6", "network"])
+
+    def test_normalize_domains_dedupes_same_ens_record_identity(self):
+        value = [
+            {"name": "example.eth", "type": "ENS", "ens_text_key": "ipv6", "ens_decode": "ipv6_5to8_xor"},
+            {"name": "example.eth.", "type": "ENS", "ens_text_key": "IPv6", "ens_decode": "ROL3210_decode"},
+        ]
+        out = cm.normalize_domains(value)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].get("ens_decode"), "ipv6_5to8_xor")
+
 
 if __name__ == "__main__":
     unittest.main()

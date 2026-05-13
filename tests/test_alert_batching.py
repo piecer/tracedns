@@ -60,6 +60,34 @@ class TestAlertBatching(unittest.TestCase):
         self.assertEqual(context.get('server_targets'), 2)
         self.assertIsInstance(out, dict)
 
+    def test_run_full_cycle_keeps_same_ens_domain_different_records_separate(self):
+        domains_raw = [
+            {'name': 'same.eth', 'type': 'ENS', 'ens_text_key': 'ipv6'},
+            {'name': 'same.eth', 'type': 'ENS', 'ens_text_key': 'network'},
+        ]
+        current_results = {}
+        history = {}
+        query_fail_counts = {}
+
+        with mock.patch.object(engine, 'run_domain_cycle', return_value=[]) as mocked_cycle:
+            out = engine.run_full_cycle(
+                domains_raw=domains_raw,
+                servers=['8.8.8.8'],
+                current_results=current_results,
+                history=history,
+                history_dir='/tmp',
+                query_fail_counts=query_fail_counts,
+                max_workers=1,
+                force_req=None,
+                ens_rpc_url='https://rpc.example',
+            )
+
+        self.assertEqual(mocked_cycle.call_count, 2)
+        self.assertIn('same.eth [ENS:ipv6]', current_results)
+        self.assertIn('same.eth [ENS:network]', current_results)
+        self.assertIn('same.eth [ENS:ipv6]', history)
+        self.assertIn('same.eth [ENS:network]', history)
+
 
 if __name__ == '__main__':
     unittest.main()
