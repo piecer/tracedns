@@ -315,6 +315,7 @@ def run_full_cycle(
     max_workers: int = 8,
     force_req: Optional[Dict[str, Any]] = None,
     ens_rpc_url: Optional[str] = None,
+    sns_proxy_hosts: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Run a full scan cycle across domains.
 
@@ -343,7 +344,8 @@ def run_full_cycle(
 
     cycle_added_tuples: List[Tuple[str, str, str]] = []
     for ds in target_domains:
-        if str(ds.type or 'A').upper() == 'ENS':
+        current_type = str(ds.type or 'A').upper()
+        if current_type == 'ENS':
             ens_targets = []
             if ens_rpc_url and str(ens_rpc_url).strip():
                 ens_targets = [str(ens_rpc_url).strip()]
@@ -352,6 +354,13 @@ def run_full_cycle(
             if not ens_targets:
                 ens_targets = ['']
             svr_list = ens_targets
+        elif current_type == 'SNS':
+            sns_targets = [str(x).strip() for x in (sns_proxy_hosts or []) if str(x).strip()]
+            if target_servers_override:
+                sns_targets = [str(x).strip() for x in (target_servers_override or []) if str(x).strip()] or sns_targets
+            if not sns_targets:
+                sns_targets = ['']
+            svr_list = sns_targets
         else:
             svr_list = target_servers_override or list(servers)
         if not svr_list:

@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from config_manager import domain_identity
 
 
-RecordType = str  # 'A' | 'TXT' | 'ENS' | 'MIXED'
+RecordType = str  # 'A' | 'TXT' | 'ENS' | 'SNS' | 'MIXED'
 
 
 @dataclass(frozen=True)
@@ -47,7 +47,7 @@ class Snapshot:
 
     def managed_ips(self) -> Set[str]:
         r = str(self.type or '').upper()
-        if r in ('TXT', 'ENS'):
+        if r in ('TXT', 'ENS', 'SNS'):
             return {str(x).strip() for x in (self.decoded_ips or []) if str(x or '').strip()}
         if r == 'A':
             # A-type with post-process enabled stores transformed IPs in values.
