@@ -149,6 +149,42 @@ def _rol8(value: int, shift: int) -> int:
     return ((int(value) << shift) | (int(value) >> (8 - shift))) & 0xFF
 
 
+def _ror8(value: int, shift: int) -> int:
+    shift = int(shift) % 8
+    if shift == 0:
+        return int(value) & 0xFF
+    return ((int(value) >> shift) | (int(value) << (8 - shift))) & 0xFF
+
+
+def _nibble_swap(value: int) -> int:
+    v = int(value) & 0xFF
+    return ((v >> 4) | ((v & 0x0F) << 4)) & 0xFF
+
+
+def _parse_u32(value: Any, default: int = 0x00400454) -> int:
+    if value in (None, ''):
+        return int(default) & 0xFFFFFFFF
+    if isinstance(value, int):
+        return int(value) & 0xFFFFFFFF
+    s = str(value).strip()
+    if not s:
+        return int(default) & 0xFFFFFFFF
+    try:
+        return int(s, 0) & 0xFFFFFFFF
+    except Exception:
+        pass
+    sl = s.lower().replace('_', '')
+    if sl.startswith('0x'):
+        sl = sl[2:]
+    sl = re.sub(r'[^0-9a-f]', '', sl)
+    if not sl:
+        return int(default) & 0xFFFFFFFF
+    try:
+        return int(sl, 16) & 0xFFFFFFFF
+    except Exception:
+        return int(default) & 0xFFFFFFFF
+
+
 @ens_decode_register('none')
 def decode_ens_none(record: str, **kwargs) -> List[str]:
     return []
@@ -171,18 +207,18 @@ def decode_ens_ipv6_5to8_xor(record: str, xor_byte=None, **kwargs) -> List[str]:
 
 
 @ens_decode_register('ROL3210_decode')
-def decode_ens_ROL3210_decode(record: str, **kwargs) -> List[str]:
-    """Board-supplied betavpn `network` decoder using IPv6 bytes 5~8."""
+def decode_ens_ROL3210_decode(record: str, key_u32=None, **kwargs) -> List[str]:
+    """Decode `2001:db8:XXYY:ZZWW::1` bytes via nibble-swap+rotate+key transform."""
+
+    key = _parse_u32(key_u32, default=0x00400454)
+
+    def _decode_byte(encoded: int, index: int) -> int:
+        v = _ror8(_nibble_swap(encoded), index + 1)
+        k = (key >> (24 - (index * 8))) & 0xFF
+        return ((v ^ k) + k) & 0xFF
 
     def _decode(src: bytes) -> bytes:
-        xx, yy, zz, ww = src
-        ip0 = _rol8(xx, 3)
-        yy_eff = yy ^ 0x20 if xx in (0x65, 0x71) else yy
-        ip1 = _rol8(yy_eff, 2)
-        base2 = _rol8(zz, 1)
-        ip2 = (base2 + ((~(base2 << 1)) & 0x08)) & 0xFF
-        ip3 = (ww + ((~(ww << 1)) & 0xA8)) & 0xFF
-        return bytes([ip0, ip1, ip2, ip3])
+        return bytes([_decode_byte(src[i], i) for i in range(4)])
 
     return _decode_ipv6_5to8(record, _decode)
 
