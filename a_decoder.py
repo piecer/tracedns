@@ -103,6 +103,28 @@ def decode_a_xor32_ipv4(a_values, key_hex=None, **kwargs):
 A_DECODE_METHODS["xor_ipv4"] = decode_a_xor32_ipv4
 
 
+@a_decode_register("2byte_swap")
+def decode_a_2byte_swap(a_values, **kwargs):
+    """
+    Swap 16-bit words in each resolved IPv4.
+    Example: 45.156.87.243 -> 87.243.45.156
+    """
+    out = []
+    seen = set()
+    for ip in a_values or []:
+        try:
+            octets = [int(p) for p in str(ip).strip().split(".")]
+            if len(octets) != 4 or any((o < 0 or o > 255) for o in octets):
+                continue
+            dec = ".".join(str(o) for o in (octets[2], octets[3], octets[0], octets[1]))
+        except Exception:
+            continue
+        if dec not in seen:
+            seen.add(dec)
+            out.append(dec)
+    return sorted(out)
+
+
 def decode_a_hidden_ips(a_values, method="none", **kwargs):
     """
     Run selected A-record post-processing method.
