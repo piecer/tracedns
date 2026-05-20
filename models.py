@@ -29,6 +29,8 @@ class DomainSpec:
     ens_decode: Optional[str] = None
     ens_xor_byte: Optional[str] = None
     ens_options: Optional[Dict[str, Any]] = None
+    sns_decode: Optional[str] = None
+    sns_options: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -44,6 +46,8 @@ class Snapshot:
     ens_decode: Optional[str] = None
     ens_xor_byte: Optional[str] = None
     ens_options: Optional[Dict[str, Any]] = None
+    sns_decode: Optional[str] = None
+    sns_options: Optional[Dict[str, Any]] = None
 
     def managed_ips(self) -> Set[str]:
         r = str(self.type or '').upper()
@@ -78,6 +82,10 @@ class Snapshot:
             out['ens_xor_byte'] = self.ens_xor_byte
         if isinstance(self.ens_options, dict) and self.ens_options:
             out['ens_options'] = self.ens_options
+        if self.sns_decode:
+            out['sns_decode'] = self.sns_decode
+        if isinstance(self.sns_options, dict) and self.sns_options:
+            out['sns_options'] = self.sns_options
         return out
 
     @staticmethod
@@ -97,6 +105,8 @@ class Snapshot:
             ens_decode=obj.get('ens_decode'),
             ens_xor_byte=obj.get('ens_xor_byte'),
             ens_options=obj.get('ens_options') if isinstance(obj.get('ens_options'), dict) else None,
+            sns_decode=obj.get('sns_decode'),
+            sns_options=obj.get('sns_options') if isinstance(obj.get('sns_options'), dict) else None,
         )
         return snap
 
@@ -213,6 +223,8 @@ def coerce_domains(domains: List[Any]) -> List[DomainSpec]:
                     ens_decode=d.get('ens_decode'),
                     ens_xor_byte=d.get('ens_xor_byte'),
                     ens_options=d.get('ens_options') if isinstance(d.get('ens_options'), dict) else None,
+                    sns_decode=d.get('sns_decode'),
+                    sns_options=d.get('sns_options') if isinstance(d.get('sns_options'), dict) else None,
                 )
             )
         else:

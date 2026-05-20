@@ -166,7 +166,8 @@ def main():
         'interval': max(1, int(interval0)),
         'max_workers': max(1, int(max_workers0)),
         'ens_rpc_url': str(file_cfg.get('ens_rpc_url') or '').strip(),
-        'DEFAULT_SOLAR_PROXY_HOSTS': list(file_cfg.get('DEFAULT_SOLAR_PROXY_HOSTS') or DEFAULT_SOLAR_PROXY_HOSTS),
+        'DEFAULT_SOLAR_PROXY_HOSTS': list(file_cfg.get('DEFAULT_SOLAR_PROXY_HOSTS') or file_cfg.get('DEFAULT_SNS_PROXY_HOSTS') or DEFAULT_SOLAR_PROXY_HOSTS),
+        'DEFAULT_SNS_PROXY_HOSTS': list(file_cfg.get('DEFAULT_SNS_PROXY_HOSTS') or file_cfg.get('DEFAULT_SOLAR_PROXY_HOSTS') or DEFAULT_SOLAR_PROXY_HOSTS),
     }
     cfg_store = ConfigStore(shared_config, config_lock)
 
@@ -315,7 +316,7 @@ def main():
             max_workers=snap.max_workers,
             force_req=snap.force_req,
             ens_rpc_url=str(shared_config.get('ens_rpc_url') or '').strip() or None,
-            sns_proxy_hosts=list(shared_config.get('DEFAULT_SOLAR_PROXY_HOSTS') or DEFAULT_SOLAR_PROXY_HOSTS),
+            sns_proxy_hosts=list(shared_config.get('DEFAULT_SNS_PROXY_HOSTS') or shared_config.get('DEFAULT_SOLAR_PROXY_HOSTS') or DEFAULT_SOLAR_PROXY_HOSTS),
         )
 
         # reconcile removed IPs only for full scans

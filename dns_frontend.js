@@ -2435,7 +2435,7 @@ function addDomainRow(obj){
   const sel = document.createElement('select');
   sel.className = 'domain-type';
   // Expand supported record type list
-  ['A','TXT','ENS','AAAA','CNAME','MX','NS','SRV','CAA'].forEach(t=>{ const o = document.createElement('option'); o.value=t; o.text=t; sel.appendChild(o); });
+  ['A','TXT','ENS','SNS','AAAA','CNAME','MX','NS','SRV','CAA'].forEach(t=>{ const o = document.createElement('option'); o.value=t; o.text=t; sel.appendChild(o); });
   if(obj && obj.type) sel.value = obj.type.toUpperCase();
   tdType.appendChild(sel);
 
@@ -2545,12 +2545,13 @@ function addDomainRow(obj){
     const isTXT = typ === 'TXT';
     const isA = typ === 'A';
     const isENS = typ === 'ENS';
+    const isSNS = typ === 'SNS';
     selDecode.disabled = !isTXT;
     selADecode.disabled = !isA;
     inpAKey.disabled = !isA;
-    inpEnsKey.disabled = !isENS;
-    selEnsDecode.disabled = !isENS;
-    inpEnsOptions.disabled = !isENS;
+    inpEnsKey.disabled = !(isENS || isSNS);
+    selEnsDecode.disabled = !(isENS || isSNS);
+    inpEnsOptions.disabled = !(isENS || isSNS);
   };
   sel.onchange = toggleDecodeInputs;
   toggleDecodeInputs();
@@ -2570,6 +2571,7 @@ function addDomainRow(obj){
         servers: document.getElementById('servers').value.split(',').map(s=>s.trim()).filter(Boolean),
         interval: parseInt(document.getElementById('interval').value) || 60,
         ens_rpc_url: ((document.getElementById('ensRpcUrl') || {}).value || '').trim()
+        ,DEFAULT_SNS_PROXY_HOSTS: ((document.getElementById('snsProxyHosts') || {}).value || '').split(',').map(s=>s.trim()).filter(Boolean)
       };
       const r = await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
       const j = await r.json();
@@ -2673,6 +2675,17 @@ function collectDomainsFromUI(){
           if(!obj.ens_decode) obj.ens_decode = 'ipv6_5to8_xor';
           obj.ens_options = parsed.value;
         }
+      } else if(typ === 'SNS'){
+        if(ens_text_key) obj.ens_text_key = ens_text_key;
+        if(ens_decode) obj.sns_decode = ens_decode;
+        const parsed = parseJsonObjectInput(ens_options_raw, `SNS options (${name})`);
+        if(!parsed.ok){
+          throw new Error(parsed.error);
+        }
+        if(parsed.value){
+          if(!obj.sns_decode) obj.sns_decode = 'ROL3210_decode';
+          obj.sns_options = parsed.value;
+        }
       }
       out.push(obj);
     }
@@ -2700,6 +2713,8 @@ async function loadCfg(){
     document.getElementById('servers').value = (Array.isArray(servers) ? servers : []).join(',');
     const ensRpcEl = document.getElementById('ensRpcUrl');
     if(ensRpcEl) ensRpcEl.value = String(j.ens_rpc_url || '');
+    const snsHostsEl = document.getElementById('snsProxyHosts');
+    if(snsHostsEl) snsHostsEl.value = (Array.isArray(j.DEFAULT_SNS_PROXY_HOSTS) ? j.DEFAULT_SNS_PROXY_HOSTS : []).join(',');
     document.getElementById('interval').value = j.interval || 60;
     log('Loaded config');
     touchOverviewTs();
@@ -2714,6 +2729,7 @@ document.getElementById('save').onclick = async ()=>{
       servers: document.getElementById('servers').value.split(',').map(s=>s.trim()).filter(Boolean),
       interval: parseInt(document.getElementById('interval').value) || 60,
       ens_rpc_url: ((document.getElementById('ensRpcUrl') || {}).value || '').trim()
+      ,DEFAULT_SNS_PROXY_HOSTS: ((document.getElementById('snsProxyHosts') || {}).value || '').split(',').map(s=>s.trim()).filter(Boolean)
     };
     uiOverview.configured = payload.domains.length;
     updateOverviewPanel();
