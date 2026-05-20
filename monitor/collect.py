@@ -86,13 +86,13 @@ def collect_snapshot(domain: DomainSpec, server: str) -> Collected:
 
     if rtype == 'SNS':
         ts = int(time.time())
-        ens_decode = (domain.ens_decode or 'ROL3210_decode').strip() or 'ROL3210_decode'
-        ens_options = parse_ens_options(getattr(domain, 'ens_options', None), strict=False)
+        sns_decode = (getattr(domain, 'sns_decode', None) or domain.ens_decode or 'ROL3210_decode').strip() or 'ROL3210_decode'
+        sns_options = parse_ens_options(getattr(domain, 'sns_options', None) or getattr(domain, 'ens_options', None), strict=False)
         try:
             raw_value = fetch_sns_txt_record(str(server), name, timeout=15, verify_tls=True)
             snap_values = [str(raw_value)]
-            decoded = decode_ens_hidden_ips(raw_value, method=ens_decode, ens_options=ens_options, domain=name, text_key='TXT')
-            snap = Snapshot(type='SNS', values=snap_values, decoded_ips=decoded, ts=ts, ens_decode=ens_decode, ens_options=ens_options)
+            decoded = decode_ens_hidden_ips(raw_value, method=sns_decode, ens_options=sns_options, domain=name, text_key='TXT')
+            snap = Snapshot(type='SNS', values=snap_values, decoded_ips=decoded, ts=ts, sns_decode=sns_decode, sns_options=sns_options)
             return Collected(query=QueryResult(server=str(server), domain=name, rtype='SNS', status='ok', values=snap_values), snapshot=snap)
         except Exception as e:
             return Collected(

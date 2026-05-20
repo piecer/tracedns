@@ -130,6 +130,8 @@ def normalize_domains(value):
             ens_decode = it.get('ens_decode')
             ens_xor_byte = it.get('ens_xor_byte')
             ens_options = _parse_json_object(it.get('ens_options'))
+            sns_decode = it.get('sns_decode')
+            sns_options = _parse_json_object(it.get('sns_options'))
             if ens_options is None and ens_xor_byte is not None and str(ens_xor_byte).strip() != '':
                 ens_options = {'xor_byte': str(ens_xor_byte).strip()}
         else:
@@ -145,6 +147,8 @@ def normalize_domains(value):
                 ens_decode = None
                 ens_xor_byte = None
                 ens_options = None
+                sns_decode = None
+                sns_options = None
                 item = {'name': name, 'type': typ}
                 ident = domain_identity(item)
                 if name and ident not in seen:
@@ -163,13 +167,17 @@ def normalize_domains(value):
         if typ in ('ENS', 'SNS'):
             if ens_text_key is not None and str(ens_text_key).strip() != '':
                 d['ens_text_key'] = str(ens_text_key).strip()
-            if ens_decode is not None and str(ens_decode).strip() != '':
+            if typ == 'ENS' and ens_decode is not None and str(ens_decode).strip() != '':
                 d['ens_decode'] = str(ens_decode).strip()
-            if isinstance(ens_options, dict) and ens_options:
+            if typ == 'ENS' and isinstance(ens_options, dict) and ens_options:
                 d['ens_options'] = ens_options
-            elif ens_xor_byte is not None and str(ens_xor_byte).strip() != '':
+            elif typ == 'ENS' and ens_xor_byte is not None and str(ens_xor_byte).strip() != '':
                 # legacy fallback for old config entries
                 d['ens_options'] = {'xor_byte': str(ens_xor_byte).strip()}
+            if typ == 'SNS' and sns_decode is not None and str(sns_decode).strip() != '':
+                d['sns_decode'] = str(sns_decode).strip()
+            if typ == 'SNS' and isinstance(sns_options, dict) and sns_options:
+                d['sns_options'] = sns_options
         ident = domain_identity(d)
         if ident in seen:
             continue

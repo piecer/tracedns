@@ -19,6 +19,13 @@ def handle_config(ctx: HttpContext, handler) -> None:
             'interval': ctx.shared_config.get('interval'),
             'max_workers': ctx.shared_config.get('max_workers', 8),
             'ens_rpc_url': ctx.shared_config.get('ens_rpc_url', ''),
+            'DEFAULT_SNS_PROXY_HOSTS': list(
+                ctx.shared_config.get(
+                    'DEFAULT_SNS_PROXY_HOSTS',
+                    ctx.shared_config.get('DEFAULT_SOLAR_PROXY_HOSTS', []),
+                )
+                or []
+            ),
         }
         if 'alerts' in ctx.shared_config:
             cfg['alerts'] = ctx.shared_config.get('alerts')

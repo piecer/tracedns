@@ -2179,6 +2179,19 @@ def attach_api_handlers(
                             d.pop('txt_decode', None)
                             d.pop('a_decode', None)
                             d.pop('a_xor_key', None)
+                        elif typ == 'SNS':
+                            if 'ens_text_key' not in d and prev.get('ens_text_key'):
+                                d['ens_text_key'] = prev.get('ens_text_key')
+                            if 'sns_decode' not in d and prev.get('sns_decode'):
+                                d['sns_decode'] = prev.get('sns_decode')
+                            if 'sns_options' not in d and isinstance(prev.get('sns_options'), dict):
+                                d['sns_options'] = dict(prev.get('sns_options'))
+                            d.pop('txt_decode', None)
+                            d.pop('a_decode', None)
+                            d.pop('a_xor_key', None)
+                            d.pop('ens_decode', None)
+                            d.pop('ens_xor_byte', None)
+                            d.pop('ens_options', None)
                         else:
                             d.pop('txt_decode', None)
                             d.pop('a_decode', None)
@@ -2245,6 +2258,12 @@ def attach_api_handlers(
                     hosts = data.get('DEFAULT_SOLAR_PROXY_HOSTS')
                     if isinstance(hosts, list):
                         shared_config['DEFAULT_SOLAR_PROXY_HOSTS'] = [str(x).strip() for x in hosts if str(x).strip()]
+                if 'DEFAULT_SNS_PROXY_HOSTS' in data:
+                    hosts = data.get('DEFAULT_SNS_PROXY_HOSTS')
+                    if isinstance(hosts, list):
+                        normalized_hosts = [str(x).strip() for x in hosts if str(x).strip()]
+                        shared_config['DEFAULT_SNS_PROXY_HOSTS'] = normalized_hosts
+                        shared_config['DEFAULT_SOLAR_PROXY_HOSTS'] = normalized_hosts
     
                 if config_path:
                     to_write = {
@@ -2256,6 +2275,7 @@ def attach_api_handlers(
                         'custom_a_decoders': shared_config.get('custom_a_decoders', []),
                         'ens_rpc_url': shared_config.get('ens_rpc_url', ''),
                         'DEFAULT_SOLAR_PROXY_HOSTS': shared_config.get('DEFAULT_SOLAR_PROXY_HOSTS', DEFAULT_SOLAR_PROXY_HOSTS),
+                        'DEFAULT_SNS_PROXY_HOSTS': shared_config.get('DEFAULT_SNS_PROXY_HOSTS', shared_config.get('DEFAULT_SOLAR_PROXY_HOSTS', DEFAULT_SOLAR_PROXY_HOSTS)),
                     }
                     try:
                         write_config(config_path, to_write)
@@ -2271,6 +2291,7 @@ def attach_api_handlers(
                     'alerts': shared_config.get('alerts', {}),
                     'ens_rpc_url': shared_config.get('ens_rpc_url', ''),
                     'DEFAULT_SOLAR_PROXY_HOSTS': shared_config.get('DEFAULT_SOLAR_PROXY_HOSTS', DEFAULT_SOLAR_PROXY_HOSTS),
+                    'DEFAULT_SNS_PROXY_HOSTS': shared_config.get('DEFAULT_SNS_PROXY_HOSTS', shared_config.get('DEFAULT_SOLAR_PROXY_HOSTS', DEFAULT_SOLAR_PROXY_HOSTS)),
                 }
             return self._send_json(resp)
     
