@@ -16,6 +16,7 @@ from config_manager import domain_identity, domain_storage_name, normalize_domai
 from dns_query import query_dns
 from ens_decoder import ENS_DECODE_METHODS, decode_ens_hidden_ips, ens_options_signature, parse_ens_options
 from ens_query import EnsQueryError, fetch_ens_text_record, format_ens_error
+from sns_query import DEFAULT_SOLAR_PROXY_HOSTS, fetch_sns_txt_record
 from txt_decoder import TXT_DECODE_METHODS, analyze_domain_decoding, decode_txt_hidden_ips
 
 # Refactor: move common handlers into smaller modules.
@@ -163,7 +164,7 @@ def attach_api_handlers(
                             ent['domains'].add(d)
                             ent['count'] += 1
                             ent['last_ts'] = max(ent['last_ts'], ts)
-                        for ip in side_obj.get('decoded_ips', []) if ev.get('type', 'A') in ('TXT', 'A', 'ENS') else []:
+                        for ip in side_obj.get('decoded_ips', []) if ev.get('type', 'A') in ('TXT', 'A', 'ENS', 'SNS') else []:
                             ent = ip_map.setdefault(ip, {'domains': set(), 'count': 0, 'last_ts': 0})
                             ent['domains'].add(d)
                             ent['count'] += 1
@@ -175,7 +176,7 @@ def attach_api_handlers(
                             ent['domains'].add(d)
                             ent['count'] += 1
                             ent['last_ts'] = max(ent['last_ts'], ts)
-                    if ev.get('type', 'A') in ('TXT', 'A', 'ENS'):
+                    if ev.get('type', 'A') in ('TXT', 'A', 'ENS', 'SNS'):
                         for ip in ev.get('decoded_ips', []):
                             ent = ip_map.setdefault(ip, {'domains': set(), 'count': 0, 'last_ts': 0})
                             ent['domains'].add(d)
@@ -242,7 +243,7 @@ def attach_api_handlers(
                     maxts = max(maxts, ts)
                     if info.get('type') == 'A':
                         samples.extend(info.get('values', []) or [])
-                    elif info.get('type') in ('TXT', 'ENS'):
+                    elif info.get('type') in ('TXT', 'ENS', 'SNS'):
                         samples.extend(info.get('decoded_ips', []) or [])
                 seen_map[d] = {'last_ts': maxts, 'servers': servers, 'samples': samples}
     
@@ -493,8 +494,8 @@ def attach_api_handlers(
             return self._send_json({'error': 'domain required'}, 400)
 
         requested_type = str(data.get('type') or 'AUTO').strip().upper()
-        if requested_type not in ('AUTO', 'A', 'TXT', 'ENS'):
-            return self._send_json({'error': 'type must be one of AUTO/A/TXT/ENS'}, 400)
+        if requested_type not in ('AUTO', 'A', 'TXT', 'ENS', 'SNS'):
+            return self._send_json({'error': 'type must be one of AUTO/A/TXT/ENS/SNS'}, 400)
 
         txt_decode = str(data.get('txt_decode') or 'cafebabe_xor_base64').strip() or 'cafebabe_xor_base64'
         a_decode = str(data.get('a_decode') or 'none').strip() or 'none'
@@ -504,7 +505,7 @@ def attach_api_handlers(
         ens_xor_byte = str(data.get('ens_xor_byte') or '').strip()
         ens_options_raw = data.get('ens_options')
         ens_options = {}
-        if requested_type == 'ENS':
+        if requested_type in ('ENS', 'SNS'):
             try:
                 ens_options = parse_ens_options(ens_options_raw, legacy_xor_byte=ens_xor_byte, strict=True)
             except Exception as e:
@@ -573,6 +574,10 @@ def attach_api_handlers(
 
         if requested_type == 'ENS':
             servers = [ens_rpc_url] if ens_rpc_url else ['(missing ens_rpc_url)']
+        elif requested_type == 'SNS':
+            with config_lock:
+                proxy_hosts = list(shared_config.get('DEFAULT_SOLAR_PROXY_HOSTS') or DEFAULT_SOLAR_PROXY_HOSTS)
+            servers = [str(x).strip() for x in proxy_hosts if str(x).strip()] or ['(missing sns_proxy_host)']
         else:
             servers = dns_servers
 
@@ -610,6 +615,20 @@ def attach_api_handlers(
                     else:
                         query_error = 'ens_rpc_url_not_configured: ENS RPC URL is not configured'
                     values = sorted({str(v).strip() for v in vals if str(v).strip()})
+                    managed_ips = sorted({str(v).strip() for v in managed_ips if _is_ipv4(v)})
+                elif rtype == 'SNS':
+                    values = []
+                    qstatus = 'error'
+                    method = f"SNS:TXT / decode:{ens_decode}"
+                    managed_ips = []
+                    try:
+                        raw_value = fetch_sns_txt_record(srv, domain, timeout=15, verify_tls=True)
+                        values = [str(raw_value)]
+                        managed_ips = decode_ens_hidden_ips(raw_value, method=ens_decode, ens_options=ens_options, domain=domain, text_key='TXT')
+                        qstatus = 'ok'
+                    except Exception as e:
+                        query_error = str(e)
+                    values = sorted({str(v).strip() for v in values if str(v).strip()})
                     managed_ips = sorted({str(v).strip() for v in managed_ips if _is_ipv4(v)})
                 else:
                     qret = query_dns(srv, domain, rtype=rtype, with_meta=True)
@@ -1985,7 +2004,7 @@ def attach_api_handlers(
                             'old': ev.get('old'),
                             'new': ev.get('new')
                         })
-                    if rtype in ('TXT', 'A', 'ENS') and (ip in ev.get('new', {}).get('decoded_ips', []) or ip in ev.get('old', {}).get('decoded_ips', [])):
+                    if rtype in ('TXT', 'A', 'ENS', 'SNS') and (ip in ev.get('new', {}).get('decoded_ips', []) or ip in ev.get('old', {}).get('decoded_ips', [])):
                         matches.append({
                             'domain': d,
                             'server': ev.get('server'),
@@ -2005,7 +2024,7 @@ def attach_api_handlers(
                             'ts': ts,
                             'values': ev.get('values')
                         })
-                    if rtype in ('TXT', 'A', 'ENS') and ip in ev.get('decoded_ips', []):
+                    if rtype in ('TXT', 'A', 'ENS', 'SNS') and ip in ev.get('decoded_ips', []):
                         matches.append({
                             'domain': d,
                             'server': ev.get('server'),
@@ -2222,6 +2241,10 @@ def attach_api_handlers(
                         pass
                 if 'ens_rpc_url' in data:
                     shared_config['ens_rpc_url'] = str(data.get('ens_rpc_url') or '').strip()
+                if 'DEFAULT_SOLAR_PROXY_HOSTS' in data:
+                    hosts = data.get('DEFAULT_SOLAR_PROXY_HOSTS')
+                    if isinstance(hosts, list):
+                        shared_config['DEFAULT_SOLAR_PROXY_HOSTS'] = [str(x).strip() for x in hosts if str(x).strip()]
     
                 if config_path:
                     to_write = {
@@ -2232,6 +2255,7 @@ def attach_api_handlers(
                         'custom_decoders': shared_config.get('custom_decoders', []),
                         'custom_a_decoders': shared_config.get('custom_a_decoders', []),
                         'ens_rpc_url': shared_config.get('ens_rpc_url', ''),
+                        'DEFAULT_SOLAR_PROXY_HOSTS': shared_config.get('DEFAULT_SOLAR_PROXY_HOSTS', DEFAULT_SOLAR_PROXY_HOSTS),
                     }
                     try:
                         write_config(config_path, to_write)
@@ -2245,7 +2269,8 @@ def attach_api_handlers(
                     'servers': shared_config.get('servers'),
                     'interval': shared_config.get('interval'),
                     'alerts': shared_config.get('alerts', {}),
-                    'ens_rpc_url': shared_config.get('ens_rpc_url', '')
+                    'ens_rpc_url': shared_config.get('ens_rpc_url', ''),
+                    'DEFAULT_SOLAR_PROXY_HOSTS': shared_config.get('DEFAULT_SOLAR_PROXY_HOSTS', DEFAULT_SOLAR_PROXY_HOSTS),
                 }
             return self._send_json(resp)
     

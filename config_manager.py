@@ -34,7 +34,7 @@ def domain_identity(value):
     if isinstance(value, dict):
         name = str(value.get('name', '')).strip().rstrip('.').lower()
         typ = str(value.get('type') or 'A').strip().upper() or 'A'
-        if typ == 'ENS':
+        if typ in ('ENS', 'SNS'):
             text_key = str(value.get('ens_text_key') or 'ipv6').strip().lower() or 'ipv6'
             return f"{name}|ENS|{text_key}"
         return name
@@ -46,7 +46,7 @@ def domain_storage_name(value):
     if isinstance(value, dict):
         name = str(value.get('name', '')).strip().rstrip('.')
         typ = str(value.get('type') or 'A').strip().upper() or 'A'
-        if typ == 'ENS':
+        if typ in ('ENS', 'SNS'):
             text_key = str(value.get('ens_text_key') or 'ipv6').strip() or 'ipv6'
             return f"{name} [ENS:{text_key}]"
         return name
@@ -160,7 +160,7 @@ def normalize_domains(value):
             d['a_decode'] = str(a_decode).strip()
         if a_xor_key is not None and str(a_xor_key).strip() != '':
             d['a_xor_key'] = str(a_xor_key).strip()
-        if typ == 'ENS':
+        if typ in ('ENS', 'SNS'):
             if ens_text_key is not None and str(ens_text_key).strip() != '':
                 d['ens_text_key'] = str(ens_text_key).strip()
             if ens_decode is not None and str(ens_decode).strip() != '':

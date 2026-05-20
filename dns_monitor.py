@@ -18,6 +18,7 @@ import time
 from alerts import init_from_alerts as alerts_init_from_dict
 from alerts import init_from_config as alerts_init
 from config_manager import normalize_domains, read_config
+from sns_query import DEFAULT_SOLAR_PROXY_HOSTS
 from history_manager import ensure_history_dir, load_history_files
 from http_server import ThreadingHTTPServer, make_handler
 from monitor.engine import (
@@ -65,7 +66,7 @@ def _build_initial_new_ip_tuples(rtype, domain, values=None, decoded_ips=None):
     if not domain:
         return []
     r = str(rtype or '').upper()
-    if r in ('TXT', 'ENS'):
+    if r in ('TXT', 'ENS', 'SNS'):
         ips = sorted(set(decoded_ips or []))
     elif r == 'A':
         ips = sorted(set(values or []))
@@ -85,7 +86,7 @@ def _build_changed_new_ip_tuples(
     if not domain:
         return []
     r = str(rtype or '').upper()
-    if r in ('TXT', 'ENS'):
+    if r in ('TXT', 'ENS', 'SNS'):
         added = sorted(set(new_decoded_ips or []) - set(prev_decoded_ips or []))
     elif r == 'A':
         added = sorted(set(new_values or []) - set(prev_values or []))
@@ -165,6 +166,7 @@ def main():
         'interval': max(1, int(interval0)),
         'max_workers': max(1, int(max_workers0)),
         'ens_rpc_url': str(file_cfg.get('ens_rpc_url') or '').strip(),
+        'DEFAULT_SOLAR_PROXY_HOSTS': list(file_cfg.get('DEFAULT_SOLAR_PROXY_HOSTS') or DEFAULT_SOLAR_PROXY_HOSTS),
     }
     cfg_store = ConfigStore(shared_config, config_lock)
 
@@ -313,6 +315,7 @@ def main():
             max_workers=snap.max_workers,
             force_req=snap.force_req,
             ens_rpc_url=str(shared_config.get('ens_rpc_url') or '').strip() or None,
+            sns_proxy_hosts=list(shared_config.get('DEFAULT_SOLAR_PROXY_HOSTS') or DEFAULT_SOLAR_PROXY_HOSTS),
         )
 
         # reconcile removed IPs only for full scans
