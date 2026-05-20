@@ -46,6 +46,8 @@ class TestEnsDecoder(unittest.TestCase):
 
     def test_ROL3210_decode_matches_preserved_corpus(self):
         artifact_path = Path(ROOT) / "docs" / "ens" / "betavpn-network-full-decoder.json"
+        if not artifact_path.exists():
+            self.skipTest("decoder corpus artifact not present in this environment")
         artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
         for entry in artifact["mappings"]:
             packed = ipaddress.IPv6Address(entry["network_value"]).packed[4:8].hex()
@@ -55,6 +57,12 @@ class TestEnsDecoder(unittest.TestCase):
                 [entry["decoded_ipv4"]],
                 msg=f"failed to decode {entry['network_value']} from {packed}",
             )
+
+
+    def test_ROL3210_decode_key_option(self):
+        rec = "2001:db8:1234:5678::1"
+        out = ens_decoder.decode_ens_hidden_ips(rec, method="ROL3210_decode", ens_options={"key_u32": "0x00000000"})
+        self.assertEqual(out, ["144.208.172.120"])
 
     def test_unknown_method_returns_empty(self):
         out = ens_decoder.decode_ens_hidden_ips("2001:db8:1234:5678::1", method="unknown")
