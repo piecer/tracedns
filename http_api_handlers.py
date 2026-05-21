@@ -502,14 +502,22 @@ def attach_api_handlers(
         a_xor_key = str(data.get('a_xor_key') or '').strip()
         ens_text_key = str(data.get('ens_text_key') or 'ipv6').strip() or 'ipv6'
         ens_decode = str(data.get('ens_decode') or 'ipv6_5to8_xor').strip() or 'ipv6_5to8_xor'
+        sns_decode = str(data.get('sns_decode') or 'ROL3210_decode').strip() or 'ROL3210_decode'
         ens_xor_byte = str(data.get('ens_xor_byte') or '').strip()
         ens_options_raw = data.get('ens_options')
+        sns_options_raw = data.get('sns_options')
         ens_options = {}
-        if requested_type in ('ENS', 'SNS'):
+        sns_options = {}
+        if requested_type == 'ENS':
             try:
                 ens_options = parse_ens_options(ens_options_raw, legacy_xor_byte=ens_xor_byte, strict=True)
             except Exception as e:
                 return self._send_json({'error': f'invalid ens_options: {e}'}, 400)
+        elif requested_type == 'SNS':
+            try:
+                sns_options = parse_ens_options(sns_options_raw, strict=True)
+            except Exception as e:
+                return self._send_json({'error': f'invalid sns_options: {e}'}, 400)
         else:
             ens_options = parse_ens_options(ens_options_raw, legacy_xor_byte=ens_xor_byte, strict=False)
         a_decode_active = a_decode.lower() not in ('', 'none')
@@ -519,6 +527,8 @@ def attach_api_handlers(
             return self._send_json({'error': f'unknown a_decode: {a_decode}'}, 400)
         if requested_type == 'ENS' and ens_decode not in ENS_DECODE_METHODS:
             return self._send_json({'error': f'unknown ens_decode: {ens_decode}'}, 400)
+        if requested_type == 'SNS' and sns_decode not in ENS_DECODE_METHODS:
+            return self._send_json({'error': f'unknown sns_decode: {sns_decode}'}, 400)
 
         include_vt_raw = data.get('include_vt', True)
         if isinstance(include_vt_raw, str):
@@ -619,12 +629,15 @@ def attach_api_handlers(
                 elif rtype == 'SNS':
                     values = []
                     qstatus = 'error'
-                    method = f"SNS:TXT / decode:{ens_decode}"
+                    method = f"SNS:TXT / decode:{sns_decode}"
+                    sns_opts_sig = ens_options_signature(sns_options)
+                    if sns_opts_sig:
+                        method += f" / options:{sns_opts_sig}"
                     managed_ips = []
                     try:
                         raw_value = fetch_sns_txt_record(srv, domain, timeout=15, verify_tls=True)
                         values = [str(raw_value)]
-                        managed_ips = decode_ens_hidden_ips(raw_value, method=ens_decode, ens_options=ens_options, domain=domain, text_key='TXT')
+                        managed_ips = decode_ens_hidden_ips(raw_value, method=sns_decode, ens_options=sns_options, domain=domain, text_key='TXT')
                         qstatus = 'ok'
                     except Exception as e:
                         query_error = str(e)
@@ -773,6 +786,11 @@ def attach_api_handlers(
             elif ens_xor_byte:
                 # backward compatibility with old clients
                 domain_obj['ens_options'] = {'xor_byte': ens_xor_byte}
+        elif selected_type == 'SNS':
+            if sns_decode:
+                domain_obj['sns_decode'] = sns_decode
+            if sns_options:
+                domain_obj['sns_options'] = sns_options
 
         notes = []
         if requested_type == 'AUTO':
@@ -799,6 +817,11 @@ def attach_api_handlers(
                 if len(uniq_errs) > 2:
                     preview += f" | +{len(uniq_errs) - 2} more"
                 notes.append(f"ENS query errors: {preview}")
+        if selected_type == 'SNS':
+            notes.append(f"SNS decode method: {sns_decode}")
+            sns_opts_sig = ens_options_signature(sns_options)
+            if sns_opts_sig:
+                notes.append(f"SNS options: {sns_opts_sig}")
         if not managed_ips and not resolved_ips:
             notes.append("No IPv4 candidate found from current DNS responses.")
         if vt_unavailable_reason:

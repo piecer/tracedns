@@ -337,11 +337,14 @@ function syncDomainVerifyDecoderOptions(){
   const txtSel = document.getElementById('verifyTxtDecode');
   const aSel = document.getElementById('verifyADecode');
   const ensSel = document.getElementById('verifyEnsDecode');
+  const snsSel = document.getElementById('verifySnsDecode');
   fillSelectWithOptions(txtSel, txtNames, (txtSel || {}).value || 'cafebabe_xor_base64');
   fillSelectWithOptions(aSel, aNames, (aSel || {}).value || 'none');
   fillSelectWithOptions(ensSel, ensNames, (ensSel || {}).value || 'ipv6_5to8_xor');
+  fillSelectWithOptions(snsSel, ensNames, (snsSel || {}).value || 'ROL3210_decode');
   if(aSel && !aSel.value) aSel.value = 'none';
   if(ensSel && !ensSel.value) ensSel.value = 'ipv6_5to8_xor';
+  if(snsSel && !snsSel.value) snsSel.value = 'ROL3210_decode';
 }
 
 function updateDomainVerifyInputMode(){
@@ -352,17 +355,22 @@ function updateDomainVerifyInputMode(){
   const ensKeyEl = document.getElementById('verifyEnsTextKey');
   const ensDecodeEl = document.getElementById('verifyEnsDecode');
   const ensOptionsEl = document.getElementById('verifyEnsOptions');
-  if(!typeEl || !txtEl || !aEl || !xorEl || !ensKeyEl || !ensDecodeEl || !ensOptionsEl) return;
+  const snsDecodeEl = document.getElementById('verifySnsDecode');
+  const snsOptionsEl = document.getElementById('verifySnsOptions');
+  if(!typeEl || !txtEl || !aEl || !xorEl || !ensKeyEl || !ensDecodeEl || !ensOptionsEl || !snsDecodeEl || !snsOptionsEl) return;
   const t = String(typeEl.value || 'AUTO').toUpperCase();
   const isAOnly = t === 'A';
   const isTxtOnly = t === 'TXT';
   const isEnsOnly = t === 'ENS';
-  txtEl.disabled = isAOnly || isEnsOnly;
-  aEl.disabled = isTxtOnly || isEnsOnly;
-  xorEl.disabled = isTxtOnly || isEnsOnly;
+  const isSnsOnly = t === 'SNS';
+  txtEl.disabled = isAOnly || isEnsOnly || isSnsOnly;
+  aEl.disabled = isTxtOnly || isEnsOnly || isSnsOnly;
+  xorEl.disabled = isTxtOnly || isEnsOnly || isSnsOnly;
   ensKeyEl.disabled = !isEnsOnly;
   ensDecodeEl.disabled = !isEnsOnly;
   ensOptionsEl.disabled = !isEnsOnly;
+  snsDecodeEl.disabled = !isSnsOnly;
+  snsOptionsEl.disabled = !isSnsOnly;
 }
 
 function initDomainVerifyUi(){
@@ -629,7 +637,10 @@ async function runDomainVerify(){
   const ensTextKey = String((document.getElementById('verifyEnsTextKey') || {}).value || '').trim();
   const ensDecode = String((document.getElementById('verifyEnsDecode') || {}).value || 'ipv6_5to8_xor').trim();
   const ensOptionsRaw = String((document.getElementById('verifyEnsOptions') || {}).value || '').trim();
+  const snsDecode = String((document.getElementById('verifySnsDecode') || {}).value || 'ROL3210_decode').trim();
+  const snsOptionsRaw = String((document.getElementById('verifySnsOptions') || {}).value || '').trim();
   let ensOptions = null;
+  let snsOptions = null;
   if(type === 'ENS'){
     const parsedEnsOptions = parseJsonObjectInput(ensOptionsRaw, 'ENS options');
     if(!parsedEnsOptions.ok){
@@ -637,6 +648,13 @@ async function runDomainVerify(){
       return;
     }
     ensOptions = parsedEnsOptions.value;
+  }else if(type === 'SNS'){
+    const parsedSnsOptions = parseJsonObjectInput(snsOptionsRaw, 'SNS options');
+    if(!parsedSnsOptions.ok){
+      setDomainVerifyStatus(parsedSnsOptions.error, 'err');
+      return;
+    }
+    snsOptions = parsedSnsOptions.value;
   }
   const includeVt = !!((document.getElementById('verifyIncludeVt') || {}).checked);
   const analyzeDecoders = !!((document.getElementById('verifyAnalyzeDecoders') || {}).checked);
@@ -658,6 +676,8 @@ async function runDomainVerify(){
         ens_text_key: ensTextKey,
         ens_decode: ensDecode,
         ens_options: ensOptions,
+        sns_decode: snsDecode,
+        sns_options: snsOptions,
         include_vt: includeVt,
         analyze_decoders: analyzeDecoders,
         decoder_top_n: decoderTopN,
@@ -3543,6 +3563,8 @@ window.addEventListener('load', ()=>{
       const ensKeyEl = document.getElementById('verifyEnsTextKey');
       const ensDecodeEl = document.getElementById('verifyEnsDecode');
       const ensOptionsEl = document.getElementById('verifyEnsOptions');
+      const snsDecodeEl = document.getElementById('verifySnsDecode');
+      const snsOptionsEl = document.getElementById('verifySnsOptions');
       const includeVtEl = document.getElementById('verifyIncludeVt');
       if(domainEl) domainEl.value = '';
       if(typeEl) typeEl.value = 'AUTO';
@@ -3552,6 +3574,8 @@ window.addEventListener('load', ()=>{
       if(ensKeyEl) ensKeyEl.value = 'ipv6';
       if(ensDecodeEl && includeOption(ensDecodeEl, 'ipv6_5to8_xor')) ensDecodeEl.value = 'ipv6_5to8_xor';
       if(ensOptionsEl) ensOptionsEl.value = '';
+      if(snsDecodeEl && includeOption(snsDecodeEl, 'ROL3210_decode')) snsDecodeEl.value = 'ROL3210_decode';
+      if(snsOptionsEl) snsOptionsEl.value = '';
       if(includeVtEl) includeVtEl.checked = true;
       updateDomainVerifyInputMode();
       clearDomainVerifyResult();
