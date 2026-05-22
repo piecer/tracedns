@@ -194,7 +194,7 @@ def _normalize_ip_tuples(ip_tuples):
     """Return deduplicated (ip, label, source_type) tuples."""
     out = []
     seen = set()
-    allowed_types = {'TXT', 'A', 'ENS'}
+    allowed_types = {'TXT', 'A', 'ENS', 'SNS'}
     for item in ip_tuples or []:
         ip = ''
         label = 'unknown'
@@ -251,7 +251,7 @@ def _build_alert_body(action: str, ip_tuples, context=None):
         for dom in _split_labels(label):
             domain_counter[dom] += 1
 
-    source_summary = ", ".join([f"{k}:{source_counter.get(k, 0)}" for k in ('TXT', 'A', 'ENS') if source_counter.get(k, 0) > 0]) or '-'
+    source_summary = ", ".join([f"{k}:{source_counter.get(k, 0)}" for k in ('TXT', 'A', 'ENS', 'SNS') if source_counter.get(k, 0) > 0]) or '-'
     domain_summary = ", ".join([f"{dom}({cnt})" for dom, cnt in domain_counter.most_common(5)]) or '-'
     unique_domain_count = len(domain_counter)
 
