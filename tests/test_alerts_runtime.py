@@ -138,6 +138,31 @@ class TestAlertsRuntime(unittest.TestCase):
         self.assertIn('- [TXT] 1.2.3.4 | source=a.example', msg)
         self.assertIn('- [TXT] 5.6.7.8 | source=b.example', msg)
 
+
+    def test_alert_new_ips_preserves_sns_source_type(self):
+        alerts._initialized = True
+        alerts._misp_event_id = None
+        alerts._teams_webhook = "https://example.com/webhook"
+
+        sent = {}
+        old_send = alerts._send_teams
+        try:
+            def fake_send(message, title=''):
+                sent['title'] = title
+                sent['message'] = message
+                return True
+            alerts._send_teams = fake_send
+
+            alerts.alert_new_ips([
+                ('8.8.8.8', 'sns.example', 'SNS'),
+            ])
+        finally:
+            alerts._send_teams = old_send
+
+        msg = sent.get('message', '')
+        self.assertIn('Source Types: SNS:1', msg)
+        self.assertIn('- [SNS] 8.8.8.8 | source=sns.example', msg)
+
     def test_alert_removed_ips_uses_structured_message(self):
         alerts._initialized = True
         alerts._misp_event_id = None

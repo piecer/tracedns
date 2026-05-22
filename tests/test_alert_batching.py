@@ -9,6 +9,8 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from monitor import engine
+from monitor.collect import Collected
+from models import DomainSpec, QueryResult, Snapshot
 
 
 class TestAlertBatching(unittest.TestCase):
@@ -88,6 +90,36 @@ class TestAlertBatching(unittest.TestCase):
         self.assertIn('same.eth [ENS:ipv6]', history)
         self.assertIn('same.eth [ENS:network]', history)
 
+
+
+
+    def test_run_domain_cycle_detects_sns_added_ips(self):
+        current_results = {}
+        history = {}
+        query_fail_counts = {}
+
+        with mock.patch.object(engine, 'collect_snapshot') as mocked_collect:
+            mocked_collect.return_value = Collected(
+                query=QueryResult(
+                    server='https://sns-proxy.example',
+                    domain='sns.example',
+                    rtype='SNS',
+                    status='ok',
+                    values=['raw'],
+                ),
+                snapshot=Snapshot(type='SNS', values=['raw'], decoded_ips=['10.10.10.10'], ts=1234567890),
+            )
+            added = engine.run_domain_cycle(
+                domain=DomainSpec(name='sns.example', type='SNS'),
+                servers=['https://sns-proxy.example'],
+                current_results=current_results,
+                history=history,
+                history_dir='/tmp',
+                query_fail_counts=query_fail_counts,
+                max_workers=1,
+            )
+
+        self.assertEqual(added, [('10.10.10.10', 'sns.example', 'SNS')])
 
 if __name__ == '__main__':
     unittest.main()
