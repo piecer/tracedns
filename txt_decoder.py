@@ -5,6 +5,7 @@ Provides several built-in TXT decoding methods and helpers
 used by the DNS monitor and web UI.
 """
 import base64
+import codecs
 import struct
 import re
 import binascii
@@ -283,6 +284,87 @@ def _split_txt_tokens(v: str):
 
     # fallback: previous logic
     return [p.strip() for p in v.replace(',', '|').split('|') if p.strip()]
+
+def _rot13_xor0x30_byte(b: int) -> int:
+    """Apply ROT13 to ASCII letters, then XOR the resulting byte with 0x30."""
+    if 0x41 <= b <= 0x5A:
+        b = ((b - 0x41 + 13) % 26) + 0x41
+    elif 0x61 <= b <= 0x7A:
+        b = ((b - 0x61 + 13) % 26) + 0x61
+    return b ^ 0x30
+
+
+def _decode_rot13_xor0x30_bytes(data: bytes) -> bytes:
+    """Decode Datasurge-style config bytes with ROT13 followed by XOR 0x30."""
+    return bytes(_rot13_xor0x30_byte(b) for b in data)
+
+
+def _parse_escaped_txt_bytes(value: str) -> bytes:
+    """Parse text containing Python-style byte escapes (for example, \\x04)."""
+    return codecs.decode(value, "unicode_escape").encode("latin1")
+
+
+def _unwrap_rot13_xor0x30_txt_token(token: str) -> bytes:
+    """Return encoded config bytes from a TXT token.
+
+    Datasurge TXT values are normally Base64 wrappers around escaped byte text,
+    such as Base64("\\x04\\x05...").  If the Base64 payload is not escaped,
+    treat it as the encoded bytes directly.  As a convenience, literal escaped
+    text is also accepted.
+    """
+    compact = "".join(str(token or "").strip().strip('\"').split())
+    if not compact:
+        return b""
+
+    try:
+        payload = _b64decode_pad(compact)
+    except Exception:
+        payload = None
+
+    if payload is not None:
+        try:
+            escaped_text = payload.decode("ascii")
+        except Exception:
+            return bytes(payload)
+        if "\\x" in escaped_text or "\\u" in escaped_text or "\\0" in escaped_text:
+            try:
+                return _parse_escaped_txt_bytes(escaped_text)
+            except Exception:
+                return bytes(payload)
+        return bytes(payload)
+
+    try:
+        return _parse_escaped_txt_bytes(compact)
+    except Exception:
+        return b""
+
+
+@txt_decode_register('ROT13_XOR0x30')
+def decode_txt_rot13_xor0x30(txt_values, domain=None, **kwargs):
+    """
+    Decode Datasurge-style TXT values and extract IPv4 addresses.
+
+    Expected TXT wrapper:
+      Base64 string -> escaped byte text (for example, \\x04\\x05...)
+      -> raw encoded config bytes -> ROT13 each alphabetic byte -> XOR 0x30.
+    """
+    out = []
+    seen = set()
+
+    for v in txt_values or []:
+        for tok in _split_txt_tokens(v):
+            encoded = _unwrap_rot13_xor0x30_txt_token(tok)
+            if not encoded:
+                continue
+
+            decoded = _decode_rot13_xor0x30_bytes(encoded)
+            ip = _extract_ip_prefix(decoded)
+            if ip and ip not in seen:
+                seen.add(ip)
+                out.append(ip)
+
+    return sorted(out)
+
 
 @txt_decode_register('xor_ipstring_base64_fixedkey')
 def decode_txt_xor_ipstring_base64_fixedkey(txt_values, key_hex=_FIXED_XOR_KEY_HEX_DEFAULT, domain=None, **kwargs):

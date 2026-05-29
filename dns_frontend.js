@@ -314,7 +314,7 @@ function formatJsonObjectCompact(value){
 }
 
 function syncDomainVerifyDecoderOptions(){
-  const txtFallback = ['cafebabe_xor_base64','plain_base64','btea_variant','xor_ipstring_base64_fixedkey'];
+  const txtFallback = ['cafebabe_xor_base64','plain_base64','btea_variant','xor_ipstring_base64_fixedkey','ROT13_XOR0x30'];
   const aFallback = ['none','xor32_ipv4','2byte_swap'];
   const ensFallback = ['ipv6_5to8_xor', 'ROL3210_decode'];
   const txtNames = buildDecoderNameList(
@@ -2464,7 +2464,7 @@ function addDomainRow(obj){
   const selDecode = document.createElement('select');
   selDecode.className = 'txt-decode';
   // Decoder list is loaded dynamically from the backend; use fallback if not loaded yet
-  const FALLBACK_DECODERS = ['cafebabe_xor_base64','plain_base64','btea_variant','xor_ipstring_base64_fixedkey','base64_xor_febabe','base56','safeb64_xor','c2_multiplex'];
+  const FALLBACK_DECODERS = ['cafebabe_xor_base64','plain_base64','btea_variant','xor_ipstring_base64_fixedkey','base64_xor_febabe','base56','safeb64_xor','c2_multiplex','ROT13_XOR0x30'];
   const decs = (window.DECODERS && window.DECODERS.length) ? window.DECODERS : FALLBACK_DECODERS;
   // include custom decoders names as well
   const customNames = (window.CUSTOM_DECODERS || [])
