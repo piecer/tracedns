@@ -2521,15 +2521,20 @@ function addDomainRow(obj){
   inpEnsKey.value = (obj && obj.ens_text_key) ? obj.ens_text_key : '';
   tdEnsKey.appendChild(inpEnsKey);
 
-  // ENS decode select
+  // ENS/SNS decode select
   const tdEnsDecode = document.createElement('td');
   const selEnsDecode = document.createElement('select');
   selEnsDecode.className = 'ens-decode';
   const FALLBACK_ENS_DECODERS = ['ipv6_5to8_xor', 'ROL3210_decode', 'legacy_doc_sample', 'none'];
   const ensDecsRaw = (window.ENS_DECODERS && window.ENS_DECODERS.length) ? window.ENS_DECODERS.slice() : FALLBACK_ENS_DECODERS.slice();
   const ensDecs = Array.from(new Set(ensDecsRaw.filter(Boolean)));
-  if(obj && obj.ens_decode && !ensDecs.includes(obj.ens_decode)){
-    ensDecs.push(obj.ens_decode);
+  const configuredType = String((obj && obj.type) || 'A').toUpperCase();
+  const configuredDecode = obj
+    ? (configuredType === 'SNS' ? obj.sns_decode : obj.ens_decode)
+    : '';
+  const defaultDecode = configuredType === 'SNS' ? 'ROL3210_decode' : 'ipv6_5to8_xor';
+  if(configuredDecode && !ensDecs.includes(configuredDecode)){
+    ensDecs.push(configuredDecode);
   }
   ensDecs.forEach(t=>{
     const o = document.createElement('option');
@@ -2537,23 +2542,26 @@ function addDomainRow(obj){
     o.text = (t === 'none') ? 'None' : t;
     selEnsDecode.appendChild(o);
   });
-  if(obj && obj.ens_decode && ensDecs.includes(obj.ens_decode)){
-    selEnsDecode.value = obj.ens_decode;
-  } else if(ensDecs.includes('ipv6_5to8_xor')){
-    selEnsDecode.value = 'ipv6_5to8_xor';
+  if(configuredDecode && ensDecs.includes(configuredDecode)){
+    selEnsDecode.value = configuredDecode;
+  } else if(ensDecs.includes(defaultDecode)){
+    selEnsDecode.value = defaultDecode;
   }
   tdEnsDecode.appendChild(selEnsDecode);
 
-  // ENS options JSON input
+  // ENS/SNS options JSON input
   const tdEnsOptions = document.createElement('td');
   const inpEnsOptions = document.createElement('input');
   inpEnsOptions.type = 'text';
   inpEnsOptions.className = 'ens-options';
   inpEnsOptions.placeholder = '{"xor_byte":"0xA5"}';
   let ensOptionsText = '';
-  if(obj && obj.ens_options && typeof obj.ens_options === 'object' && !Array.isArray(obj.ens_options)){
-    ensOptionsText = formatJsonObjectCompact(obj.ens_options);
-  } else if(obj && obj.ens_xor_byte){
+  const configuredOptions = obj
+    ? (configuredType === 'SNS' ? obj.sns_options : obj.ens_options)
+    : null;
+  if(configuredOptions && typeof configuredOptions === 'object' && !Array.isArray(configuredOptions)){
+    ensOptionsText = formatJsonObjectCompact(configuredOptions);
+  } else if(configuredType === 'ENS' && obj && obj.ens_xor_byte){
     ensOptionsText = formatJsonObjectCompact({xor_byte: obj.ens_xor_byte});
   }
   inpEnsOptions.value = ensOptionsText;

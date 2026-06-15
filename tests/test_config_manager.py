@@ -41,6 +41,24 @@ class TestConfigManager(unittest.TestCase):
         self.assertEqual(out[0].get("ens_decode"), "ipv6_5to8_xor")
         self.assertEqual(out[0].get("ens_options"), {"xor_byte": "0xA5"})
 
+    def test_normalize_domains_preserves_sns_decoder_fields(self):
+        value = [{
+            "name": "example.sol",
+            "type": "SNS",
+            "ens_text_key": "IPFS",
+            "sns_decode": "custom_sns_decode",
+            "sns_options": {"xor_byte": "0xB6"},
+        }]
+        out = cm.normalize_domains(value)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].get("name"), "example.sol")
+        self.assertEqual(out[0].get("type"), "SNS")
+        self.assertEqual(out[0].get("ens_text_key"), "IPFS")
+        self.assertEqual(out[0].get("sns_decode"), "custom_sns_decode")
+        self.assertEqual(out[0].get("sns_options"), {"xor_byte": "0xB6"})
+        self.assertNotIn("ens_decode", out[0])
+        self.assertNotIn("ens_options", out[0])
+
     def test_normalize_domains_migrates_legacy_ens_xor_byte_to_options(self):
         value = [{
             "name": "legacy.eth",
