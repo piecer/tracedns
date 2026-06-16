@@ -27,7 +27,12 @@ from http_api.basic_handlers import handle_decoders as _handle_decoders_basic
 from http_api.utils import send_json as _send_json_basic
 from http_api.settings_handlers import handle_settings_get as _handle_settings_get_basic
 from http_api.settings_handlers import handle_settings_post as _handle_settings_post_basic
-from http_api.relationship_handlers import handle_ip_relationship_analysis as _handle_ip_relationship_analysis
+from http_api.relationship_handlers import (
+    cancel_ip_relationship_job as _cancel_ip_relationship_job,
+    get_ip_relationship_job as _get_ip_relationship_job,
+    handle_ip_relationship_analysis as _handle_ip_relationship_analysis,
+    start_ip_relationship_job as _start_ip_relationship_job,
+)
 from monitor.runtime_state import (
     get_state_version,
     snapshot_current_and_history_events,
@@ -2091,6 +2096,12 @@ def attach_api_handlers(
             return self._handle_domains()
         if parsed.path == '/domain-analysis':
             return self._handle_domain_analysis(qs)
+        if parsed.path.startswith('/ip-relationship-jobs/'):
+            parts = [p for p in parsed.path.split('/') if p]
+            if len(parts) >= 2:
+                include_result = bool(qs.get('result', ['0'])[0] in ('1', 'true', 'yes', 'on'))
+                payload, status = _get_ip_relationship_job(parts[1], include_result=include_result)
+                return self._send_json(payload, status)
         if parsed.path == '/misp/search':
             return self._handle_misp_search(qs)
         if parsed.path == '/':
@@ -2443,6 +2454,21 @@ def attach_api_handlers(
     
         if parsed.path == '/ip-list-analysis':
             return self._handle_ip_list_analysis()
+
+        if parsed.path == '/ip-relationship-jobs':
+            length = int(self.headers.get('Content-Length', '0'))
+            body = self.rfile.read(length) if length > 0 else b''
+            try:
+                data = json.loads(body.decode('utf-8')) if body else {}
+            except Exception:
+                return self._send_json({'error': 'invalid json'}, 400)
+            return self._send_json(_start_ip_relationship_job(data, shared_config), 202)
+
+        if parsed.path.startswith('/ip-relationship-jobs/'):
+            parts = [p for p in parsed.path.split('/') if p]
+            if len(parts) >= 3 and parts[2] == 'cancel':
+                payload, status = _cancel_ip_relationship_job(parts[1])
+                return self._send_json(payload, status)
 
         if parsed.path == '/ip-relationship-analysis':
             return _handle_ip_relationship_analysis(self, gather_ip_map_fn=self._gather_ip_map)

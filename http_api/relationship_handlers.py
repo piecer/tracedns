@@ -5,6 +5,11 @@ import json
 import logging
 import os
 import re
+import threading
+import time
+import uuid
+from concurrent.futures import ProcessPoolExecutor
+from io import BytesIO
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -16,6 +21,134 @@ except Exception:
     get_ip_report = None
 
 logger = logging.getLogger(__name__)
+
+_IP_REL_JOB_LOCK = threading.Lock()
+_IP_REL_JOBS: Dict[str, Dict[str, Any]] = {}
+_IP_REL_JOB_EXECUTOR: Optional[ProcessPoolExecutor] = None
+_IP_REL_JOB_MAX_WORKERS = max(1, int(os.environ.get("TRACEDNS_IP_REL_JOB_WORKERS", "1") or "1"))
+_IP_REL_JOB_TTL_SECONDS = max(300, int(os.environ.get("TRACEDNS_IP_REL_JOB_TTL_SECONDS", "3600") or "3600"))
+
+
+def _get_ip_rel_job_executor() -> ProcessPoolExecutor:
+    global _IP_REL_JOB_EXECUTOR
+    with _IP_REL_JOB_LOCK:
+        if _IP_REL_JOB_EXECUTOR is None:
+            _IP_REL_JOB_EXECUTOR = ProcessPoolExecutor(max_workers=_IP_REL_JOB_MAX_WORKERS)
+        return _IP_REL_JOB_EXECUTOR
+
+
+def _cleanup_ip_rel_jobs(now: Optional[float] = None):
+    now_f = float(now if now is not None else time.time())
+    with _IP_REL_JOB_LOCK:
+        old_ids = []
+        for job_id, job in _IP_REL_JOBS.items():
+            done_at = float(job.get("done_at") or 0)
+            created_at = float(job.get("created_at") or 0)
+            ref_ts = done_at or created_at
+            if ref_ts and now_f - ref_ts > _IP_REL_JOB_TTL_SECONDS:
+                old_ids.append(job_id)
+        for job_id in old_ids:
+            _IP_REL_JOBS.pop(job_id, None)
+
+
+class _CapturingRelationshipHandler:
+    def __init__(self, data: Dict[str, Any], shared_config: Optional[Dict[str, Any]] = None):
+        raw = json.dumps(data or {}).encode("utf-8")
+        self.headers = {"Content-Length": str(len(raw))}
+        self.rfile = BytesIO(raw)
+        self.shared_config = dict(shared_config or {})
+        self.response: Dict[str, Any] = {}
+        self.status_code = 200
+
+    def _send_json(self, payload: Dict[str, Any], status: int = 200):
+        self.response = payload if isinstance(payload, dict) else {"data": payload}
+        self.status_code = int(status or 200)
+        return {"status_code": self.status_code, "payload": self.response}
+
+
+def _run_ip_relationship_analysis_payload(data: Dict[str, Any], shared_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    handler = _CapturingRelationshipHandler(data, shared_config)
+    result = handle_ip_relationship_analysis(handler)
+    if isinstance(result, dict) and "payload" in result:
+        return result
+    return {"status_code": handler.status_code, "payload": handler.response}
+
+
+def _ip_rel_job_done(job_id: str, fut):
+    now = time.time()
+    with _IP_REL_JOB_LOCK:
+        job = _IP_REL_JOBS.get(job_id)
+        if not job:
+            return
+        job["done_at"] = now
+        if fut.cancelled():
+            job["status"] = "cancelled"
+            return
+        try:
+            result = fut.result()
+            job["result"] = result.get("payload") if isinstance(result, dict) else result
+            job["status_code"] = int((result or {}).get("status_code") or 200) if isinstance(result, dict) else 200
+            job["status"] = "completed" if int(job.get("status_code") or 200) < 400 else "failed"
+        except Exception as exc:
+            job["status"] = "failed"
+            job["status_code"] = 500
+            job["error"] = str(exc)
+
+
+def start_ip_relationship_job(data: Dict[str, Any], shared_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    _cleanup_ip_rel_jobs()
+    job_id = uuid.uuid4().hex
+    now = time.time()
+    job = {
+        "job_id": job_id,
+        "status": "queued",
+        "created_at": now,
+        "done_at": None,
+        "status_code": None,
+        "error": None,
+    }
+    with _IP_REL_JOB_LOCK:
+        _IP_REL_JOBS[job_id] = job
+    fut = _get_ip_rel_job_executor().submit(_run_ip_relationship_analysis_payload, data, dict(shared_config or {}))
+    with _IP_REL_JOB_LOCK:
+        if job_id in _IP_REL_JOBS:
+            _IP_REL_JOBS[job_id]["future"] = fut
+            _IP_REL_JOBS[job_id]["status"] = "running"
+    fut.add_done_callback(lambda f, jid=job_id: _ip_rel_job_done(jid, f))
+    return {"status": "queued", "job_id": job_id}
+
+
+def get_ip_relationship_job(job_id: str, *, include_result: bool = False) -> Tuple[Dict[str, Any], int]:
+    _cleanup_ip_rel_jobs()
+    with _IP_REL_JOB_LOCK:
+        job = _IP_REL_JOBS.get(str(job_id or ""))
+        if not job:
+            return ({"error": "job not found"}, 404)
+        out = {
+            "job_id": job.get("job_id"),
+            "status": job.get("status"),
+            "created_at": job.get("created_at"),
+            "done_at": job.get("done_at"),
+            "status_code": job.get("status_code"),
+            "error": job.get("error"),
+        }
+        if include_result and job.get("status") in ("completed", "failed"):
+            out["result"] = job.get("result")
+        return (out, 200)
+
+
+def cancel_ip_relationship_job(job_id: str) -> Tuple[Dict[str, Any], int]:
+    with _IP_REL_JOB_LOCK:
+        job = _IP_REL_JOBS.get(str(job_id or ""))
+        if not job:
+            return ({"error": "job not found"}, 404)
+        fut = job.get("future")
+        cancelled = bool(fut.cancel()) if fut is not None else False
+        if cancelled:
+            job["status"] = "cancelled"
+            job["done_at"] = time.time()
+        return ({"status": job.get("status"), "job_id": job_id, "cancelled": cancelled}, 200)
+
 
 
 def _parse_ip_tokens(raw: Any) -> Tuple[List[str], List[str]]:
@@ -394,6 +527,209 @@ def _compare_features(
     return (score, ev)
 
 
+
+def _top_counter(counter: Dict[str, int]) -> Dict[str, Any]:
+    items = [(str(k), int(v or 0)) for k, v in (counter or {}).items() if k and int(v or 0) > 0]
+    if not items:
+        return {"key": "", "count": 0}
+    key, count = sorted(items, key=lambda x: (-x[1], x[0]))[0]
+    return {"key": key, "count": count}
+
+
+def _build_relationship_insights(payload: Dict[str, Any]) -> Dict[str, Any]:
+    clusters_raw = payload.get("clusters") if isinstance(payload, dict) else []
+    clusters = [c for c in (clusters_raw or []) if isinstance(c, dict) and int(c.get("size") or 0) >= 2]
+    valid_count = int(payload.get("valid_count") or 0)
+    pair_count = int(payload.get("pair_count") or 0)
+    top_pairs_limit = int(payload.get("top_pairs") or 0)
+    hints: List[Dict[str, Any]] = []
+
+    def add_hint(level: str, title: str, detail: str, signal: str = ""):
+        item = {"level": level, "title": title, "detail": detail, "source": "Cluster"}
+        if signal:
+            item["signal"] = signal
+        hints.append(item)
+
+    largest_cluster_size = 0
+    largest_cluster_ratio = 0.0
+    cohesion_sum = 0.0
+    cohesion_count = 0
+    high_cohesion_clusters = 0
+    high_malicious_clusters = 0
+    network_counter: Dict[str, int] = {}
+    jarm_counter: Dict[str, int] = {}
+    cert_counter: Dict[str, int] = {}
+
+    for c in clusters:
+        size = int(c.get("size") or 0)
+        largest_cluster_size = max(largest_cluster_size, size)
+        ratio = (size / valid_count) if valid_count > 0 else 0.0
+        largest_cluster_ratio = max(largest_cluster_ratio, ratio)
+        cohesion = c.get("cohesion")
+        if cohesion is not None:
+            try:
+                cohesion_f = float(cohesion)
+                cohesion_sum += cohesion_f
+                cohesion_count += 1
+                if cohesion_f >= 65 and size >= 3:
+                    high_cohesion_clusters += 1
+            except Exception:
+                pass
+        vt = c.get("vt_summary") if isinstance(c.get("vt_summary"), dict) else None
+        mal_total = int((vt or {}).get("malicious_total") or 0)
+        if size >= 3 and mal_total >= ((size + 1) // 2):
+            high_malicious_clusters += 1
+
+        for field, counter in (("top_network", network_counter), ("top_jarm", jarm_counter), ("top_cert", cert_counter)):
+            top = c.get(field) if isinstance(c.get(field), list) else []
+            if not top:
+                continue
+            ent = top[0]
+            if not isinstance(ent, (list, tuple)) or len(ent) < 2:
+                continue
+            key = str(ent[0] or "")
+            count = int(ent[1] or 0)
+            if key and key != "-" and count >= 2:
+                counter[key] = counter.get(key, 0) + count
+
+    top_network = _top_counter(network_counter)
+    top_jarm = _top_counter(jarm_counter)
+    top_cert = _top_counter(cert_counter)
+    avg_cohesion = (cohesion_sum / cohesion_count) if cohesion_count else None
+
+    if not clusters:
+        if valid_count >= 2:
+            add_hint("warn", "Weak Cluster Connectivity", "No cluster with 2+ IPs met the current relationship threshold.", "cluster")
+    else:
+        if largest_cluster_size >= 4 and largest_cluster_ratio >= 0.55:
+            add_hint("high", "Dominant Cluster", f"Largest cluster has {largest_cluster_size}/{valid_count or largest_cluster_size} IPs ({round(largest_cluster_ratio * 100)}%).", "cluster_size")
+        elif len(clusters) >= 3:
+            add_hint("mid", "Multi-cluster Layout", f"{len(clusters)} clusters were identified, suggesting segmented infrastructure.", "cluster_count")
+        if high_cohesion_clusters > 0:
+            lvl = "high" if high_cohesion_clusters >= 2 else "mid"
+            add_hint(lvl, "High Cohesion Cluster", f"{high_cohesion_clusters} cluster(s) show cohesion ≥ 65.", "cohesion")
+        if high_malicious_clusters > 0:
+            add_hint("high", "Malicious Cluster Core", f"{high_malicious_clusters} cluster(s) have high malicious density in VT summary.", "vt_cluster")
+
+    if top_network.get("key") and int(top_network.get("count") or 0) >= 4:
+        add_hint("mid", "Cluster Network Reuse", f"Cluster footprints repeatedly include network {top_network['key']} ({top_network['count']}).", "network")
+    if top_jarm.get("key") and int(top_jarm.get("count") or 0) >= 3:
+        add_hint("high", "Cluster JARM Reuse", f"{top_jarm['count']} cluster-IP observations share JARM {_short_token(top_jarm['key'], head=10, tail=6)}.", "jarm")
+    if top_cert.get("key") and int(top_cert.get("count") or 0) >= 2:
+        lvl = "high" if int(top_cert.get("count") or 0) >= 3 else "mid"
+        add_hint(lvl, "Cluster Certificate Reuse", f"{top_cert['count']} cluster-IP observations share cert {_short_token(top_cert['key'], head=10, tail=6)}.", "cert_sha256")
+
+    pair_gate = payload.get("pair_gate") if isinstance(payload.get("pair_gate"), dict) else None
+    if pair_gate and pair_gate.get("enabled"):
+        kept = int(pair_gate.get("kept") or 0)
+        dropped = int(pair_gate.get("dropped") or 0)
+        total = kept + dropped
+        if total >= 20 and dropped / max(1, total) >= 0.75:
+            add_hint("info", "Pair Gate Filtering", f"{dropped}/{total} candidate edges were filtered as weak links.", "pair_gate")
+
+    oversized = int(payload.get("bucket_oversized_count") or 0)
+    truncated = int(payload.get("bucket_truncated_count") or 0)
+    if oversized > 0:
+        msg = f"{oversized} oversized feature buckets detected"
+        if truncated > 0:
+            msg += f"; {truncated} truncated"
+        msg += ". Consider conservative profile or higher-quality signals for very large IP sets."
+        add_hint("warn", "Bucket Overflow Applied", msg, "bucket_overflow")
+
+    if top_pairs_limit > 0 and pair_count >= top_pairs_limit:
+        add_hint("info", "Pair Result Limit Hit", f"Returned pairs reached the configured Top pairs limit ({top_pairs_limit}).", "top_pairs")
+
+    return {
+        "hints": hints,
+        "characteristics": {
+            "cluster_count": len(clusters),
+            "pair_count": pair_count,
+            "largest_cluster_size": largest_cluster_size,
+            "largest_cluster_ratio": largest_cluster_ratio,
+            "average_cohesion": avg_cohesion,
+            "high_cohesion_clusters": high_cohesion_clusters,
+            "high_malicious_clusters": high_malicious_clusters,
+            "top_cluster_network": top_network,
+            "top_cluster_jarm": top_jarm,
+            "top_cluster_cert": top_cert,
+        },
+    }
+
+
+def _build_relationship_graph(
+    pairs: List[Dict[str, Any]],
+    clusters: List[Dict[str, Any]],
+    ip_features: Dict[str, Dict[str, Any]],
+    *,
+    edge_limit: int = 600,
+    node_limit: int = 400,
+) -> Dict[str, Any]:
+    selected: List[Dict[str, Any]] = []
+    nodes_seen: Set[str] = set()
+    for p in pairs or []:
+        a = str((p or {}).get("a") or "")
+        b = str((p or {}).get("b") or "")
+        if not a or not b:
+            continue
+        add_count = (0 if a in nodes_seen else 1) + (0 if b in nodes_seen else 1)
+        if nodes_seen and len(nodes_seen) + add_count > node_limit:
+            continue
+        selected.append(p)
+        nodes_seen.add(a)
+        nodes_seen.add(b)
+        if len(selected) >= edge_limit:
+            break
+
+    ip_to_cluster: Dict[str, int] = {}
+    for idx, c in enumerate(clusters or []):
+        for ip in c.get("ips") if isinstance(c, dict) and isinstance(c.get("ips"), list) else []:
+            ip_to_cluster[str(ip)] = idx + 1
+
+    degree: Dict[str, int] = defaultdict(int)
+    for p in selected:
+        a = str(p.get("a") or "")
+        b = str(p.get("b") or "")
+        degree[a] += 1
+        degree[b] += 1
+
+    nodes = []
+    for ip in sorted(nodes_seen):
+        f = ip_features.get(ip) or {}
+        nodes.append({
+            "id": ip,
+            "label": ip,
+            "country": str(f.get("country") or "-"),
+            "asn": str(f.get("asn") or "-"),
+            "csp": str(f.get("csp_label") or ""),
+            "cluster_idx": int(ip_to_cluster.get(ip) or 0),
+            "degree": int(degree.get(ip) or 0),
+        })
+
+    edges = []
+    for idx, p in enumerate(selected):
+        a = str(p.get("a") or "")
+        b = str(p.get("b") or "")
+        ca = int(ip_to_cluster.get(a) or 0)
+        cb = int(ip_to_cluster.get(b) or 0)
+        edges.append({
+            "id": f"e{idx}",
+            "source": a,
+            "target": b,
+            "score": int(p.get("score") or 0),
+            "evidence": p.get("evidence") or [],
+            "same_cluster": bool(ca > 0 and cb > 0 and ca == cb),
+        })
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "node_count": len(nodes),
+        "edge_count": len(edges),
+        "total_pair_count": len(pairs or []),
+        "node_limit": int(node_limit),
+        "edge_limit": int(edge_limit),
+    }
+
 def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
     """Similarity analysis among a user-supplied infected-host IP list.
 
@@ -678,8 +1014,65 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
     bucket_oversized_count = 0
     bucket_truncated_count = 0
 
-    # Candidate pairs set: store per pair computed once
-    candidates: Set[Tuple[str, str]] = set()
+    # Stream bucket-generated pairs through scoring. Keep only a bounded heap so
+    # large buckets do not materialize every candidate edge or require a full sort.
+    import heapq
+
+    seen_pairs: Set[Tuple[str, str]] = set()
+    heap_limit = max(int(top_pairs) * 8, int(top_pairs) + 1000)
+    heap_limit = min(max(heap_limit, 1000), 50000)
+    pair_heap: List[Tuple[int, str, str, Dict[str, Any]]] = []
+    pair_gate_kept = 0
+    pair_gate_dropped = 0
+    candidate_count = 0
+    deduped_candidate_count = 0
+
+    def _score_and_offer_pair(a: str, b: str):
+        nonlocal pair_gate_kept, pair_gate_dropped, candidate_count, deduped_candidate_count
+        if not a or not b or a == b:
+            return
+        if a > b:
+            a, b = b, a
+        pair_key = (a, b)
+        candidate_count += 1
+        if pair_key in seen_pairs:
+            deduped_candidate_count += 1
+            return
+        seen_pairs.add(pair_key)
+        fa = ip_features.get(a) or {}
+        fb = ip_features.get(b) or {}
+        sc, ev = _compare_features(
+            a,
+            b,
+            fa,
+            fb,
+            ca=ip_similarity_context.get(a),
+            cb=ip_similarity_context.get(b),
+        )
+        if sc <= 0:
+            return
+        gate_ok, gate_reason = _pair_gate_decision(
+            sc,
+            ev,
+            min_score,
+            enabled=pair_gate_enabled,
+            strong_min=pair_gate_strong_min,
+            mid_min=pair_gate_mid_min,
+            fallback_score=pair_gate_fallback_score,
+        )
+        if not gate_ok:
+            pair_gate_dropped += 1
+            return
+        pair_gate_kept += 1
+        item = {"a": a, "b": b, "score": sc, "evidence": ev, "gate_reason": gate_reason}
+        heap_key = (int(sc), str(a), str(b), item)
+        if len(pair_heap) < heap_limit:
+            heapq.heappush(pair_heap, heap_key)
+        else:
+            # Keep the highest scoring bounded working set; deterministic tie
+            # breakers preserve stable output for equal scores.
+            if (int(sc), str(a), str(b)) > (pair_heap[0][0], pair_heap[0][1], pair_heap[0][2]):
+                heapq.heapreplace(pair_heap, heap_key)
 
     for k, ips in buckets.items():
         if not ips or len(ips) < 2:
@@ -694,52 +1087,15 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
         for i in range(len(uniq)):
             a = uniq[i]
             for j in range(i + 1, len(uniq)):
-                b = uniq[j]
-                candidates.add((a, b))
+                _score_and_offer_pair(a, uniq[j])
 
-    # Compare candidates; keep top neighbors per IP
-    all_pairs: List[Dict[str, Any]] = []
-    pair_gate_kept = 0
-    pair_gate_dropped = 0
+    ranked_pairs = [entry[3] for entry in sorted(pair_heap, key=lambda x: (-x[0], x[1], x[2]))]
 
-    for (a, b) in candidates:
-        fa = ip_features.get(a) or {}
-        fb = ip_features.get(b) or {}
-        sc, ev = _compare_features(
-            a,
-            b,
-            fa,
-            fb,
-            ca=ip_similarity_context.get(a),
-            cb=ip_similarity_context.get(b),
-        )
-        if sc <= 0:
-            continue
-        gate_ok, gate_reason = _pair_gate_decision(
-            sc,
-            ev,
-            min_score,
-            enabled=pair_gate_enabled,
-            strong_min=pair_gate_strong_min,
-            mid_min=pair_gate_mid_min,
-            fallback_score=pair_gate_fallback_score,
-        )
-        if not gate_ok:
-            pair_gate_dropped += 1
-            continue
-        pair_gate_kept += 1
-        # We still compute all, then filter by per-ip neighbor cap below
-        item = {"a": a, "b": b, "score": sc, "evidence": ev, "gate_reason": gate_reason}
-        all_pairs.append(item)
-
-    # Sort by score desc
-    all_pairs.sort(key=lambda x: (-int(x.get("score") or 0), str(x.get("a") or ""), str(x.get("b") or "")))
-
-    # Neighbor cap per IP (keep strongest edges per node)
+    # Neighbor cap per IP (keep strongest edges per node from bounded ranked set)
     kept: List[Dict[str, Any]] = []
     neigh_count = defaultdict(int)
 
-    for it in all_pairs:
+    for it in ranked_pairs:
         a = str(it.get("a") or "")
         b = str(it.get("b") or "")
         if not a or not b:
@@ -857,7 +1213,7 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
     except Exception:
         pass
 
-    return handler._send_json({
+    response = {
         "status": "ok",
         "submitted_count": len(valid_ips) + len(invalid),
         "valid_count": len(valid_ips),
@@ -872,6 +1228,9 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
         "bucket_truncated_count": int(bucket_truncated_count),
         "pairs": kept,
         "pair_count": len(kept),
+        "candidate_count": int(candidate_count),
+        "deduped_candidate_count": int(deduped_candidate_count),
+        "pair_heap_limit": int(heap_limit),
         "pair_gate": {
             "enabled": bool(pair_gate_enabled),
             "kept": int(pair_gate_kept),
@@ -890,4 +1249,9 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
         "ip_features": ip_features,
         "country_summary": country_summary,
         "note": "Similarity is inferred from VT/GeoIP infrastructure features (for infected-host IP lists).",
-    })
+    }
+    insight_payload = _build_relationship_insights(response)
+    response["insights"] = insight_payload.get("hints", [])
+    response["characteristics"] = insight_payload.get("characteristics", {})
+    response["graph"] = _build_relationship_graph(kept, cluster_list, ip_features)
+    return handler._send_json(response)
