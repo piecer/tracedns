@@ -1992,7 +1992,10 @@ function setIpIntelInfraInsights(inputSignature, rawHints, characteristics){
 
 function setIpIntelRelationshipInsights(inputSignature, relCache){
   const state = getIpIntelInsightsState();
-  const built = buildIpIntelRelationshipInsights(relCache);
+  const payload = (relCache && typeof relCache === 'object') ? relCache : {};
+  const serverHints = Array.isArray(payload.insights) ? payload.insights : null;
+  const serverCharacteristics = (payload.characteristics && typeof payload.characteristics === 'object') ? payload.characteristics : null;
+  const built = serverHints ? { hints: serverHints, characteristics: serverCharacteristics } : buildIpIntelRelationshipInsights(relCache);
   state.relationship = {
     signature: String(inputSignature || ''),
     hints: Array.isArray(built.hints) ? built.hints : [],
@@ -3934,6 +3937,21 @@ function selectIpRelGraphPairs(rawPairs){
   return {pairs: selected, nodesSet};
 }
 
+function getServerIpRelGraphSelection(cache){
+  const graph = (cache && cache.graph && typeof cache.graph === 'object') ? cache.graph : null;
+  if(!graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) return null;
+  const nodeIds = new Set();
+  const nodes = [];
+  graph.nodes.forEach(n=>{
+    const id = String((n && n.id) || '').trim();
+    if(!id || nodeIds.has(id)) return;
+    nodeIds.add(id);
+    nodes.push(n);
+  });
+  const edges = graph.edges.filter(e=>e && String(e.source || '').trim() && String(e.target || '').trim());
+  return { nodes, edges, nodesSet: nodeIds, totalPairCount: Number(graph.total_pair_count || edges.length) };
+}
+
 function buildIpRelGraphSignature(cache, selectedPairs, nodesSet){
   const pairSig = (selectedPairs || []).map(p=>[
     String((p && p.a) || ''),
@@ -3956,7 +3974,8 @@ function renderIpRelGraphFromCache(){
   const el = document.getElementById('ipRelGraph');
   const details = document.getElementById('ipRelGraphDetails');
   if(!el) return;
-  if(!cache || !Array.isArray(cache.pairs)){
+  const serverGraph = getServerIpRelGraphSelection(cache);
+  if(!cache || (!Array.isArray(cache.pairs) && !serverGraph)){
     resetIpRelVisualCaches();
     el.innerHTML = '<div style="padding:12px;color:#5b6a77;">Run Relationships first.</div>';
     return;
@@ -3966,13 +3985,15 @@ function renderIpRelGraphFromCache(){
     return;
   }
 
-  const graphSelection = selectIpRelGraphPairs(cache.pairs || []);
-  const pairs = graphSelection.pairs;
+  const graphSelection = serverGraph || selectIpRelGraphPairs(cache.pairs || []);
+  const pairs = serverGraph
+    ? graphSelection.edges.map(e=>({ a: e.source, b: e.target, score: e.score, evidence: e.evidence, same_cluster: e.same_cluster }))
+    : graphSelection.pairs;
   const nodesSet = graphSelection.nodesSet;
   const graphSignature = buildIpRelGraphSignature(cache, pairs, nodesSet);
   const clusters = Array.isArray(cache.clusters) ? cache.clusters : [];
   const minScore = Number(cache.min_score || 40);
-  const totalPairs = Array.isArray(cache.pairs) ? cache.pairs.length : 0;
+  const totalPairs = serverGraph ? Number(graphSelection.totalPairCount || pairs.length) : (Array.isArray(cache.pairs) ? cache.pairs.length : 0);
   if(!pairs.length){
     resetIpRelVisualCaches();
     el.innerHTML = '<div style="padding:12px;color:#5b6a77;">No pairs available for graph rendering.</div>';
@@ -4006,14 +4027,22 @@ function renderIpRelGraphFromCache(){
 
   const elements = [];
   const clusterCount = Math.max(1, clusters.length);
+  const serverNodeMap = new Map();
+  if(serverGraph){
+    graphSelection.nodes.forEach(n=>{
+      const id = String((n && n.id) || '').trim();
+      if(id) serverNodeMap.set(id, n);
+    });
+  }
   nodesSet.forEach(ip=>{
+    const srv = serverNodeMap.get(ip) || {};
     const f = getIpFeature(ip) || {};
-    const label = ip;
-    const country = String(f.country || '-');
-    const asn = String(f.asn || '-');
-    const csp = String(f.csp_label || '');
-    const clusterIdx = Number(ipToCluster.get(ip) || 0);
-    const degree = Number(degreeMap[ip] || 0);
+    const label = String(srv.label || ip);
+    const country = String(srv.country || f.country || '-');
+    const asn = String(srv.asn || f.asn || '-');
+    const csp = String(srv.csp || f.csp_label || '');
+    const clusterIdx = Number(srv.cluster_idx || ipToCluster.get(ip) || 0);
+    const degree = Number(srv.degree || degreeMap[ip] || 0);
     const nodeColor = clusterIdx > 0 ? getClusterColor(clusterIdx - 1, clusterCount) : '#5e7891';
     const nodeSize = Math.max(18, Math.min(42, 18 + (degree * 2.2)));
     elements.push({ data: { id: ip, label: label, country, asn, csp, cluster_idx: clusterIdx, degree, color: nodeColor, node_size: nodeSize } });
@@ -4024,8 +4053,8 @@ function renderIpRelGraphFromCache(){
     const score = Number(p.score || 0);
     const ca = Number(ipToCluster.get(a) || 0);
     const cb = Number(ipToCluster.get(b) || 0);
-    const sameCluster = (ca > 0 && cb > 0 && ca === cb);
-    const edgeColor = sameCluster ? getClusterColor(ca - 1, clusterCount) : '#9bb0c4';
+    const sameCluster = (p.same_cluster != null) ? !!p.same_cluster : (ca > 0 && cb > 0 && ca === cb);
+    const edgeColor = sameCluster ? getClusterColor(Math.max(0, ca - 1), clusterCount) : '#9bb0c4';
     const edgeStyle = score >= minScore ? 'solid' : 'dashed';
     const edgeOpacity = sameCluster ? 0.86 : 0.55;
     elements.push({
@@ -4084,7 +4113,7 @@ function renderIpRelGraphFromCache(){
   const cy = window.IP_REL_GRAPH;
   if(details){
     const limited = (pairs.length < totalPairs) ? `\nRendered with caps: ${nodesSet.size}/${IP_REL_GRAPH_NODE_RENDER_LIMIT} nodes, ${pairs.length}/${totalPairs} edges.` : '';
-    details.textContent = `Click a node/edge to see details.\nClusters: ${clusters.length} / MinScore: ${minScore} / Layout: ${layout.name}${limited}`;
+    details.textContent = `Click a node/edge to see details.\nClusters: ${clusters.length} / MinScore: ${minScore} / Layout: ${layout.name}${serverGraph ? ' / Server graph' : ''}${limited}`;
   }
 
   cy.on('tap', 'node', (evt)=>{
@@ -4800,6 +4829,47 @@ if(document.readyState === 'loading'){
   wireIpRelProfileControls();
 }
 
+async function fetchIpRelationshipJobResult(requestBody, controller, onStatus){
+  const submit = await fetch('/ip-relationship-jobs', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    signal: controller ? controller.signal : undefined,
+    body: JSON.stringify(requestBody)
+  });
+  const sj = await submit.json();
+  if(!submit.ok || !sj || !sj.job_id){
+    return { ok: false, status: submit.status, body: sj || {} };
+  }
+  const jobId = String(sj.job_id || '');
+  let delayMs = 600;
+  for(let attempt = 0; attempt < 900; attempt += 1){
+    if(onStatus) onStatus(jobId, 'running');
+    await new Promise((resolve, reject)=>{
+      const timer = setTimeout(resolve, delayMs);
+      if(controller && controller.signal){
+        const onAbort = ()=>{ clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); };
+        controller.signal.addEventListener('abort', onAbort, { once: true });
+      }
+    });
+    const rr = await fetch(`/ip-relationship-jobs/${encodeURIComponent(jobId)}?result=1`, {
+      method: 'GET',
+      signal: controller ? controller.signal : undefined
+    });
+    const jj = await rr.json();
+    if(!rr.ok){
+      return { ok: false, status: rr.status, body: jj || {} };
+    }
+    if(jj.status === 'completed'){
+      return { ok: true, status: Number(jj.status_code || 200), body: jj.result || {} };
+    }
+    if(jj.status === 'failed' || jj.status === 'cancelled'){
+      return { ok: false, status: Number(jj.status_code || 500), body: jj.result || { error: jj.error || `job ${jj.status}` } };
+    }
+    delayMs = Math.min(2500, Math.round(delayMs * 1.25));
+  }
+  return { ok: false, status: 504, body: { error: 'relationship job timed out' } };
+}
+
 async function analyzeIpRelationships(){
   const raw = String((document.getElementById('ipIntelInput') || {}).value || '').trim();
   const inputSignature = computeIpIntelInputSignature(raw);
@@ -4853,30 +4923,28 @@ async function analyzeIpRelationships(){
   try{
     const pairPanel = document.getElementById('ipRelPairsPanel');
     const pairPanelWasOpen = !!(pairPanel && pairPanel.style.display !== 'none');
-    const r = await fetch('/ip-relationship-analysis', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      signal: controller ? controller.signal : undefined,
-      body: JSON.stringify({
-        ips: raw,
-        min_score: minScore,
-        top_pairs: topPairs,
-        max_neighbors_per_ip: maxNeighbors,
-        bucket_max: bucketMax,
-        bucket_overflow_mode: bucketOverflowMode,
-        include_vt: includeVT,
-        vt_budget: Math.min(vtBudget, 5000),
-        vt_workers: vtWorkers,
-        pair_gate_enabled: pairGateEnabled,
-        pair_gate_strong_min: pairGateStrongMin,
-        pair_gate_mid_min: pairGateMidMin,
-        pair_gate_fallback_score: pairGateFallbackScore
-      })
+    const requestBody = {
+      ips: raw,
+      min_score: minScore,
+      top_pairs: topPairs,
+      max_neighbors_per_ip: maxNeighbors,
+      bucket_max: bucketMax,
+      bucket_overflow_mode: bucketOverflowMode,
+      include_vt: includeVT,
+      vt_budget: Math.min(vtBudget, 5000),
+      vt_workers: vtWorkers,
+      pair_gate_enabled: pairGateEnabled,
+      pair_gate_strong_min: pairGateStrongMin,
+      pair_gate_mid_min: pairGateMidMin,
+      pair_gate_fallback_score: pairGateFallbackScore
+    };
+    const jobResult = await fetchIpRelationshipJobResult(requestBody, controller, (jobId)=>{
+      if(meta && !isStale()) meta.textContent = `Analyzing similarity... job ${jobId.slice(0, 8)}`;
     });
-    const j = await r.json();
+    const j = jobResult.body;
     if(isStale()) return;
-    if(!r.ok || !j || j.status !== 'ok'){
-      if(meta) meta.textContent = `Similarity analysis failed: ${(j && j.error) ? j.error : 'HTTP '+r.status}`;
+    if(!jobResult.ok || !j || j.status !== 'ok'){
+      if(meta) meta.textContent = `Similarity analysis failed: ${(j && j.error) ? j.error : 'HTTP '+jobResult.status}`;
       if(pairsBody) setSummaryMessage(pairsBody, 4, 'No data');
       if(clustersBody) setSummaryMessage(clustersBody, 8, 'No data');
       clearIpIntelRelationshipInsights(inputSignature);
