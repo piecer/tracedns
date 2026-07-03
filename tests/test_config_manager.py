@@ -71,6 +71,29 @@ class TestConfigManager(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].get("ens_options"), {"xor_byte": "0xB6"})
 
+
+    def test_normalize_domains_preserves_raw_ens_node_and_resolver(self):
+        value = [{
+            "name": "example.eth",
+            "type": "ENS",
+            "ens_text_key": "node",
+            "ens_decode": "ROL3210_decode",
+            "ens_node": "0x" + "07" * 32,
+            "ens_resolver": "0xF29100983E058B709F3D539b0c765937B804AC15",
+        }]
+        out = cm.normalize_domains(value)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].get("ens_node"), "0x" + "07" * 32)
+        self.assertEqual(out[0].get("ens_resolver"), "0xF29100983E058B709F3D539b0c765937B804AC15")
+
+    def test_normalize_domains_allows_same_ens_key_with_different_nodes(self):
+        value = [
+            {"name": "example.eth", "type": "ENS", "ens_text_key": "node", "ens_node": "0x" + "01" * 32},
+            {"name": "example.eth", "type": "ENS", "ens_text_key": "node", "ens_node": "0x" + "02" * 32},
+        ]
+        out = cm.normalize_domains(value)
+        self.assertEqual(len(out), 2)
+
     def test_normalize_domains_allows_same_ens_name_with_different_records(self):
         value = [
             {"name": "example.eth", "type": "ENS", "ens_text_key": "ipv6", "ens_decode": "ipv6_5to8_xor"},

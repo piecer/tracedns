@@ -106,6 +106,8 @@ Optional flags:
 - `ens_name` positional arg (default: `ukranianhorseriding.eth`)
 - `--key <text-key>` to read another ENS text key
 - `--decode-method <method>` to choose ENS decode method (default: `ipv6_5to8_xor`)
+- `--ens-node <bytes32>` to query a raw ENS nodehash instead of `namehash(ens_name)`
+- `--ens-resolver <address>` to query a resolver contract directly instead of looking one up in the ENS registry
 - `--ens-options <json>` decoder options JSON object (ex: `{"xor_byte":"0xA5"}`)
 - `--xor-byte <byte>` legacy shortcut (mapped to `ens_options.xor_byte` when `--ens-options` is not set)
 - `--raw-only` to print only raw ENS text
@@ -116,7 +118,7 @@ Notable ENS methods:
 - `ROL3210_decode`: take IPv6 bytes 5:8 and apply the board-supplied `rol8`/bitmask transform used by the current betavpn `network` cluster.
 - `betavpn_network_full`: compatibility alias for the same transform, kept for cluster-specific traceability and older configs.
 
-The exact 25-entry betavpn `network` source-to-IOC corpus is still preserved under `docs/ens/` for traceability and IOC extraction.
+The exact 25-entry betavpn `network` source-to-IOC corpus is still preserved under `docs/ens/` for traceability and IOC extraction. For ENS records written to an off-name nodehash, configure `ens_node` (and optionally `ens_resolver`) alongside `ens_text_key` and `ens_decode` so TraceDNS calls `text(bytes32,string)` for the transaction node rather than only `namehash(name)`. Example: `ens_text_key=node`, `ens_decode=ROL3210_decode`, `ens_node=0x07ddacfa58713a8822dfda2b6cf229f38a9bb1a6261cb92abf72a36a0010559d`, `ens_resolver=0xF29100983E058B709F3D539b0c765937B804AC15`.
 
 ## Contributing
 

@@ -41,6 +41,16 @@ def main() -> int:
         help="XOR byte for xor-based methods (default: 0xA5)",
     )
     parser.add_argument(
+        "--ens-node",
+        default="",
+        help="Raw ENS bytes32 nodehash to query instead of namehash(ens_name)",
+    )
+    parser.add_argument(
+        "--ens-resolver",
+        default="",
+        help="Resolver contract address to query directly (skips registry resolver lookup)",
+    )
+    parser.add_argument(
         "--ens-options",
         default="",
         help='JSON object for ENS decoder options (ex: {"xor_byte":"0xA5"})',
@@ -57,8 +67,18 @@ def main() -> int:
         else:
             ens_options = parse_ens_options(None, legacy_xor_byte=args.xor_byte, strict=False)
 
-        raw_value = fetch_ens_text_record(args.rpc, args.ens_name, args.key)
+        raw_value = fetch_ens_text_record(
+            args.rpc,
+            args.ens_name,
+            args.key,
+            ens_node=args.ens_node or None,
+            resolver_address=args.ens_resolver or None,
+        )
         print(f"[+] ENS name      : {args.ens_name}")
+        if args.ens_node:
+            print(f"[+] ENS node      : {args.ens_node}")
+        if args.ens_resolver:
+            print(f"[+] Resolver      : {args.ens_resolver}")
         print(f"[+] Text key      : {args.key}")
         print(f"[+] Raw text value: {raw_value}")
         if ens_options:
