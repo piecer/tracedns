@@ -28,6 +28,8 @@ class DomainSpec:
     ens_text_key: Optional[str] = None
     ens_decode: Optional[str] = None
     ens_xor_byte: Optional[str] = None
+    ens_node: Optional[str] = None
+    ens_resolver: Optional[str] = None
     ens_options: Optional[Dict[str, Any]] = None
     sns_decode: Optional[str] = None
     sns_options: Optional[Dict[str, Any]] = None
@@ -45,6 +47,8 @@ class Snapshot:
     ens_text_key: Optional[str] = None
     ens_decode: Optional[str] = None
     ens_xor_byte: Optional[str] = None
+    ens_node: Optional[str] = None
+    ens_resolver: Optional[str] = None
     ens_options: Optional[Dict[str, Any]] = None
     sns_decode: Optional[str] = None
     sns_options: Optional[Dict[str, Any]] = None
@@ -80,6 +84,10 @@ class Snapshot:
             out['ens_decode'] = self.ens_decode
         if self.ens_xor_byte is not None and str(self.ens_xor_byte).strip() != '':
             out['ens_xor_byte'] = self.ens_xor_byte
+        if self.ens_node:
+            out['ens_node'] = self.ens_node
+        if self.ens_resolver:
+            out['ens_resolver'] = self.ens_resolver
         if isinstance(self.ens_options, dict) and self.ens_options:
             out['ens_options'] = self.ens_options
         if self.sns_decode:
@@ -104,6 +112,8 @@ class Snapshot:
             ens_text_key=obj.get('ens_text_key'),
             ens_decode=obj.get('ens_decode'),
             ens_xor_byte=obj.get('ens_xor_byte'),
+            ens_node=obj.get('ens_node'),
+            ens_resolver=obj.get('ens_resolver'),
             ens_options=obj.get('ens_options') if isinstance(obj.get('ens_options'), dict) else None,
             sns_decode=obj.get('sns_decode'),
             sns_options=obj.get('sns_options') if isinstance(obj.get('sns_options'), dict) else None,
@@ -222,6 +232,8 @@ def coerce_domains(domains: List[Any]) -> List[DomainSpec]:
                     ens_text_key=d.get('ens_text_key'),
                     ens_decode=d.get('ens_decode'),
                     ens_xor_byte=d.get('ens_xor_byte'),
+                    ens_node=d.get('ens_node'),
+                    ens_resolver=d.get('ens_resolver'),
                     ens_options=d.get('ens_options') if isinstance(d.get('ens_options'), dict) else None,
                     sns_decode=d.get('sns_decode'),
                     sns_options=d.get('sns_options') if isinstance(d.get('sns_options'), dict) else None,
@@ -240,6 +252,7 @@ def coerce_domains(domains: List[Any]) -> List[DomainSpec]:
             'name': ds.name,
             'type': ds.type,
             'ens_text_key': ds.ens_text_key,
+            'ens_node': ds.ens_node,
         })
         if ident in seen:
             continue

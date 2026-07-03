@@ -35,8 +35,10 @@ def collect_snapshot(domain: DomainSpec, server: str) -> Collected:
         ens_decode = (domain.ens_decode or 'ipv6_5to8_xor').strip() or 'ipv6_5to8_xor'
         ens_xor_byte = domain.ens_xor_byte
         ens_options = parse_ens_options(getattr(domain, 'ens_options', None), legacy_xor_byte=ens_xor_byte, strict=False)
+        ens_node = getattr(domain, 'ens_node', None)
+        ens_resolver = getattr(domain, 'ens_resolver', None)
         try:
-            raw_value = fetch_ens_text_record(str(server), name, ens_key)
+            raw_value = fetch_ens_text_record(str(server), name, ens_key, ens_node=ens_node, resolver_address=ens_resolver)
             snap_values = [str(raw_value)]
             decoded = decode_ens_hidden_ips(
                 raw_value,
@@ -53,6 +55,8 @@ def collect_snapshot(domain: DomainSpec, server: str) -> Collected:
                 ens_text_key=ens_key,
                 ens_decode=ens_decode,
                 ens_xor_byte=ens_xor_byte,
+                ens_node=ens_node,
+                ens_resolver=ens_resolver,
                 ens_options=ens_options,
             )
             return Collected(

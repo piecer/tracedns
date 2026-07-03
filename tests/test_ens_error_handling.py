@@ -41,5 +41,28 @@ class TestEnsErrorHandling(unittest.TestCase):
         self.assertIn("sample.eth", str(out.query.error or ""))
 
 
+
+    def test_collect_snapshot_passes_raw_node_and_resolver(self):
+        with mock.patch.object(collect_mod, "fetch_ens_text_record", return_value="2001:db8:12e7:13d7::1") as fetch_mock:
+            domain = DomainSpec(
+                name="sample.eth",
+                type="ENS",
+                ens_text_key="node",
+                ens_decode="ROL3210_decode",
+                ens_node="0x" + "07" * 32,
+                ens_resolver="0xF29100983E058B709F3D539b0c765937B804AC15",
+            )
+            out = collect_mod.collect_snapshot(domain, "https://rpc.example")
+        self.assertEqual(out.query.status, "ok")
+        fetch_mock.assert_called_once_with(
+            "https://rpc.example",
+            "sample.eth",
+            "node",
+            ens_node="0x" + "07" * 32,
+            resolver_address="0xF29100983E058B709F3D539b0c765937B804AC15",
+        )
+        self.assertEqual(out.snapshot.ens_node, "0x" + "07" * 32)
+        self.assertEqual(out.snapshot.ens_resolver, "0xF29100983E058B709F3D539b0c765937B804AC15")
+
 if __name__ == "__main__":
     unittest.main()

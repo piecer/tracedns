@@ -522,6 +522,8 @@ def attach_api_handlers(
         a_decode = str(data.get('a_decode') or 'none').strip() or 'none'
         a_xor_key = str(data.get('a_xor_key') or '').strip()
         ens_text_key = str(data.get('ens_text_key') or 'ipv6').strip() or 'ipv6'
+        ens_node = str(data.get('ens_node') or '').strip()
+        ens_resolver = str(data.get('ens_resolver') or '').strip()
         ens_decode = str(data.get('ens_decode') or 'ipv6_5to8_xor').strip() or 'ipv6_5to8_xor'
         sns_decode = str(data.get('sns_decode') or 'ROL3210_decode').strip() or 'ROL3210_decode'
         ens_xor_byte = str(data.get('ens_xor_byte') or '').strip()
@@ -627,7 +629,13 @@ def attach_api_handlers(
                     managed_ips = []
                     if ens_rpc_url:
                         try:
-                            raw_value = fetch_ens_text_record(ens_rpc_url, domain, ens_text_key)
+                            raw_value = fetch_ens_text_record(
+                                ens_rpc_url,
+                                domain,
+                                ens_text_key,
+                                ens_node=ens_node or None,
+                                resolver_address=ens_resolver or None,
+                            )
                             vals = [str(raw_value)]
                             managed_ips = decode_ens_hidden_ips(
                                 raw_value,
@@ -802,6 +810,10 @@ def attach_api_handlers(
                 domain_obj['ens_text_key'] = ens_text_key
             if ens_decode:
                 domain_obj['ens_decode'] = ens_decode
+            if ens_node:
+                domain_obj['ens_node'] = ens_node
+            if ens_resolver:
+                domain_obj['ens_resolver'] = ens_resolver
             if ens_options:
                 domain_obj['ens_options'] = ens_options
             elif ens_xor_byte:
@@ -825,6 +837,10 @@ def attach_api_handlers(
         if selected_type == 'ENS':
             notes.append(f"ENS decode method: {ens_decode}")
             opts_sig = ens_options_signature(ens_options, legacy_xor_byte=ens_xor_byte)
+            if ens_node:
+                notes.append(f"ENS node: {ens_node}")
+            if ens_resolver:
+                notes.append(f"ENS resolver: {ens_resolver}")
             if opts_sig:
                 notes.append(f"ENS options: {opts_sig}")
             ens_errs = [
@@ -1073,6 +1089,8 @@ def attach_api_handlers(
             'vt_enabled': vt_enabled,
             'vt_unavailable_reason': vt_unavailable_reason,
             'ens_decode': ens_decode,
+            'ens_node': ens_node,
+            'ens_resolver': ens_resolver,
             'ens_xor_byte': ens_xor_byte,
             'ens_options': ens_options,
             'resolved_ips': resolved_ips,
