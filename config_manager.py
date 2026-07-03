@@ -36,7 +36,8 @@ def domain_identity(value):
         typ = str(value.get('type') or 'A').strip().upper() or 'A'
         if typ in ('ENS', 'SNS'):
             text_key = str(value.get('ens_text_key') or 'ipv6').strip().lower() or 'ipv6'
-            return f"{name}|ENS|{text_key}"
+            ens_node = str(value.get('ens_node') or '').strip().lower()
+            return f"{name}|ENS|{text_key}|{ens_node}"
         return name
     return str(value or '').strip().rstrip('.').lower()
 
@@ -48,7 +49,11 @@ def domain_storage_name(value):
         typ = str(value.get('type') or 'A').strip().upper() or 'A'
         if typ in ('ENS', 'SNS'):
             text_key = str(value.get('ens_text_key') or 'ipv6').strip() or 'ipv6'
-            return f"{name} [ENS:{text_key}]"
+            ens_node = str(value.get('ens_node') or '').strip()
+            suffix = f"ENS:{text_key}"
+            if ens_node:
+                suffix += f" node:{ens_node[:10]}…"
+            return f"{name} [{suffix}]"
         return name
     return str(value or '').strip().rstrip('.')
 
@@ -129,6 +134,8 @@ def normalize_domains(value):
             ens_text_key = it.get('ens_text_key')
             ens_decode = it.get('ens_decode')
             ens_xor_byte = it.get('ens_xor_byte')
+            ens_node = it.get('ens_node')
+            ens_resolver = it.get('ens_resolver')
             ens_options = _parse_json_object(it.get('ens_options'))
             sns_decode = it.get('sns_decode')
             sns_options = _parse_json_object(it.get('sns_options'))
@@ -146,6 +153,8 @@ def normalize_domains(value):
                 ens_text_key = None
                 ens_decode = None
                 ens_xor_byte = None
+                ens_node = None
+                ens_resolver = None
                 ens_options = None
                 sns_decode = None
                 sns_options = None
@@ -167,6 +176,10 @@ def normalize_domains(value):
         if typ in ('ENS', 'SNS'):
             if ens_text_key is not None and str(ens_text_key).strip() != '':
                 d['ens_text_key'] = str(ens_text_key).strip()
+            if typ == 'ENS' and ens_node is not None and str(ens_node).strip() != '':
+                d['ens_node'] = str(ens_node).strip()
+            if typ == 'ENS' and ens_resolver is not None and str(ens_resolver).strip() != '':
+                d['ens_resolver'] = str(ens_resolver).strip()
             if typ == 'ENS' and ens_decode is not None and str(ens_decode).strip() != '':
                 d['ens_decode'] = str(ens_decode).strip()
             if typ == 'ENS' and isinstance(ens_options, dict) and ens_options:

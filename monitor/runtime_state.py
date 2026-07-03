@@ -33,7 +33,7 @@ def clone_snapshot(snapshot_obj: Any) -> Dict[str, Any]:
         'decoded_ips': list(snapshot_obj.get('decoded_ips') or []),
         'ts': int(snapshot_obj.get('ts') or 0),
     }
-    for key in ('txt_decode', 'a_decode', 'a_xor_key', 'ens_text_key', 'ens_decode', 'ens_xor_byte'):
+    for key in ('txt_decode', 'a_decode', 'a_xor_key', 'ens_text_key', 'ens_decode', 'ens_xor_byte', 'ens_node', 'ens_resolver'):
         if key in snapshot_obj and snapshot_obj.get(key) is not None:
             out[key] = snapshot_obj.get(key)
     ens_options = snapshot_obj.get('ens_options')
