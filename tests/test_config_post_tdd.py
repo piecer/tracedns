@@ -1,20 +1,5 @@
-"""Regression tests for /config POST purge and error handling.
-
-Covers:
-
-* P0-4 — replacing the domain list must purge in-memory + on-disk state for
-  *removed* names, including the orphan-safety purge that catches names in
-  ``current_results`` / ``history`` that are not in the new config (e.g. left
-  behind by a previous run).
-* P0-5 — when the config file cannot be written (disk full, perms, etc.), the
-  handler must return HTTP 500 with an ``error`` message rather than 200 with
-  ``status: ok``.
-* Happy path — config persists and the response echoes the updated state.
-
-The tests build a real handler class via ``attach_api_handlers``, inject a
-fake ``rfile`` body, and intercept ``write_config`` so no real filesystem
-side effect happens.
-"""
+"""Regression tests for /config POST purge and error handling (P0-4, P0-5)."""
+import json
 import os
 import sys
 import tempfile
@@ -38,10 +23,14 @@ class _FakeRfile:
 
 class _FakeWfile:
     def __init__(self):
-        self.writes = []
+        import io
+        self._buf = io.BytesIO()
 
-    def write(self, _b):
-        pass
+    def write(self, b):
+        self._buf.write(b)
+
+    def getvalue(self):
+        return self._buf.getvalue()
 
 
 class _ConfigPostBase(unittest.TestCase):
@@ -97,12 +86,55 @@ class _ConfigPostBase(unittest.TestCase):
         handler.rfile = _FakeRfile(body_json if isinstance(body_json, bytes) else body_json.encode("utf-8"))
         handler.wfile = _FakeWfile()
         handler.headers = {"Content-Length": str(len(body_json))}  # declared length gates read
+        handler.send_response = lambda code, msg=None: None
+        handler.send_header = lambda k, v: None
+        handler.end_headers = lambda: None
         handler._send_json = lambda obj, code=200: state["captured"].setdefault("out", {"obj": obj, "code": code})
         state["captured"] = {}
 
-        with mock.patch.object(H, "write_config", side_effect=(
+        import config_manager as CM  # P1-6: write_config is lazy-imported in config_post
+        mock_target = CM
+
+        # P1-6: capture send_json calls via handler.send_response stub
+        _captured = [{}]  # mutable container for captured (obj, code)
+
+        def _fake_send_response(code, msg=None):
+            _captured[0]["code"] = code
+
+        handler.send_response = _fake_send_response
+        handler.send_header = lambda k, v: None
+
+        def _fake_end_headers():
+            pass  # body is written after end_headers; capture via wfile.write
+
+        handler.end_headers = _fake_end_headers
+
+        # Capture the JSON body via wfile.write
+        _wfile_buf = [b""]
+
+        def _fake_write(b):
+            _wfile_buf[0] = b
+
+        handler.wfile = type("W", (), {"write": _fake_write, "getvalue": property(lambda s: _wfile_buf[0])})()
+        # Simpler: use a real object
+        import io as _io
+        class _CapWfile:
+            def __init__(self):
+                self._buf = _io.BytesIO()
+            def write(self, b):
+                self._buf.write(b)
+                # After write, capture into state["captured"]["out"]
+                try:
+                    data = json.loads(self._buf.getvalue())
+                    state["captured"]["out"] = {"obj": data, "code": _captured[0].get("code")}
+                except Exception:
+                    pass
+            def getvalue(self):
+                return self._buf.getvalue()
+        handler.wfile = _CapWfile()
+        with mock.patch.object(mock_target, "write_config", side_effect=(
             write_config_exc if write_config_exc else None
-        )) if write_config_exc else mock.patch.object(H, "write_config") as m:
+        )) if write_config_exc else mock.patch.object(mock_target, "write_config") as m:
             if write_config_exc:
                 m.side_effect = write_config_exc
             else:

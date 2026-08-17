@@ -4,7 +4,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from tracedns import alerts
+import alerts  # P1-6: alerts is a flat module at project root, not a tracedns package
 
 
 class TestAlertsRuntime(unittest.TestCase):
