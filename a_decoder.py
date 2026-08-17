@@ -202,9 +202,27 @@ def create_custom_a_decoder(steps: list):
         if s['op'] == 'xor_hex' and 'key' not in s:
             return None
 
+    # Eagerly validate regex patterns so ReDoS / invalid patterns fail at
+    # create-time, not at decode-time (mirrors txt_decoder.create_custom_decoder).
+    import regex_safety as _rs
+    for s in steps:
+        if s.get('op') == 'regex':
+            pat = s.get('pattern', '')
+            if pat:
+                _rs.compile_safe_regex(pat, name='A-decoder')
+
     def decoder(a_values, **kwargs):
         out = []
         seen = set()
+        import regex_safety
+        compiled_regexes = []
+        for step in steps:
+            if step.get('op') == 'regex':
+                pat = step.get('pattern', '')
+                if pat:
+                    compiled_regexes.append(
+                        regex_safety.compile_safe_regex(pat, name=f'A-decoder:{len(compiled_regexes)}')
+                    )
         for tok in a_values or []:
             cur = str(tok or '').strip()
             if not cur:

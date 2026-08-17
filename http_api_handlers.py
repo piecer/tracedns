@@ -2316,7 +2316,9 @@ def attach_api_handlers(
                         normalized_hosts = [str(x).strip() for x in hosts if str(x).strip()]
                         shared_config['DEFAULT_SNS_PROXY_HOSTS'] = normalized_hosts
                         shared_config['DEFAULT_SOLAR_PROXY_HOSTS'] = normalized_hosts
-    
+
+                # --- P0-5: persist the config and propagate save failures ---
+                save_error = None
                 if config_path:
                     to_write = {
                         'domains': shared_config.get('domains', []),
@@ -2333,19 +2335,23 @@ def attach_api_handlers(
                         write_config(config_path, to_write)
                         print(f"[DEBUG] /config POST: Saved config to {config_path}")
                     except Exception as e:
+                        save_error = str(e)
                         print(f"[ERROR] /config POST: Failed to save config: {e}")
-    
-                resp = {
-                    'status': 'ok',
-                    'domains': shared_config.get('domains'),
-                    'servers': shared_config.get('servers'),
-                    'interval': shared_config.get('interval'),
-                    'alerts': shared_config.get('alerts', {}),
-                    'ens_rpc_url': shared_config.get('ens_rpc_url', ''),
-                    'DEFAULT_SOLAR_PROXY_HOSTS': shared_config.get('DEFAULT_SOLAR_PROXY_HOSTS', DEFAULT_SOLAR_PROXY_HOSTS),
-                    'DEFAULT_SNS_PROXY_HOSTS': shared_config.get('DEFAULT_SNS_PROXY_HOSTS', shared_config.get('DEFAULT_SOLAR_PROXY_HOSTS', DEFAULT_SOLAR_PROXY_HOSTS)),
-                }
-            return self._send_json(resp)
+            if save_error:
+                return self._send_json(
+                    {'status': 'error', 'error': f'config save failed: {save_error}'},
+                    500,
+                )
+            return self._send_json({
+                'status': 'ok',
+                'domains': shared_config.get('domains'),
+                'servers': shared_config.get('servers'),
+                'interval': shared_config.get('interval'),
+                'alerts': shared_config.get('alerts', {}),
+                'ens_rpc_url': shared_config.get('ens_rpc_url', ''),
+                'DEFAULT_SOLAR_PROXY_HOSTS': shared_config.get('DEFAULT_SOLAR_PROXY_HOSTS', DEFAULT_SOLAR_PROXY_HOSTS),
+                'DEFAULT_SNS_PROXY_HOSTS': shared_config.get('DEFAULT_SNS_PROXY_HOSTS', shared_config.get('DEFAULT_SOLAR_PROXY_HOSTS', DEFAULT_SOLAR_PROXY_HOSTS)),
+            })
     
         if parsed.path == '/settings':
             return self._handle_settings_post()
@@ -2529,7 +2535,6 @@ def attach_api_handlers(
                 if not isinstance(steps, list) or len(steps) == 0 or len(steps) > 12:
                     return self._send_json({'error': 'steps must be a non-empty list with <=12 steps'}, 400)
                 total_chars = 0
-                import re as _re
                 for s in steps:
                     if not isinstance(s, dict) or 'op' not in s:
                         return self._send_json({'error': 'each step must be a dict with op field'}, 400)
@@ -2542,9 +2547,10 @@ def attach_api_handlers(
                         if not isinstance(pat, str) or len(pat) > 300:
                             return self._send_json({'error': 'regex pattern too long'}, 400)
                         try:
-                            _re.compile(pat)
+                            import regex_safety
+                            regex_safety.compile_safe_regex(pat, name='POST:/decoders/custom')
                         except Exception as e:
-                            return self._send_json({'error': 'invalid regex: '+str(e)}, 400)
+                            return self._send_json({'error': f'invalid or unsafe regex: {e}'}, 400)
                     if op == 'xor_hex':
                         key = s.get('key','')
                         if not isinstance(key, str) or len(key) > 128:
@@ -2649,7 +2655,6 @@ def attach_api_handlers(
             try:
                 if not isinstance(steps, list) or len(steps) == 0 or len(steps) > 12:
                     return self._send_json({'error': 'steps must be a non-empty list with <=12 steps'}, 400)
-                import re as _re
                 total_chars = 0
                 for s in steps:
                     if not isinstance(s, dict) or 'op' not in s:
@@ -2662,9 +2667,10 @@ def attach_api_handlers(
                         if not isinstance(pat, str) or len(pat) > 300:
                             return self._send_json({'error': 'regex pattern too long'}, 400)
                         try:
-                            _re.compile(pat)
+                            import regex_safety
+                            regex_safety.compile_safe_regex(pat, name='/decoders/custom')
                         except Exception as e:
-                            return self._send_json({'error': 'invalid regex: '+str(e)}, 400)
+                            return self._send_json({'error': f'invalid or unsafe regex: {e}'}, 400)
                     if s.get('op') == 'xor32_ipv4':
                         key = s.get('key', s.get('key_hex', ''))
                         if key is not None and len(str(key)) > 64:
@@ -2728,7 +2734,6 @@ def attach_api_handlers(
                 # validate steps similar to register path (but lighter)
                 if not isinstance(steps, list) or len(steps) == 0 or len(steps) > 12:
                     return self._send_json({'error': 'steps must be a non-empty list with <=12 steps'}, 400)
-                import re as _re
                 total_chars = 0
                 for s in steps:
                     if not isinstance(s, dict) or 'op' not in s:
@@ -2741,9 +2746,10 @@ def attach_api_handlers(
                         if not isinstance(pat, str) or len(pat) > 300:
                             return self._send_json({'error': 'regex pattern too long'}, 400)
                         try:
-                            _re.compile(pat)
+                            import regex_safety
+                            regex_safety.compile_safe_regex(pat, name='/decoders/custom')
                         except Exception as e:
-                            return self._send_json({'error': 'invalid regex: '+str(e)}, 400)
+                            return self._send_json({'error': f'invalid or unsafe regex: {e}'}, 400)
                     if s.get('op') == 'xor32_ipv4':
                         key = s.get('key', s.get('key_hex', ''))
                         if key is not None and len(str(key)) > 64:

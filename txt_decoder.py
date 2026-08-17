@@ -937,6 +937,20 @@ def decode_txt_hidden_ips(txt_values, method='cafebabe_xor_base64', **kwargs):
         return []
 
 
+def _precompile_steps_regex(steps, label='TXT-decoder'):
+    """Compile every regex step ahead of time and reject unsafe patterns
+    (defense in depth: the API layer already calls regex_safety, but a
+    decoder can also be registered programmatically)."""
+    import regex_safety
+    for i, step in enumerate(steps or []):
+        if not isinstance(step, dict):
+            continue
+        if step.get('op') == 'regex':
+            pat = step.get('pattern')
+            if isinstance(pat, str) and pat:
+                regex_safety.compile_safe_regex(pat, name=f'{label}:{i}')
+
+
 def register_custom_decoder(name: str, steps: list) -> bool:
     """
     안전한 DSL 기반 커스텀 디코더를 런타임에 등록합니다.
@@ -971,6 +985,8 @@ def register_custom_decoder(name: str, steps: list) -> bool:
             return False
         if s['op'] == 'xor_hex' and 'key' not in s:
             return False
+
+    _precompile_steps_regex(steps, label=f'TXT-decoder:{name}')
 
     def make_decoder(steps_inner):
         def decoder(txt_values, domain=None, **kwargs):
@@ -1077,6 +1093,8 @@ def create_custom_decoder(steps: list):
             return None
         if s['op'] == 'xor_hex' and 'key' not in s:
             return None
+
+    _precompile_steps_regex(steps, label='TXT-decoder:unregistered')
 
     def make_decoder(steps_inner):
         def decoder(txt_values, domain=None, **kwargs):
