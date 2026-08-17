@@ -118,8 +118,10 @@ class TestAlertBatching(unittest.TestCase):
                 query_fail_counts=query_fail_counts,
                 max_workers=1,
             )
-
-        self.assertEqual(added, [('10.10.10.10', 'sns.example', 'SNS')])
+        self.assertEqual(
+            added,
+            [('10.10.10.10', 'sns.example [ENS:ipv6]', 'SNS')],
+        )
 
 if __name__ == '__main__':
     unittest.main()
