@@ -1,5 +1,6 @@
 PYTHON := python3
 PIP := pip3
+RUFF := $(shell command -v ruff 2>/dev/null || echo /tmp/ruff_venv/bin/ruff)
 
 .PHONY: install test run lint
 
@@ -13,4 +14,4 @@ run:
 	$(PYTHON) dns_monitor.py
 
 lint:
-	@echo "No linter configured. Install and run your preferred linter."
+	"$(RUFF)" check .

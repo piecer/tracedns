@@ -25,6 +25,10 @@ from http_api.basic_handlers import handle_config as _handle_config_basic
 from http_api.basic_handlers import handle_results as _handle_results_basic
 from http_api.basic_handlers import handle_decoders as _handle_decoders_basic
 from http_api.utils import send_json as _send_json_basic
+from http_api.request_limits import (
+    get_request_body,
+    resolve_max_body_length,
+)
 from http_api.settings_handlers import handle_settings_get as _handle_settings_get_basic
 from http_api.settings_handlers import handle_settings_post as _handle_settings_post_basic
 from http_api.relationship_handlers import (
@@ -89,8 +93,11 @@ def attach_api_handlers(
     current_results,
     history,
     purge_removed_domains_state,
+    max_body_bytes: int | None = None,
 ):
     cache_lock = threading.RLock()
+    if max_body_bytes is None:
+        max_body_bytes = resolve_max_body_length()
     ctx = HttpContext(
         frontend_html=frontend_html,
         shared_config=shared_config,
@@ -102,6 +109,7 @@ def attach_api_handlers(
         purge_removed_domains_state=purge_removed_domains_state,
         cache_lock=cache_lock,
         results_cache={},
+        max_body_bytes=max_body_bytes,
     )
     ips_cache = {'version': 0, 'rows': []}
 
@@ -111,6 +119,11 @@ def attach_api_handlers(
         handler_cls.shared_config = shared_config
     except Exception:
         pass
+
+    # Per-request body size limit enforced by ``get_request_body``. Stored on
+    # the handler class so POST/PUT/DELETE handlers can read it without
+    # threading it through every call. See ``http_api.request_limits``.
+    handler_cls.max_body_bytes = max_body_bytes
 
     def _send_json(self, obj, code=200):
         return _send_json_basic(self, obj, code=code)
@@ -478,8 +491,9 @@ def attach_api_handlers(
 
     def _handle_domain_precheck(self):
         """Validate one domain before adding it to config."""
-        length = int(self.headers.get('Content-Length', '0'))
-        body = self.rfile.read(length) if length > 0 else b''
+        body, body_413 = get_request_body(self, max_length=self.max_body_bytes)
+        if body_413:
+            return
         try:
             data = json.loads(body.decode('utf-8')) if body else {}
         except Exception:
@@ -1070,8 +1084,9 @@ def attach_api_handlers(
     
     def _handle_ip_list_analysis(self):
         """Analyze an arbitrary IP list (VT/AS/Country summaries + heuristics)."""
-        length = int(self.headers.get('Content-Length', '0'))
-        body = self.rfile.read(length) if length > 0 else b''
+        body, body_413 = get_request_body(self, max_length=self.max_body_bytes)
+        if body_413:
+            return
         try:
             data = json.loads(body.decode('utf-8')) if body else {}
         except Exception:
@@ -1740,8 +1755,9 @@ def attach_api_handlers(
 
     def _handle_misp_event_ips(self):
         """Load ip-src attributes from a MISP event."""
-        length = int(self.headers.get('Content-Length', '0'))
-        body = self.rfile.read(length) if length > 0 else b''
+        body, body_413 = get_request_body(self, max_length=self.max_body_bytes)
+        if body_413:
+            return
         try:
             data = json.loads(body.decode('utf-8')) if body else {}
         except Exception:
@@ -2148,8 +2164,10 @@ def attach_api_handlers(
             return self._handle_domain_precheck()
         
         if parsed.path == '/config':
-            length = int(self.headers.get('Content-Length', '0'))
-            body = self.rfile.read(length) if length > 0 else b''
+            _body, _body_413 = get_request_body(self, max_length=self.max_body_bytes)
+            if _body_413:
+                return
+            body = _body
             try:
                 data = json.loads(body.decode('utf-8')) if body else {}
             except Exception:
@@ -2333,8 +2351,10 @@ def attach_api_handlers(
             return self._handle_settings_post()
     
         if parsed.path == '/resolve':
-            length = int(self.headers.get('Content-Length', '0'))
-            body = self.rfile.read(length) if length > 0 else b''
+            _body, _body_413 = get_request_body(self, max_length=self.max_body_bytes)
+            if _body_413:
+                return
+            body = _body
             try:
                 data = json.loads(body.decode('utf-8')) if body else {}
             except Exception:
@@ -2356,8 +2376,10 @@ def attach_api_handlers(
             return self._send_json({'status': 'ok', 'requested': True})
     
         if parsed.path == '/ip':
-            length = int(self.headers.get('Content-Length', '0'))
-            body = self.rfile.read(length) if length > 0 else b''
+            _body, _body_413 = get_request_body(self, max_length=self.max_body_bytes)
+            if _body_413:
+                return
+            body = _body
             try:
                 data = json.loads(body.decode('utf-8')) if body else {}
             except Exception:
@@ -2368,8 +2390,10 @@ def attach_api_handlers(
             return self._handle_ip_query(ip)
     
         if parsed.path == '/analyze':
-            length = int(self.headers.get('Content-Length', '0'))
-            body = self.rfile.read(length) if length > 0 else b''
+            _body, _body_413 = get_request_body(self, max_length=self.max_body_bytes)
+            if _body_413:
+                return
+            body = _body
             try:
                 data = json.loads(body.decode('utf-8')) if body else {}
             except Exception:
@@ -2389,8 +2413,10 @@ def attach_api_handlers(
     
         if parsed.path == '/verify':
             # verify decoders for a list of domains (or all configured domains)
-            length = int(self.headers.get('Content-Length', '0'))
-            body = self.rfile.read(length) if length > 0 else b''
+            _body, _body_413 = get_request_body(self, max_length=self.max_body_bytes)
+            if _body_413:
+                return
+            body = _body
             try:
                 data = json.loads(body.decode('utf-8')) if body else {}
             except Exception:
@@ -2456,8 +2482,10 @@ def attach_api_handlers(
             return self._handle_ip_list_analysis()
 
         if parsed.path == '/ip-relationship-jobs':
-            length = int(self.headers.get('Content-Length', '0'))
-            body = self.rfile.read(length) if length > 0 else b''
+            _body, _body_413 = get_request_body(self, max_length=self.max_body_bytes)
+            if _body_413:
+                return
+            body = _body
             try:
                 data = json.loads(body.decode('utf-8')) if body else {}
             except Exception:
@@ -2474,14 +2502,16 @@ def attach_api_handlers(
             return _handle_ip_relationship_analysis(self, gather_ip_map_fn=self._gather_ip_map)
     
         if parsed.path == '/misp/search':
-            return self._handle_misp_search(qs)
+            return self._handle_misp_search({})
 
         if parsed.path == '/misp/event-ips':
             return self._handle_misp_event_ips()
     
         if parsed.path == '/decoders/custom' and self.command == 'POST':
-            length = int(self.headers.get('Content-Length', '0'))
-            body = self.rfile.read(length) if length > 0 else b''
+            _body, _body_413 = get_request_body(self, max_length=self.max_body_bytes)
+            if _body_413:
+                return
+            body = _body
             try:
                 data = json.loads(body.decode('utf-8')) if body else {}
             except Exception:
@@ -2556,8 +2586,10 @@ def attach_api_handlers(
                 return self._send_json({'error': str(e)}, 500)
     
         if parsed.path == '/decoders/custom' and self.command == 'DELETE':
-            length = int(self.headers.get('Content-Length', '0'))
-            body = self.rfile.read(length) if length > 0 else b''
+            _body, _body_413 = get_request_body(self, max_length=self.max_body_bytes)
+            if _body_413:
+                return
+            body = _body
             try:
                 data = json.loads(body.decode('utf-8')) if body else {}
             except Exception:
@@ -2599,8 +2631,10 @@ def attach_api_handlers(
                 return self._send_json({'error': str(e)}, 500)
     
         if parsed.path == '/decoders/custom' and self.command == 'PUT':
-            length = int(self.headers.get('Content-Length', '0'))
-            body = self.rfile.read(length) if length > 0 else b''
+            _body, _body_413 = get_request_body(self, max_length=self.max_body_bytes)
+            if _body_413:
+                return
+            body = _body
             try:
                 data = json.loads(body.decode('utf-8')) if body else {}
             except Exception:
@@ -2675,8 +2709,10 @@ def attach_api_handlers(
                 return self._send_json({'error': str(e)}, 500)
     
         if parsed.path == '/decoders/custom/preview' and self.command == 'POST':
-            length = int(self.headers.get('Content-Length', '0'))
-            body = self.rfile.read(length) if length > 0 else b''
+            _body, _body_413 = get_request_body(self, max_length=self.max_body_bytes)
+            if _body_413:
+                return
+            body = _body
             try:
                 data = json.loads(body.decode('utf-8')) if body else {}
             except Exception:

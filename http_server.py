@@ -59,8 +59,11 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 
-def make_handler(shared_config, config_lock, config_path, history_dir, current_results, history):
-    """Create configured HTTP request handler class bound to runtime state."""
+def make_handler(shared_config, config_lock, config_path, history_dir, current_results, history, max_body_bytes=None):
+    """Create configured HTTP request handler class bound to runtime state.
+
+    ``max_body_bytes`` defaults to ``resolve_max_body_length()`` when omitted.
+    """
     frontend_html = load_frontend_html()
 
     class ConfigHandler(BaseHTTPRequestHandler):
@@ -76,4 +79,5 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
         current_results=current_results,
         history=history,
         purge_removed_domains_state=purge_removed_domains_state,
+        max_body_bytes=max_body_bytes,
     )
