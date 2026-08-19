@@ -39,5 +39,26 @@ class TestRelationshipJobLimit(unittest.TestCase):
         self.assertEqual(len(executor.futures), 2)
 
 
+    def test_cleanup_keeps_active_jobs_past_ttl(self):
+        rh._IP_REL_JOBS["active"] = {
+            "status": "running",
+            "created_at": 100,
+            "done_at": None,
+        }
+        with mock.patch.object(rh, "_IP_REL_JOB_TTL_SECONDS", 300):
+            rh._cleanup_ip_rel_jobs(now=401)
+        self.assertIn("active", rh._IP_REL_JOBS)
+
+    def test_cleanup_removes_only_expired_terminal_jobs(self):
+        rh._IP_REL_JOBS["done"] = {
+            "status": "completed",
+            "created_at": 10,
+            "done_at": 100,
+        }
+        with mock.patch.object(rh, "_IP_REL_JOB_TTL_SECONDS", 300):
+            rh._cleanup_ip_rel_jobs(now=401)
+        self.assertNotIn("done", rh._IP_REL_JOBS)
+
+
 if __name__ == "__main__":
     unittest.main()
