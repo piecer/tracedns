@@ -217,6 +217,9 @@ def decode_txt_btea_variant(txt_values, key='bL8U5QfWAbQN6mPX', domain=None, **k
 
             ip = try_parse_ipv4_ascii(decoded)
             if ip:
+                if ip not in seen:
+                    seen.add(ip)
+                    out.append(ip)
                 # also include a BE/LE transformed variant
                 parts = ip.split('.')
                 if len(parts) == 4:
