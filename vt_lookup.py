@@ -194,6 +194,10 @@ def get_ip_report(ip, force=False, cache_only=False):
         return None
 
     report = _fetch_from_vt(ip, api_key)
+    if report is None:
+        # A missing report also represents transient network, rate-limit, and
+        # server failures. Do not turn those failures into a full-TTL cache hit.
+        return None
     write_now = False
     with _CACHE_LOCK:
         global _CACHE_DIRTY
