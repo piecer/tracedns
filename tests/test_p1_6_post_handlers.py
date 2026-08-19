@@ -134,7 +134,10 @@ class TestHandleConfigPost(unittest.TestCase):
 
 class TestHandleResolve(unittest.TestCase):
     def test_resolve_sets_force_resolve(self):
-        ctx = make_ctx()
+        ctx = make_ctx(shared_config={
+            "domains": [{"name": "example.com"}],
+            "servers": ["1.1.1.1"],
+        })
         payload = json.dumps({"domain": "example.com", "servers": ["1.1.1.1"]}).encode()
         h = FakeHandler(payload)
         handle_resolve(ctx, h)
@@ -143,16 +146,24 @@ class TestHandleResolve(unittest.TestCase):
         self.assertTrue(body["requested"])
         queue = ctx.shared_config.get("_force_resolve_queue", [])
         self.assertIn("domains", queue[0])
+        self.assertEqual(queue[0]["servers"], ["1.1.1.1"])
 
     def test_resolve_no_domain(self):
         ctx = make_ctx()
         h = FakeHandler(b'{"servers": ["1.1.1.1"]}')
         handle_resolve(ctx, h)
         body = h.get_body()
-        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["error"], "domain or domains required")
+        self.assertEqual(h.get_code(), 400)
 
     def test_resolve_requests_are_queued_without_overwrite(self):
-        ctx = make_ctx()
+        ctx = make_ctx(shared_config={
+            "domains": [
+                {"name": "first.example"},
+                {"name": "second.example"},
+            ],
+            "servers": ["8.8.8.8"],
+        })
         handle_resolve(ctx, FakeHandler(b'{"domain": "first.example"}'))
         handle_resolve(ctx, FakeHandler(b'{"domain": "second.example"}'))
 
@@ -161,6 +172,22 @@ class TestHandleResolve(unittest.TestCase):
             [item["domains"][0]["name"] for item in queue],
             ["first.example", "second.example"],
         )
+
+    def test_resolve_rejects_unconfigured_domains(self):
+        ctx = make_ctx()
+        h = FakeHandler(b'{"domain": "unconfigured.example"}')
+        handle_resolve(ctx, h)
+        self.assertEqual(h.get_code(), 400)
+        self.assertEqual(h.get_body()["error"], "domains must be configured")
+        self.assertNotIn("_force_resolve_queue", ctx.shared_config)
+
+    def test_resolve_rejects_too_many_domains(self):
+        domains = [{"name": f"d{i}.example"} for i in range(65)]
+        ctx = make_ctx(shared_config={"domains": domains, "servers": ["8.8.8.8"]})
+        h = FakeHandler(json.dumps({"domains": domains}).encode())
+        handle_resolve(ctx, h)
+        self.assertEqual(h.get_code(), 400)
+        self.assertEqual(h.get_body()["error"], "domains must contain at most 64 entries")
 
 
 class TestHandleIp(unittest.TestCase):
