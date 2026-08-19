@@ -144,3 +144,35 @@ by impact and will be remediated in this order.
 - `tests/test_a_decoder.py` contains pytest-style top-level tests that
   `unittest discover` does not collect.
 - Convert them to `unittest.TestCase` so `make test` executes them.
+
+## 2026-08-19 follow-up hardening pass
+
+The following findings were reproduced against the then-current `master` and
+closed with regression tests. They were handled as small, independent changes
+to keep rollback and review straightforward.
+
+1. **P1 — Unbounded/ill-typed runtime worker settings:** `/config` accepted
+   malformed `interval`, `max_workers`, and DNS server collections, allowing
+   monitor crashes or excessive resource allocation. Fixed in `27ad90a`.
+2. **P2 — Decoder collection type confusion:** dictionary/string decoder
+   payloads were silently converted into lists of keys/characters. Fixed in
+   `27ad90a` by requiring list payloads and bounding collection sizes.
+3. **P2 — SNS metadata dropped by snapshot cloning:** `sns_decode` and
+   `sns_options` disappeared at state boundaries. Fixed in `c4c857a`.
+4. **P2 — SNS metadata absent from `/results`:** raw and aggregate API results
+   did not expose the configured SNS key/decoder/options. Fixed in `c4c857a`.
+5. **P2 — SNS metadata lost after restart:** history restoration rebuilt only
+   DNS/ENS fields. Fixed in `c4c857a` by using the common snapshot clone path.
+6. **P2 — Unbounded history retention:** every change event remained in memory
+   and on disk forever. Fixed in `16a8f99` with newest-first bounded retention.
+7. **P1 — Invalid `Content-Length` accepted as empty:** malformed and negative
+   framing could reach mutation handlers as an empty body. Fixed in `6a5d35b`.
+8. **P1 — Unsupported transfer framing ignored:** chunked request bodies were
+   not decoded or rejected, leaving bytes on persistent connections. Fixed in
+   `6a5d35b` by explicit 400 responses and connection close.
+9. **P1 — Malformed file settings crash startup/cycles:** direct config edits
+   could bypass API validation and raise during integer conversion. Fixed in
+   `0c62a5a` with safe defaults and hard upper bounds.
+10. **P2 — Worker exception aborts a full domain cycle:** an unexpected query
+    worker exception escaped `Future.result()` and stopped remaining result
+    processing. Fixed in `a38af68` with per-future isolation and accounting.
