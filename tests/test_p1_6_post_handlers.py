@@ -259,7 +259,7 @@ class TestDoPostDelegation(unittest.TestCase):
             def log_message(self, *a):
                 pass
 
-        ctx = make_ctx()
+        ctx = make_ctx(config_path="")
         attach_api_handlers(
             TestHandler,
             frontend_html="<html></html>",
@@ -272,7 +272,14 @@ class TestDoPostDelegation(unittest.TestCase):
             purge_removed_domains_state=ctx.purge_removed_domains_state,
         )
         self.assertTrue(hasattr(TestHandler, "do_POST"))
+        self.assertTrue(hasattr(TestHandler, "do_PUT"))
+        self.assertTrue(hasattr(TestHandler, "do_DELETE"))
         self.assertTrue(hasattr(TestHandler, "_handle_ip_query"))
+
+        settings = FakeHandler(b'{"alerts": {}}')
+        setattr(settings, "path", "/settings")
+        getattr(TestHandler, "do_POST")(settings)
+        self.assertEqual(settings.get_code(), 200)
 
 
 if __name__ == "__main__":
