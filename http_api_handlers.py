@@ -2188,6 +2188,8 @@ def attach_api_handlers(
             return self._handle_misp_search({})
         if parsed.path == '/misp/event-ips':
             return self._handle_misp_event_ips()
+        if parsed.path == '/settings':
+            return _handle_settings_post_basic(ctx, self)
 
         # --- P1-6: delegated POST handlers ---
         if parsed.path in ('/config', '/resolve', '/ip', '/analyze', '/verify'):
@@ -2197,6 +2199,22 @@ def attach_api_handlers(
             from http_api import decoder_crud
             return decoder_crud.get_handler(parsed.path)(ctx, self)
 
+        self.send_response(404)
+        self.end_headers()
+
+    def do_PUT(self):
+        parsed = urlparse(self.path)
+        if parsed.path == '/decoders/custom':
+            from http_api.decoder_crud import handle_decoders_custom_put
+            return handle_decoders_custom_put(ctx, self)
+        self.send_response(404)
+        self.end_headers()
+
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        if parsed.path == '/decoders/custom':
+            from http_api.decoder_crud import handle_decoders_custom_delete
+            return handle_decoders_custom_delete(ctx, self)
         self.send_response(404)
         self.end_headers()
 
@@ -2219,4 +2237,6 @@ def attach_api_handlers(
     handler_cls._handle_ip_query = _handle_ip_query
     handler_cls.do_GET = do_GET
     handler_cls.do_POST = do_POST
+    handler_cls.do_PUT = do_PUT
+    handler_cls.do_DELETE = do_DELETE
     return handler_cls
