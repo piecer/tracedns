@@ -52,7 +52,9 @@ def drop_snapshot_for_failed_target(current_results: Dict[str, Any], history: Di
                 current_results[name].pop(srv, None)
                 removed = True
 
-        hist_obj = history.setdefault(name, {'meta': {}, 'events': [], 'current': {}})
+        if name not in current_results or name not in history:
+            return False
+        hist_obj = history[name]
         current_map = hist_obj.setdefault('current', {})
         if isinstance(current_map, dict) and srv in current_map:
             current_map.pop(srv, None)
@@ -199,15 +201,20 @@ def run_domain_cycle(
                 continue
 
             ts = int(snap.ts or time.time())
-            prev_obj = current_results.get(name, {}).get(srv)
+            with _STATE_LOCK:
+                if name not in current_results or name not in history:
+                    return []
+                prev_obj = current_results[name].get(srv)
+                hist_obj = history[name]
             prev = Snapshot.from_legacy(prev_obj) if isinstance(prev_obj, dict) else None
-
-            hist_obj = history[name]
             # initial population
             if prev_obj is None:
                 hist_to_persist = None
                 with _STATE_LOCK:
-                    current_results.setdefault(name, {})[srv] = _snapshot_dict(snap)
+                    if name not in current_results or name not in history:
+                        return []
+                    hist_obj = history[name]
+                    current_results[name][srv] = _snapshot_dict(snap)
                     hist_obj.setdefault('current', {})[srv] = _snapshot_dict(snap)
                     meta = hist_obj.setdefault('meta', {})
                     meta.setdefault('first_seen', ts)
@@ -246,6 +253,9 @@ def run_domain_cycle(
                     'new': {'values': snap.values, 'decoded_ips': snap.decoded_ips, 'ts': ts},
                 }
                 with _STATE_LOCK:
+                    if name not in current_results or name not in history:
+                        return []
+                    hist_obj = history[name]
                     hist_obj.setdefault('events', []).append(ev)
                     meta = hist_obj.setdefault('meta', {})
                     meta['last_changed'] = ts
@@ -273,6 +283,8 @@ def run_domain_cycle(
         ts_cycle = int(time.time())
         hist_to_persist = None
         with _STATE_LOCK:
+            if name not in current_results or name not in history:
+                return []
             lifecycle_changed = update_nxdomain_lifecycle(
                 history,
                 name,
