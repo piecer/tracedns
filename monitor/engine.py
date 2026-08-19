@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from alerts import alert_new_ips, alert_removed_ips
 from config_manager import domain_storage_name
-from history_manager import persist_history_entry
+from history_manager import persist_history_entry, trim_history_events
 from models import DomainSpec, coerce_domains, Snapshot
 
 from .collect import collect_snapshot
@@ -256,7 +256,9 @@ def run_domain_cycle(
                     if name not in current_results or name not in history:
                         return []
                     hist_obj = history[name]
-                    hist_obj.setdefault('events', []).append(ev)
+                    events = hist_obj.setdefault('events', [])
+                    events.append(ev)
+                    hist_obj['events'] = trim_history_events(events)
                     meta = hist_obj.setdefault('meta', {})
                     meta['last_changed'] = ts
                     meta.setdefault('first_seen', ev['old'].get('ts', ts) if isinstance(ev.get('old'), dict) else ts)
