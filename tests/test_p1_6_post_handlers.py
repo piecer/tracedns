@@ -245,13 +245,13 @@ class TestHandleAnalyze(unittest.TestCase):
 
 
 class TestHandleVerify(unittest.TestCase):
-    def test_verify_with_empty_domains(self):
+    def test_verify_reports_unimplemented_instead_of_false_results(self):
         ctx = make_ctx(shared_config={"domains": []})
         h = FakeHandler(b'{}')
         handle_verify(ctx, h)
         body = h.get_body()
-        self.assertIn("results", body)
-        self.assertEqual(body["results"], {})
+        self.assertEqual(h.get_code(), 501)
+        self.assertEqual(body["error"], "verification is not implemented")
 
 
 class TestDecoderCrudRouter(unittest.TestCase):
