@@ -314,22 +314,7 @@ def handle_verify(ctx: HttpContext, handler) -> None:
     if data is None:
         send_json(handler, {"error": "invalid json"}, 400)
         return
-    domains = None
-    if isinstance(data.get("domains"), list):
-        domains = [d.get("name") if isinstance(d, dict) else d for d in data["domains"]]
-    else:
-        if ctx.config_lock is not None:
-            with ctx.config_lock:
-                raw = list(ctx.shared_config.get("domains", []) or [])
-        else:
-            raw = list(ctx.shared_config.get("domains", []) or [])
-        domains = [d.get("name") if isinstance(d, dict) else d for d in raw]
-    results = {}
-    for dom in domains:
-        if not dom:
-            continue
-        results[dom] = {"verified": False, "reason": "no sample"}
-    send_json(handler, {"results": results})
+    send_json(handler, {"error": "verification is not implemented"}, 501)
 
 
 _ROUTES = {
