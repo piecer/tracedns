@@ -89,6 +89,18 @@ class TestConfigManager(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].get("ens_decode"), "ipv6_5to8_xor")
 
+    def test_ens_and_sns_with_same_name_and_key_remain_distinct(self):
+        value = [
+            {"name": "same.name", "type": "ENS", "ens_text_key": "ipv6"},
+            {"name": "same.name", "type": "SNS", "ens_text_key": "ipv6"},
+        ]
+
+        out = cm.normalize_domains(value)
+
+        self.assertEqual(len(out), 2)
+        self.assertNotEqual(cm.domain_identity(out[0]), cm.domain_identity(out[1]))
+        self.assertNotEqual(cm.domain_storage_name(out[0]), cm.domain_storage_name(out[1]))
+
 
 if __name__ == "__main__":
     unittest.main()
