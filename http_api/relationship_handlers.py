@@ -47,10 +47,10 @@ def _cleanup_ip_rel_jobs(now: Optional[float] = None):
     with _IP_REL_JOB_LOCK:
         old_ids = []
         for job_id, job in _IP_REL_JOBS.items():
+            if job.get("status") not in ("completed", "failed", "cancelled"):
+                continue
             done_at = float(job.get("done_at") or 0)
-            created_at = float(job.get("created_at") or 0)
-            ref_ts = done_at or created_at
-            if ref_ts and now_f - ref_ts > _IP_REL_JOB_TTL_SECONDS:
+            if done_at and now_f - done_at > _IP_REL_JOB_TTL_SECONDS:
                 old_ids.append(job_id)
         for job_id in old_ids:
             _IP_REL_JOBS.pop(job_id, None)
