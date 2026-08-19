@@ -60,12 +60,22 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
     daemon_threads = True
 
-    def __init__(self, *args, max_workers=64, **kwargs):
+    def __init__(self, *args, max_workers=64, request_timeout=15, **kwargs):
         super().__init__(*args, **kwargs)
         self._request_slots = threading.BoundedSemaphore(max(1, int(max_workers)))
+        self.request_timeout = max(1.0, float(request_timeout))
 
     def process_request(self, request, client_address):
-        self._request_slots.acquire()
+        request.settimeout(self.request_timeout)
+        if not self._request_slots.acquire(blocking=False):
+            try:
+                request.sendall(
+                    b"HTTP/1.1 503 Service Unavailable\r\n"
+                    b"Connection: close\r\nContent-Length: 0\r\n\r\n"
+                )
+            finally:
+                self.shutdown_request(request)
+            return
         try:
             super().process_request(request, client_address)
         except Exception:

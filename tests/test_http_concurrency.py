@@ -8,27 +8,25 @@ from http_server import ThreadingHTTPServer as BoundedThreadingHTTPServer
 
 
 class TestHttpConcurrencyLimit(unittest.TestCase):
-    def test_process_request_waits_until_worker_slot_is_available(self):
+    def test_process_request_rejects_when_worker_slots_are_full(self):
         server = object.__new__(BoundedThreadingHTTPServer)
         server._request_slots = threading.BoundedSemaphore(1)
         server._request_slots.acquire()
+        server.request_timeout = 5
         entered_parent = threading.Event()
+
+        request = mock.Mock()
 
         def parent_process(_server, _request, _address):
             entered_parent.set()
 
         with mock.patch.object(ThreadingMixIn, "process_request", parent_process):
-            thread = threading.Thread(
-                target=server.process_request,
-                args=(object(), ("127.0.0.1", 12345)),
-            )
-            thread.start()
-            self.assertFalse(entered_parent.wait(0.05))
-            server._request_slots.release()
-            thread.join(timeout=1)
+            server.process_request(request, ("127.0.0.1", 12345))
 
-        self.assertFalse(thread.is_alive())
-        self.assertTrue(entered_parent.is_set())
+        self.assertFalse(entered_parent.is_set())
+        request.sendall.assert_called_once()
+        self.assertIn(b"503 Service Unavailable", request.sendall.call_args.args[0])
+        request.settimeout.assert_called_once_with(5)
 
     def test_worker_slot_is_released_after_request(self):
         server = object.__new__(BoundedThreadingHTTPServer)
