@@ -51,8 +51,7 @@ class TestEnsDecoder(unittest.TestCase):
 
     def test_ROL3210_decode_matches_preserved_corpus(self):
         artifact_path = Path(ROOT) / "docs" / "ens" / "betavpn-network-full-decoder.json"
-        if not artifact_path.exists():
-            self.skipTest("decoder corpus artifact not present in this environment")
+        self.assertTrue(artifact_path.exists(), "decoder corpus artifact must be tracked")
         artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
         for entry in artifact["mappings"]:
             packed = ipaddress.IPv6Address(entry["network_value"]).packed[4:8].hex()
