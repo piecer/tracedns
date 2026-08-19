@@ -2,6 +2,7 @@
 """HTTP server bootstrap and shared-state wiring for TraceDNS UI/API."""
 
 import os
+import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 
@@ -55,9 +56,27 @@ def load_frontend_html():
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
-    """Threaded HTTP server (each request handled in its own thread)."""
+    """Threaded HTTP server with a fixed upper bound on active handlers."""
 
     daemon_threads = True
+
+    def __init__(self, *args, max_workers=64, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._request_slots = threading.BoundedSemaphore(max(1, int(max_workers)))
+
+    def process_request(self, request, client_address):
+        self._request_slots.acquire()
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_slots.release()
 
 
 def make_handler(shared_config, config_lock, config_path, history_dir, current_results, history, max_body_bytes=None):
