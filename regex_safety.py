@@ -28,7 +28,10 @@ from __future__ import annotations
 import re
 from typing import List
 
-import re._parser as _rp
+try:
+    import re._parser as _rp
+except ImportError:  # Python 3.10 and earlier
+    import sre_parse as _rp
 
 #: Hard cap on pattern length to stop ReDoS vectors built from sheer size.
 MAX_PATTERN_LENGTH = 5000
