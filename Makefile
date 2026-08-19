@@ -8,7 +8,7 @@ install:
 	$(PIP) install -r requirements.txt
 
 test:
-	PYTHONPATH=$(abspath ..) $(PYTHON) -m unittest discover -s tests -p 'test_*.py' -v
+	$(PYTHON) -m pytest -q tests
 
 run:
 	$(PYTHON) dns_monitor.py
