@@ -106,7 +106,7 @@ def _apply_alert_values(
             logger.warning("PyMISP not installed; MISP alerts disabled.")
         else:
             try:
-                misp_obj = PyMISP(murl, mkey, False)
+                misp_obj = PyMISP(murl, mkey, True)
                 mispupdate_code.misp = misp_obj
             except Exception as e:
                 logger.warning("Failed to initialize PyMISP client: %s", e)

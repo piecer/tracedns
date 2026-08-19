@@ -2,6 +2,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import alerts  # P1-6: alerts is a flat module at project root, not a tracedns package
@@ -39,6 +40,17 @@ class TestAlertsRuntime(unittest.TestCase):
         self.assertEqual(alerts._teams_webhook, 'https://example.com/webhook')
         self.assertEqual(alerts._misp_event_id, 123)
         self.assertTrue(alerts._misp_remove_on_absent)
+
+    def test_misp_client_verifies_tls_by_default(self):
+        client = object()
+        with mock.patch.object(alerts, 'PyMISP', return_value=client) as pymisp:
+            alerts.init_from_alerts({
+                'misp_url': 'https://misp.example',
+                'api_key': 'secret',
+            })
+
+        pymisp.assert_called_once_with('https://misp.example', 'secret', True)
+        self.assertIs(alerts.mispupdate_code.misp, client)
 
     def test_init_from_config_without_global_section(self):
         with tempfile.NamedTemporaryFile('w', delete=False) as f:
