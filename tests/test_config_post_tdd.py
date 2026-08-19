@@ -251,6 +251,29 @@ class TestConfigPostSaveError(_ConfigPostBase):
         self.assertEqual(out["code"], 500, out)
         self.assertEqual(out["obj"].get("status"), "error", out)
 
+    def test_write_failure_keeps_runtime_config_and_domain_state(self):
+        cfg_path = os.path.join(tempfile.mkdtemp(), "cfg.json")
+        current_results = {"keep.example": {"8.8.8.8": {"values": ["1.2.3.4"]}}}
+        history = {"keep.example": {"meta": {}, "events": [], "current": {}}}
+        state = self._build_handler(
+            shared_config=self._base_shared_config,
+            config_path=cfg_path,
+            history_dir=None,
+            current_results=current_results,
+            history=history,
+        )
+        out = self._do_post_config(
+            state,
+            b'{"domains": [{"name": "new.example", "type": "A"}]}',
+            write_config_exc=OSError("disk full"),
+        )
+
+        self.assertEqual(out["code"], 500, out)
+        self.assertEqual(state["shared_config"], self._base_shared_config)
+        self.assertIn("keep.example", current_results)
+        self.assertIn("keep.example", history)
+        self.assertEqual(state["purge_calls"], [])
+
     def test_save_failure_still_records_save_events(self):
         cfg_path = os.path.join(tempfile.mkdtemp(), "cfg.json")
         state = self._build_handler(

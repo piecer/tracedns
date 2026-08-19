@@ -54,10 +54,12 @@ def handle_config_post(ctx: HttpContext, handler) -> None:
             payload = {"status": "ok", "config": {"domains": snapshot_domains}}
             send_json(handler, payload)
             return
+    removed = []
     with ctx.config_lock if ctx.config_lock else _NullCtx():
+        candidate = dict(ctx.shared_config)
         if "domains" in data:
             import config_manager as _CM
-            prev = list(ctx.shared_config.get("domains", []) or [])
+            prev = list(candidate.get("domains", []) or [])
             prev_names = {
                 d.get("name") if isinstance(d, dict) else str(d)
                 for d in prev
@@ -77,31 +79,33 @@ def handle_config_post(ctx: HttpContext, handler) -> None:
             history_keys.discard("")
             orphan_keys = (current_result_keys | history_keys) - new_names
             removed = sorted((prev_names - new_names) | orphan_keys)
-            ctx.shared_config["domains"] = normalized
-            if removed and callable(getattr(ctx, "purge_removed_domains_state", None)):
-                ctx.purge_removed_domains_state(
-                    ctx.current_results,
-                    ctx.history,
-                    ctx.history_dir,
-                    removed,
-                )
+            candidate["domains"] = normalized
         if "servers" in data:
-            ctx.shared_config["servers"] = list(data["servers"] or [])
+            candidate["servers"] = list(data["servers"] or [])
         if "interval" in data:
-            ctx.shared_config["interval"] = data["interval"]
+            candidate["interval"] = data["interval"]
         for key in ("custom_decoders", "custom_a_decoders"):
             if key in data:
-                ctx.shared_config[key] = list(data[key] or [])
-    if ctx.config_path:
-        import config_manager as _CM
-        try:
-            _CM.write_config(ctx.config_path, dict(ctx.shared_config))
-        except Exception as exc:  # noqa: BLE001
-            send_json(handler, {
-                "error": f"config save failed: {exc}",
-                "status": "error",
-            }, 500)
-            return
+                candidate[key] = list(data[key] or [])
+        if ctx.config_path:
+            import config_manager as _CM
+            try:
+                _CM.write_config(ctx.config_path, candidate)
+            except Exception as exc:  # noqa: BLE001
+                send_json(handler, {
+                    "error": f"config save failed: {exc}",
+                    "status": "error",
+                }, 500)
+                return
+        ctx.shared_config.clear()
+        ctx.shared_config.update(candidate)
+    if removed and callable(getattr(ctx, "purge_removed_domains_state", None)):
+        ctx.purge_removed_domains_state(
+            ctx.current_results,
+            ctx.history,
+            ctx.history_dir,
+            removed,
+        )
     payload = {"status": "ok"}
     cfg = {}
     if "domains" in ctx.shared_config:
