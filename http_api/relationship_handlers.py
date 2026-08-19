@@ -801,7 +801,7 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
     top_pairs = _to_int("top_pairs", 200, 1, 5000)
     max_neighbors_per_ip = _to_int("max_neighbors_per_ip", 30, 1, 200)
 
-    include_vt = bool(data.get("include_vt", True))
+    include_vt = _to_bool("include_vt", True)
     vt_workers = _to_int("vt_workers", 8, 1, 32)
     vt_budget = _to_int("vt_budget", 2000, 0, 5000)
     pair_gate_enabled = _to_bool("pair_gate_enabled", True)
