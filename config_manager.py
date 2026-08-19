@@ -38,7 +38,7 @@ def domain_identity(value):
         typ = str(value.get('type') or 'A').strip().upper() or 'A'
         if typ in ('ENS', 'SNS'):
             text_key = str(value.get('ens_text_key') or 'ipv6').strip().lower() or 'ipv6'
-            return f"{name}|ENS|{text_key}"
+            return f"{name}|{typ}|{text_key}"
         return name
     return str(value or '').strip().rstrip('.').lower()
 
@@ -50,7 +50,7 @@ def domain_storage_name(value):
         typ = str(value.get('type') or 'A').strip().upper() or 'A'
         if typ in ('ENS', 'SNS'):
             text_key = str(value.get('ens_text_key') or 'ipv6').strip() or 'ipv6'
-            return f"{name} [ENS:{text_key}]"
+            return f"{name} [{typ}:{text_key}]"
         return name
     return str(value or '').strip().rstrip('.')
 
