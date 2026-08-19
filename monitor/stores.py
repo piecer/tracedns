@@ -5,6 +5,15 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 
+def bounded_int(value, default, minimum, maximum):
+    """Coerce an integer setting and clamp it to a safe range."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
 @dataclass
 class ConfigSnapshot:
     domains: List[Any]
@@ -38,8 +47,8 @@ class ConfigStore:
         with self._lock:
             domains = list(self._cfg.get('domains', []) or [])
             servers = list(self._cfg.get('servers', []) or [])
-            interval = int(self._cfg.get('interval') or 60)
-            max_workers = int(self._cfg.get('max_workers') or 8)
+            interval = bounded_int(self._cfg.get('interval'), 60, 1, 86400)
+            max_workers = bounded_int(self._cfg.get('max_workers'), 8, 1, 64)
             force_queue = self._cfg.get('_force_resolve_queue')
             if isinstance(force_queue, list) and force_queue:
                 force_req = force_queue.pop(0)
@@ -50,7 +59,7 @@ class ConfigStore:
         return ConfigSnapshot(
             domains=domains,
             servers=servers,
-            interval=max(1, interval),
-            max_workers=max(1, max_workers),
+            interval=interval,
+            max_workers=max_workers,
             force_req=force_req,
         )
