@@ -53,6 +53,9 @@ def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Di
             'ens_decodes': set(),
             'ens_xor_bytes': set(),
             'ens_options': set(),
+            'sns_record_keys': set(),
+            'sns_decodes': set(),
+            'sns_options': set(),
         }
 
         for srv, info in m.items():
@@ -97,6 +100,21 @@ def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Di
                     if entry is not None:
                         entry['ens_options'] = info.get('ens_options') if isinstance(info.get('ens_options'), dict) else opts_sig
                     agg_entry['ens_options'].add(opts_sig)
+            if rtype == 'SNS':
+                sns_key = str(info.get('ens_text_key') or 'TXT')
+                sns_decode = str(info.get('sns_decode') or '')
+                sns_options = ens_options_signature(info.get('sns_options'))
+                if entry is not None:
+                    entry['ens_text_key'] = sns_key
+                    if sns_decode:
+                        entry['sns_decode'] = sns_decode
+                    if isinstance(info.get('sns_options'), dict):
+                        entry['sns_options'] = info.get('sns_options')
+                agg_entry['sns_record_keys'].add(sns_key)
+                if sns_decode:
+                    agg_entry['sns_decodes'].add(sns_decode)
+                if sns_options:
+                    agg_entry['sns_options'].add(sns_options)
 
             if include_raw:
                 data[d][srv] = entry
@@ -135,6 +153,13 @@ def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Di
             elif agg_entry['ens_xor_bytes']:
                 ens_method += f" / xor:{','.join(sorted(agg_entry['ens_xor_bytes']))}"
             method_parts.append(ens_method)
+        if agg_entry['sns_record_keys']:
+            sns_method = 'SNS:' + ','.join(sorted(agg_entry['sns_record_keys']))
+            if agg_entry['sns_decodes']:
+                sns_method += f" / decode:{','.join(sorted(agg_entry['sns_decodes']))}"
+            if agg_entry['sns_options']:
+                sns_method += f" / options:{'|'.join(sorted(agg_entry['sns_options']))}"
+            method_parts.append(sns_method)
 
         data_agg[d] = {
             'type': domain_type,
@@ -151,6 +176,9 @@ def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Di
             'ens_decodes': sorted(list(agg_entry['ens_decodes'])),
             'ens_xor_bytes': sorted(list(agg_entry['ens_xor_bytes'])),
             'ens_options': sorted(list(agg_entry['ens_options'])),
+            'sns_record_keys': sorted(list(agg_entry['sns_record_keys'])),
+            'sns_decodes': sorted(list(agg_entry['sns_decodes'])),
+            'sns_options': sorted(list(agg_entry['sns_options'])),
             'method_summary': ' / '.join(method_parts) if method_parts else '-',
         }
 

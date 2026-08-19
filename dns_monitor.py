@@ -29,6 +29,7 @@ from monitor.engine import (
     run_full_cycle,
 )
 from monitor.lifecycle import update_nxdomain_lifecycle as _update_nxdomain_lifecycle_impl
+from monitor.runtime_state import clone_snapshot
 from monitor.state_utils import collect_active_ip_map
 from monitor.stores import ConfigStore
 from txt_decoder import register_custom_decoder
@@ -102,6 +103,23 @@ def _setup_logging():
         format='[%(levelname)s] %(asctime)s %(name)s: %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
     )
+
+
+def restore_current_results(history):
+    """Build current runtime snapshots from persisted history metadata."""
+    restored_results = {}
+    for domain, hist_obj in (history or {}).items():
+        current = hist_obj.get('current', {}) if isinstance(hist_obj, dict) else {}
+        if not isinstance(current, dict) or not current:
+            continue
+        snapshots = {
+            str(server): clone_snapshot(snapshot)
+            for server, snapshot in current.items()
+            if isinstance(snapshot, dict)
+        }
+        if snapshots:
+            restored_results[str(domain)] = snapshots
+    return restored_results
 
 
 def build_arg_parser():
@@ -256,36 +274,8 @@ def main():
     ensure_history_dir(history_dir)
 
     # in-memory result & history
-    current_results = {}  # { domain: { server: snapshot } }
     history = load_history_files(history_dir)  # { domain: {meta, events, current} }
-
-    # restore current_results from history if present
-    for domain, hist_obj in list(history.items()):
-        curr = hist_obj.get('current', {}) if isinstance(hist_obj, dict) else {}
-        if isinstance(curr, dict) and curr:
-            current_results.setdefault(domain, {})
-            for srv, snap in curr.items():
-                restored = {
-                    'type': snap.get('type'),
-                    'values': snap.get('values', []),
-                    'decoded_ips': snap.get('decoded_ips', []),
-                    'ts': snap.get('ts', 0),
-                }
-                if snap.get('txt_decode'):
-                    restored['txt_decode'] = snap.get('txt_decode')
-                if snap.get('a_decode'):
-                    restored['a_decode'] = snap.get('a_decode')
-                if snap.get('a_xor_key'):
-                    restored['a_xor_key'] = snap.get('a_xor_key')
-                if snap.get('ens_text_key'):
-                    restored['ens_text_key'] = snap.get('ens_text_key')
-                if snap.get('ens_decode'):
-                    restored['ens_decode'] = snap.get('ens_decode')
-                if snap.get('ens_xor_byte') is not None and str(snap.get('ens_xor_byte')).strip() != '':
-                    restored['ens_xor_byte'] = snap.get('ens_xor_byte')
-                if isinstance(snap.get('ens_options'), dict) and snap.get('ens_options'):
-                    restored['ens_options'] = snap.get('ens_options')
-                current_results[domain][srv] = restored
+    current_results = restore_current_results(history)
 
     configured_names = {d.get('name', '').strip() for d in normalize_domains(shared_config.get('domains', [])) if isinstance(d, dict) and d.get('name')}
     active_ip_map_prev = collect_active_ip_map(current_results, configured_names)
