@@ -5,6 +5,8 @@ Provides simple read/write helpers and domain normalization.
 """
 import json
 import logging
+import os
+import tempfile
 
 
 def _parse_json_object(value):
@@ -77,7 +79,7 @@ def read_config(path):
 def write_config(path, cfg):
     """
     Write cfg (a dict) to the specified path as JSON.
-    Logs a warning on failure.
+    Replaces the destination atomically and propagates failures to the caller.
 
     Args:
         path (str): destination file path
@@ -85,11 +87,25 @@ def write_config(path, cfg):
     """
     if not path:
         return
+    tmp_path = None
     try:
-        with open(path, 'w', encoding='utf-8') as f:
+        directory = os.path.dirname(os.path.abspath(path))
+        with tempfile.NamedTemporaryFile(
+            'w', encoding='utf-8', dir=directory, prefix='.tracedns-',
+            suffix='.tmp', delete=False,
+        ) as f:
+            tmp_path = f.name
             json.dump(cfg, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logging.warning("write_config failed (%s): %s", path, e)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        raise
 
 
 def normalize_domains(value):

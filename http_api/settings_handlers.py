@@ -73,11 +73,6 @@ def handle_settings_post(ctx: HttpContext, handler) -> None:
             if not (_re.fullmatch(r'[A-Fa-f0-9]{64}', vts) or _re.fullmatch(r'[A-Za-z0-9\-_=]+', vts)):
                 return send_json(handler, {'error': 'invalid vt_api_key (unexpected characters)'}, 400)
             alerts['vt_api_key'] = vts
-            if set_api_key is not None:
-                try:
-                    set_api_key(vts)
-                except Exception:
-                    pass
     except Exception:
         return send_json(handler, {'error': 'vt_api_key validation error'}, 400)
 
@@ -88,11 +83,6 @@ def handle_settings_post(ctx: HttpContext, handler) -> None:
         if ttl_days < 1 or ttl_days > 3650:
             return send_json(handler, {'error': 'vt_cache_ttl_days must be between 1 and 3650'}, 400)
         alerts['vt_cache_ttl_days'] = int(ttl_days)
-        if set_cache_ttl_days is not None:
-            try:
-                set_cache_ttl_days(ttl_days)
-            except Exception:
-                pass
     except Exception:
         return send_json(handler, {'error': 'invalid vt_cache_ttl_days'}, 400)
 
@@ -103,22 +93,34 @@ def handle_settings_post(ctx: HttpContext, handler) -> None:
         alerts['misp_remove_on_absent'] = str(raw_remove).strip().lower() in ('1', 'true', 'yes', 'on', 'y')
 
     with ctx.config_lock:
-        ctx.shared_config['alerts'] = alerts
         if ctx.config_path:
+            cfg = read_config(ctx.config_path) or {}
+            cfg['alerts'] = alerts
+            # keep existing domains/servers/interval/custom_decoders if present
+            cfg.setdefault('domains', ctx.shared_config.get('domains', []))
+            cfg.setdefault('servers', ctx.shared_config.get('servers', []))
+            cfg.setdefault('interval', ctx.shared_config.get('interval'))
+            cfg.setdefault('max_workers', ctx.shared_config.get('max_workers', 8))
+            cfg.setdefault('custom_decoders', ctx.shared_config.get('custom_decoders', []))
+            cfg.setdefault('ens_rpc_url', ctx.shared_config.get('ens_rpc_url', ''))
             try:
-                cfg = read_config(ctx.config_path) or {}
-                cfg['alerts'] = alerts
-                # keep existing domains/servers/interval/custom_decoders if present
-                cfg.setdefault('domains', ctx.shared_config.get('domains', []))
-                cfg.setdefault('servers', ctx.shared_config.get('servers', []))
-                cfg.setdefault('interval', ctx.shared_config.get('interval'))
-                cfg.setdefault('max_workers', ctx.shared_config.get('max_workers', 8))
-                cfg.setdefault('custom_decoders', ctx.shared_config.get('custom_decoders', []))
-                cfg.setdefault('ens_rpc_url', ctx.shared_config.get('ens_rpc_url', ''))
                 write_config(ctx.config_path, cfg)
-                logger.debug('Settings saved to %s', ctx.config_path)
             except Exception as e:
                 logger.warning('Failed to save settings to %s: %s', ctx.config_path, e)
+                return send_json(handler, {'error': f'config save failed: {e}'}, 500)
+            logger.debug('Settings saved to %s', ctx.config_path)
+        ctx.shared_config['alerts'] = alerts
+
+    if set_api_key is not None and alerts.get('vt_api_key'):
+        try:
+            set_api_key(alerts['vt_api_key'])
+        except Exception:
+            pass
+    if set_cache_ttl_days is not None:
+        try:
+            set_cache_ttl_days(alerts['vt_cache_ttl_days'])
+        except Exception:
+            pass
 
     # apply alert runtime immediately (best effort)
     try:
