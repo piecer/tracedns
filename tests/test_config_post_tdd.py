@@ -306,5 +306,50 @@ class TestConfigPostSaveError(_ConfigPostBase):
         self.assertIn("keep.example", [d.get("name") for d in state["shared_config"].get("domains", [])])
 
 
+class TestConfigPostValidation(_ConfigPostBase):
+    def _state(self):
+        return self._build_handler(
+            shared_config=self._base_shared_config,
+            config_path="",
+            history_dir=None,
+            current_results={},
+            history={},
+        )
+
+    def test_servers_must_be_a_list(self):
+        state = self._state()
+        out = self._do_post_config(state, b'{"servers": "8.8.8.8"}')
+        self.assertEqual(out["code"], 400, out)
+        self.assertEqual(state["shared_config"]["servers"], ["8.8.8.8"])
+
+    def test_interval_must_be_a_positive_integer(self):
+        for value in ('"fast"', "0", "-1", "true"):
+            with self.subTest(value=value):
+                state = self._state()
+                out = self._do_post_config(state, ('{"interval": %s}' % value).encode())
+                self.assertEqual(out["code"], 400, out)
+                self.assertEqual(state["shared_config"]["interval"], 60)
+
+    def test_max_workers_is_updateable_and_bounded(self):
+        state = self._state()
+        out = self._do_post_config(state, b'{"max_workers": 16}')
+        self.assertEqual(out["code"], 200, out)
+        self.assertEqual(state["shared_config"]["max_workers"], 16)
+
+        for value in (0, 65, "many", True):
+            with self.subTest(value=value):
+                state = self._state()
+                out = self._do_post_config(state, json.dumps({"max_workers": value}).encode())
+                self.assertEqual(out["code"], 400, out)
+
+    def test_custom_decoder_collections_must_be_lists(self):
+        for key in ("custom_decoders", "custom_a_decoders"):
+            with self.subTest(key=key):
+                state = self._state()
+                out = self._do_post_config(state, json.dumps({key: {"name": "bad"}}).encode())
+                self.assertEqual(out["code"], 400, out)
+                self.assertNotIn(key, state["shared_config"])
+
+
 if __name__ == "__main__":
     unittest.main()
