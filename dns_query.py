@@ -3,6 +3,7 @@
 DNS 쿼리 기능 모듈
 """
 import sys
+from typing import Any, cast
 
 # dnspython 필요: pip install dnspython
 try:
@@ -19,7 +20,7 @@ def query_dns(server, domain, rtype='A', timeout=2.0, with_meta=False):
     Args:
         server (str): DNS 서버 IP 주소 (예: '8.8.8.8')
         domain (str): 조회할 도메인명
-        rtype (str): 레코드 타입 ('A' 또는 'TXT')
+        rtype (str): 레코드 타입
         timeout (float): 타임아웃 시간(초)
     
     Returns:
@@ -41,7 +42,12 @@ def query_dns(server, domain, rtype='A', timeout=2.0, with_meta=False):
         r.timeout = timeout
         r.lifetime = timeout
         
-        if rtype.upper() == 'TXT':
+        requested_type = str(rtype or 'A').upper()
+        supported_types = {'A', 'AAAA', 'CNAME', 'MX', 'NS', 'SRV', 'CAA', 'TXT'}
+        if requested_type not in supported_types:
+            return _ret([], 'error')
+
+        if requested_type == 'TXT':
             try:
                 answers = r.resolve(domain, 'TXT')
                 vals = []
@@ -67,9 +73,9 @@ def query_dns(server, domain, rtype='A', timeout=2.0, with_meta=False):
                 return _ret([], 'nodata')
         else:
             try:
-                answers = r.resolve(domain, 'A')
-                ips = sorted({str(a) for a in answers})
-                return _ret(ips, 'ok')
+                answers = r.resolve(domain, cast(Any, requested_type))
+                values = sorted({str(answer) for answer in answers})
+                return _ret(values, 'ok')
             except dns.resolver.NXDOMAIN:
                 return _ret([], 'nxdomain')
             except dns.resolver.NoAnswer:
