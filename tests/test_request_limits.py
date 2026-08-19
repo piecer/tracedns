@@ -128,6 +128,26 @@ class GetRequestBodyTests(unittest.TestCase):
         self.assertEqual(body, b"")
         self.assertEqual(handler.rfile.read_lengths, [], "no read expected when CL absent")
 
+    def test_reject_invalid_content_length_with_400(self) -> None:
+        for value in ("invalid", "-1", "+3"):
+            with self.subTest(value=value):
+                handler = _FakeHandler(body=b"{}")
+                handler.headers["Content-Length"] = value
+                body, sent_error = get_request_body(handler, max_length=100)
+                self.assertTrue(sent_error)
+                self.assertEqual(body, b"")
+                self.assertEqual(handler.sent_status, 400)
+                self.assertEqual(handler.rfile.read_lengths, [])
+
+    def test_reject_unsupported_transfer_encoding_with_400(self) -> None:
+        handler = _FakeHandler(body=b"4\r\ntest\r\n0\r\n\r\n")
+        handler.headers["Transfer-Encoding"] = "chunked"
+        body, sent_error = get_request_body(handler, max_length=100)
+        self.assertTrue(sent_error)
+        self.assertEqual(body, b"")
+        self.assertEqual(handler.sent_status, 400)
+        self.assertEqual(handler.rfile.read_lengths, [])
+
     def test_reject_oversized_body_with_413(self) -> None:
         handler = _FakeHandler(content_length=10 * 1024 * 1024, body=b"")
         body, sent_error = get_request_body(handler, max_length=5 * 1024 * 1024)
