@@ -38,6 +38,7 @@ except Exception:
 _CACHE_LOCK = threading.Lock()
 _CACHE_DIRTY = False
 _CACHE_BATCH_DEPTH = 0
+_CACHE_INFLIGHT = {}
 
 
 def set_api_key(api_key):
@@ -81,11 +82,20 @@ def get_cache_ttl_days():
 
 
 def _save_cache_locked():
+    tmp_path = f'{CACHE_FILE}.tmp.{os.getpid()}.{threading.get_ident()}'
     try:
-        with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+        with open(tmp_path, 'w', encoding='utf-8') as f:
             json.dump(_CACHE, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, CACHE_FILE)
+        return True
     except Exception:
-        pass
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        return False
 
 
 def flush_cache(force=False):
@@ -94,7 +104,8 @@ def flush_cache(force=False):
     with _CACHE_LOCK:
         if (not force) and (not _CACHE_DIRTY):
             return False
-        _save_cache_locked()
+        if not _save_cache_locked():
+            return False
         _CACHE_DIRTY = False
         return True
 
@@ -189,21 +200,40 @@ def get_ip_report(ip, force=False, cache_only=False):
             if cache_only:
                 # cache-only mode returns stale cache rather than making network requests
                 return entry.get('report')
+        if cache_only:
+            return None
+        inflight = _CACHE_INFLIGHT.get(ip)
+        if inflight is None:
+            inflight = threading.Event()
+            _CACHE_INFLIGHT[ip] = inflight
+            fetch_owner = True
+        else:
+            fetch_owner = False
 
-    if cache_only:
-        return None
+    if not fetch_owner:
+        inflight.wait()
+        with _CACHE_LOCK:
+            entry = _CACHE.get(ip)
+            return entry.get('report') if entry else None
 
-    report = _fetch_from_vt(ip, api_key)
+    report = None
+    write_now = False
+    try:
+        report = _fetch_from_vt(ip, api_key)
+        if report is not None:
+            with _CACHE_LOCK:
+                global _CACHE_DIRTY
+                _CACHE[ip] = {'fetched_at': now, 'report': report}
+                _CACHE_DIRTY = True
+                write_now = (_CACHE_BATCH_DEPTH == 0)
+    finally:
+        with _CACHE_LOCK:
+            _CACHE_INFLIGHT.pop(ip, None)
+            inflight.set()
     if report is None:
         # A missing report also represents transient network, rate-limit, and
         # server failures. Do not turn those failures into a full-TTL cache hit.
         return None
-    write_now = False
-    with _CACHE_LOCK:
-        global _CACHE_DIRTY
-        _CACHE[ip] = {'fetched_at': now, 'report': report}
-        _CACHE_DIRTY = True
-        write_now = (_CACHE_BATCH_DEPTH == 0)
     # best-effort save (immediate only when not in a batch)
     if write_now:
         flush_cache(force=True)
