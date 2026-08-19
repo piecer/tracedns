@@ -40,7 +40,13 @@ class ConfigStore:
             servers = list(self._cfg.get('servers', []) or [])
             interval = int(self._cfg.get('interval') or 60)
             max_workers = int(self._cfg.get('max_workers') or 8)
-            force_req = self._cfg.pop('_force_resolve', None)
+            force_queue = self._cfg.get('_force_resolve_queue')
+            if isinstance(force_queue, list) and force_queue:
+                force_req = force_queue.pop(0)
+                if not force_queue:
+                    self._cfg.pop('_force_resolve_queue', None)
+            else:
+                force_req = self._cfg.pop('_force_resolve', None)
         return ConfigSnapshot(
             domains=domains,
             servers=servers,

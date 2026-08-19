@@ -139,7 +139,11 @@ def handle_resolve(ctx: HttpContext, handler) -> None:
             elif "domain" in data:
                 req["domains"] = [{"name": str(data["domain"]).strip(), "type": "A"}]
             if req:
-                ctx.shared_config["_force_resolve"] = req
+                queue = ctx.shared_config.setdefault("_force_resolve_queue", [])
+                if len(queue) >= 64:
+                    send_json(handler, {"error": "resolve request queue is full"}, 429)
+                    return
+                queue.append(req)
     send_json(handler, {"status": "ok", "requested": True})
 
 

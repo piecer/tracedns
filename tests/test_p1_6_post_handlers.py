@@ -126,8 +126,8 @@ class TestHandleResolve(unittest.TestCase):
         body = h.get_body()
         self.assertEqual(body["status"], "ok")
         self.assertTrue(body["requested"])
-        fr = ctx.shared_config.get("_force_resolve", {})
-        self.assertIn("domains", fr)
+        queue = ctx.shared_config.get("_force_resolve_queue", [])
+        self.assertIn("domains", queue[0])
 
     def test_resolve_no_domain(self):
         ctx = make_ctx()
@@ -135,6 +135,17 @@ class TestHandleResolve(unittest.TestCase):
         handle_resolve(ctx, h)
         body = h.get_body()
         self.assertEqual(body["status"], "ok")
+
+    def test_resolve_requests_are_queued_without_overwrite(self):
+        ctx = make_ctx()
+        handle_resolve(ctx, FakeHandler(b'{"domain": "first.example"}'))
+        handle_resolve(ctx, FakeHandler(b'{"domain": "second.example"}'))
+
+        queue = ctx.shared_config.get("_force_resolve_queue", [])
+        self.assertEqual(
+            [item["domains"][0]["name"] for item in queue],
+            ["first.example", "second.example"],
+        )
 
 
 class TestHandleIp(unittest.TestCase):
