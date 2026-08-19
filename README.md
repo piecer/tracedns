@@ -114,6 +114,7 @@ Notable ENS methods:
 
 - `ipv6_5to8_xor`: take IPv6 bytes 5:8 and XOR each byte into an IPv4.
 - `ROL3210_decode`: take IPv6 bytes 5:8 and apply the board-supplied `rol8`/bitmask transform used by the current betavpn `network` cluster.
+- `betavpn_network_full`: compatibility alias for the same transform, kept for cluster-specific traceability and older configs.
 
 The exact 25-entry betavpn `network` source-to-IOC corpus is still preserved under `docs/ens/` for traceability and IOC extraction.
 

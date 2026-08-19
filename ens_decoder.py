@@ -223,6 +223,12 @@ def decode_ens_ROL3210_decode(record: str, key_u32=None, **kwargs) -> List[str]:
     return _decode_ipv6_5to8(record, _decode)
 
 
+@ens_decode_register('betavpn_network_full')
+def decode_ens_betavpn_network_full(record: str, **kwargs) -> List[str]:
+    """Compatibility alias for the betavpn network full cluster name."""
+    return decode_ens_ROL3210_decode(record, **kwargs)
+
+
 @ens_decode_register('legacy_doc_sample')
 def decode_ens_legacy_doc_sample(record: str, **kwargs) -> List[str]:
     """Legacy parser kept for compatibility with older sample format.

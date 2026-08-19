@@ -44,6 +44,11 @@ class TestEnsDecoder(unittest.TestCase):
         out = ens_decoder.decode_ens_hidden_ips(rec, method="ROL3210_decode")
         self.assertEqual(out, ["43.157.149.8"])
 
+    def test_betavpn_network_full_alias_decodes_prefixed_raw_record(self):
+        rec = "network\x02%2001:db8:6547:cae0::1"
+        out = ens_decoder.decode_ens_hidden_ips(rec, method="betavpn_network_full")
+        self.assertEqual(out, ["43.157.149.8"])
+
     def test_ROL3210_decode_matches_preserved_corpus(self):
         artifact_path = Path(ROOT) / "docs" / "ens" / "betavpn-network-full-decoder.json"
         if not artifact_path.exists():
