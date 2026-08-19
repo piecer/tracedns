@@ -31,7 +31,7 @@ from monitor.engine import (
 from monitor.lifecycle import update_nxdomain_lifecycle as _update_nxdomain_lifecycle_impl
 from monitor.runtime_state import clone_snapshot
 from monitor.state_utils import collect_active_ip_map
-from monitor.stores import ConfigStore
+from monitor.stores import bounded_int, ConfigStore
 from txt_decoder import register_custom_decoder
 
 
@@ -179,16 +179,16 @@ def main():
         else:
             servers0 = servers_arg
 
-    interval0 = interval_arg if cli_specified['interval'] else int(file_cfg.get('interval', interval_arg))
-    max_workers0 = max_workers_arg if cli_specified['max_workers'] else int(file_cfg.get('max_workers', max_workers_arg))
+    interval0 = interval_arg if cli_specified['interval'] else bounded_int(file_cfg.get('interval'), interval_arg, 1, 86400)
+    max_workers0 = max_workers_arg if cli_specified['max_workers'] else bounded_int(file_cfg.get('max_workers'), max_workers_arg, 1, 64)
 
     # shared config state (mutated by HTTP API)
     config_lock = threading.Lock()
     shared_config = {
         'domains': domains0,
         'servers': servers0,
-        'interval': max(1, int(interval0)),
-        'max_workers': max(1, int(max_workers0)),
+        'interval': bounded_int(interval0, 60, 1, 86400),
+        'max_workers': bounded_int(max_workers0, 8, 1, 64),
         'ens_rpc_url': str(file_cfg.get('ens_rpc_url') or '').strip(),
         'DEFAULT_SOLAR_PROXY_HOSTS': list(file_cfg.get('DEFAULT_SOLAR_PROXY_HOSTS') or file_cfg.get('DEFAULT_SNS_PROXY_HOSTS') or DEFAULT_SOLAR_PROXY_HOSTS),
         'DEFAULT_SNS_PROXY_HOSTS': list(file_cfg.get('DEFAULT_SNS_PROXY_HOSTS') or file_cfg.get('DEFAULT_SOLAR_PROXY_HOSTS') or DEFAULT_SOLAR_PROXY_HOSTS),
