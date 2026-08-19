@@ -124,6 +124,10 @@ def collect_snapshot(domain: DomainSpec, server: str) -> Collected:
         snap = Snapshot(type='TXT', values=snap_values, decoded_ips=decoded, ts=ts, txt_decode=method)
         return Collected(query=query, snapshot=snap)
 
+    if rtype != 'A':
+        snap = Snapshot(type=rtype, values=snap_values, decoded_ips=[], ts=ts)
+        return Collected(query=query, snapshot=snap)
+
     # A record
     a_decode = (domain.a_decode or 'none')
     a_decode_active = str(a_decode).strip().lower() not in ('', 'none')
