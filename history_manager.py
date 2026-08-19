@@ -9,6 +9,14 @@ import logging
 from urllib.parse import quote, unquote
 
 logger = logging.getLogger(__name__)
+MAX_HISTORY_EVENTS = 1000
+
+
+def trim_history_events(events):
+    """Return a bounded copy containing the newest history events."""
+    if not isinstance(events, list):
+        return []
+    return list(events[-MAX_HISTORY_EVENTS:])
 
 
 def history_file_path(history_dir, domain):
@@ -57,12 +65,12 @@ def load_history_files(history_dir):
                 data = json.load(f)
                 if isinstance(data, dict):
                     # expected keys: 'events' (list), optional 'meta', optional 'current'
-                    events = data.get('events', []) if isinstance(data.get('events', []), list) else []
+                    events = trim_history_events(data.get('events', []))
                     meta = data.get('meta', {}) if isinstance(data.get('meta', {}), dict) else {}
                     current = data.get('current', {}) if isinstance(data.get('current', {}), dict) else {}
                 elif isinstance(data, list):
                     # legacy: list of events -> compute meta
-                    events = data
+                    events = trim_history_events(data)
                     ts_list = [e.get('ts', 0) for e in events if isinstance(e, dict) and 'ts' in e]
                     first_seen = min(ts_list) if ts_list else 0
                     last_changed = max(ts_list) if ts_list else 0
@@ -94,12 +102,13 @@ def persist_history_entry(history_dir, domain, history_obj):
         fn = history_file_path(history_dir, domain)
         # normalize to dict
         if isinstance(history_obj, list):
-            ts_list = [e.get('ts', 0) for e in history_obj if isinstance(e, dict) and 'ts' in e]
+            events = trim_history_events(history_obj)
+            ts_list = [e.get('ts', 0) for e in events if isinstance(e, dict) and 'ts' in e]
             meta = {'first_seen': min(ts_list) if ts_list else 0, 'last_changed': max(ts_list) if ts_list else 0}
-            to_write = {'meta': meta, 'events': history_obj, 'current': {}}
+            to_write = {'meta': meta, 'events': events, 'current': {}}
         elif isinstance(history_obj, dict):
             meta = history_obj.get('meta', {})
-            events = history_obj.get('events', []) if isinstance(history_obj.get('events', []), list) else []
+            events = trim_history_events(history_obj.get('events', []))
             current = history_obj.get('current', {}) if isinstance(history_obj.get('current', {}), dict) else {}
             to_write = {'meta': meta, 'events': events, 'current': current}
         else:
