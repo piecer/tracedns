@@ -86,16 +86,33 @@ def _send_413(handler: Any, err: BodyTooLargeError) -> None:
         pass
 
 
+def _send_400(handler: Any, message: str) -> None:
+    """Reject unsupported or malformed HTTP request framing."""
+    body = f"400 Bad Request ({html.escape(message)})\n".encode("utf-8")
+    try:
+        handler.close_connection = True
+    except Exception:
+        pass
+    handler.send_response(400)
+    handler.send_header("Content-Type", "text/plain; charset=utf-8")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("Connection", "close")
+    handler.end_headers()
+    try:
+        handler.wfile.write(body)
+    except Exception:
+        pass
+
+
 def _declared_length(handler: Any) -> int:
-    """Return the declared Content-Length, treating invalid values as 0."""
+    """Return a valid non-negative Content-Length or raise ValueError."""
     raw = handler.headers.get("Content-Length")
     if raw is None:
         return 0
-    try:
-        value = int(str(raw).strip())
-    except (TypeError, ValueError):
-        return 0
-    return value if value > 0 else 0
+    text = str(raw).strip()
+    if not text.isdigit():
+        raise ValueError("invalid Content-Length")
+    return int(text)
 
 
 def get_request_body(
@@ -121,7 +138,15 @@ def get_request_body(
         if max_length is None
         else max(1, int(max_length))
     )
-    length = _declared_length(handler)
+    transfer_encoding = str(handler.headers.get("Transfer-Encoding") or "").strip().lower()
+    if transfer_encoding and transfer_encoding != "identity":
+        _send_400(handler, "unsupported Transfer-Encoding")
+        return b"", True
+    try:
+        length = _declared_length(handler)
+    except ValueError:
+        _send_400(handler, "invalid Content-Length")
+        return b"", True
     if length > limit:
         _send_413(handler, BodyTooLargeError(length, limit))
         return b"", True
