@@ -79,3 +79,68 @@ Current-code review against `master` at `793757c`. Findings are ordered by prior
 - Evidence: `tests/test_ens_decoder.py:54-59` skips if `docs/ens/betavpn-network-full-decoder.json` is missing; the fixture is absent from current HEAD.
 - Impact: a high-value decoder compatibility test does not run in normal CI.
 - Fix/test: restore a licensed compact fixture or make the corpus an explicit CI artifact; avoid a silent permanent skip.
+
+## Additional findings received from the asynchronous clean-tree audit
+
+The following findings were reproduced against `793757c` by the delayed
+read-only audit and remain reachable after the fixes above. They are ordered
+by impact and will be remediated in this order.
+
+### P1 — Asynchronous relationship jobs have no admission bound
+
+- `http_api/relationship_handlers.py` accepts every submission into a global
+  job map and `ProcessPoolExecutor` queue. Pending payloads and metadata can
+  therefore grow without limit.
+- Add a fixed running-plus-pending limit, reject excess submissions, and test
+  with a non-completing executor.
+
+### P1 — ENS and SNS targets with the same name/key collide
+
+- `config_manager.domain_identity()` and `domain_storage_name()` label both
+  target types as ENS. Normalization drops one target and runtime state can
+  overwrite the other.
+- Include the actual target type in both identities and storage keys.
+
+### P1 — SNS collection ignores the configured record key
+
+- `monitor/collect.py` always calls a TXT-only SNS helper and `sns_query.py`
+  always builds a `/TXT` endpoint although configuration preserves
+  `ens_text_key` for SNS targets.
+- Pass a validated/URL-encoded configured record key through collection.
+
+### P2 — Implemented settings and decoder update/delete routes are unwired
+
+- `POST /settings` returns 404, while `PUT` and `DELETE /decoders/custom`
+  fall through to the base handler's 501 response.
+- Wire the delegated handlers with the common request limit and verify the
+  real handler method contract.
+
+### P2 — No-op ENS/SNS config saves purge live state
+
+- `http_api/config_post.py` compares raw configured names with decorated
+  runtime storage keys, classifying retained ENS/SNS state as orphaned.
+- Compare canonical `domain_storage_name()` values and test no-op saves.
+
+### P2 — Force-resolve requests overwrite one shared slot
+
+- Each `/resolve` request replaces `_force_resolve`; multiple accepted
+  requests before the next monitor cycle silently lose all but the last.
+- Use a bounded FIFO and return an explicit overload response when full.
+
+### P2 — Transient VirusTotal failures are cached as authoritative negatives
+
+- `vt_lookup.get_ip_report()` stores `None` after timeouts and HTTP failures,
+  suppressing retries for the full normal cache TTL.
+- Do not cache transient failures; test first-failure/second-success behavior.
+
+### P2 — Domain settings payload fields are ignored
+
+- `/config` ignores `ens_rpc_url` and `DEFAULT_SNS_PROXY_HOSTS` sent by the
+  frontend while still returning success.
+- Persist validated values and cover the frontend payload round trip.
+
+### P3 — Canonical unittest discovery skips function-style decoder tests
+
+- `tests/test_a_decoder.py` contains pytest-style top-level tests that
+  `unittest discover` does not collect.
+- Convert them to `unittest.TestCase` so `make test` executes them.
