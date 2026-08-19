@@ -140,14 +140,30 @@ def run_domain_cycle(
     domain_error_count = 0
 
     max_workers_eff = max(1, int(max_workers or 1))
-    futures = []
+    futures = {}
     with ThreadPoolExecutor(max_workers=max_workers_eff) as ex:
         for srv in servers:
             domain_query_total += 1
-            futures.append(ex.submit(collect_snapshot, domain, str(srv)))
+            server = str(srv)
+            futures[ex.submit(collect_snapshot, domain, server)] = server
 
         for fut in as_completed(futures):
-            collected = fut.result()
+            submitted_server = futures[fut]
+            try:
+                collected = fut.result()
+            except Exception as exc:
+                domain_error_count += 1
+                fail_key = (name, submitted_server, rtype)
+                fail_count = mark_query_failure(query_fail_counts, fail_key)
+                logger.exception(
+                    "Unhandled query worker failure for %s (%s) @ %s (consecutive=%s): %s",
+                    name,
+                    rtype,
+                    submitted_server,
+                    fail_count,
+                    exc,
+                )
+                continue
             srv = collected.query.server
             status = str(collected.query.status or 'error').lower()
             fail_key = (name, srv, rtype)
