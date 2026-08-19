@@ -217,6 +217,22 @@ class TestConfigPostPurge(_ConfigPostBase):
         self.assertEqual(out["code"], 200, out)
         self.assertIn("keep.example", [d.get("name") for d in state["shared_config"].get("domains", [])])
 
+    def test_equivalent_domain_spelling_does_not_purge_state(self):
+        state = self._build_handler(
+            shared_config={"domains": [{"name": "Example.COM.", "type": "A"}]},
+            config_path=os.path.join(tempfile.mkdtemp(), "cfg.json"),
+            history_dir=None,
+            current_results={"Example.COM.": {"8.8.8.8": {"type": "A", "values": ["2.3.4.5"]}}},
+            history={"Example.COM.": {"meta": {}, "events": [], "current": {}}},
+        )
+        body = b'{"domains": [{"name": "example.com", "type": "A"}]}'
+
+        out = self._do_post_config(state, body)
+
+        self.assertEqual(out["code"], 200, out)
+        all_purged = [d for call in state["purge_calls"] for d in call]
+        self.assertNotIn("Example.COM.", all_purged)
+
 
 class TestConfigPostSaveError(_ConfigPostBase):
     """P0-5: when the config file cannot be written, the handler must return

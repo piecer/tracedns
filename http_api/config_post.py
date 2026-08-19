@@ -60,13 +60,15 @@ def handle_config_post(ctx: HttpContext, handler) -> None:
         if "domains" in data:
             import config_manager as _CM
             prev = list(candidate.get("domains", []) or [])
-            prev_names = {
-                d.get("name") if isinstance(d, dict) else str(d)
-                for d in prev
-            }
             normalized = _CM.normalize_domains(data["domains"])
-            new_names = {
-                d.get("name") if isinstance(d, dict) else str(d)
+            new_identities = {_CM.domain_identity(d) for d in normalized}
+            removed_config_keys = {
+                _CM.domain_storage_name(d)
+                for d in prev
+                if _CM.domain_identity(d) not in new_identities
+            }
+            new_storage_keys = {
+                _CM.domain_storage_name(d).rstrip('.').lower()
                 for d in normalized
             }
             current_result_keys = {
@@ -77,8 +79,12 @@ def handle_config_post(ctx: HttpContext, handler) -> None:
                 str(d or "") for d in (ctx.history or {}).keys()
             }
             history_keys.discard("")
-            orphan_keys = (current_result_keys | history_keys) - new_names
-            removed = sorted((prev_names - new_names) | orphan_keys)
+            orphan_keys = {
+                key
+                for key in current_result_keys | history_keys
+                if key.rstrip('.').lower() not in new_storage_keys
+            }
+            removed = sorted(removed_config_keys | orphan_keys)
             candidate["domains"] = normalized
         if "servers" in data:
             candidate["servers"] = list(data["servers"] or [])
