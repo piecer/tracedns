@@ -52,6 +52,13 @@ class TestAlertsRuntime(unittest.TestCase):
         pymisp.assert_called_once_with('https://misp.example', 'secret', True)
         self.assertIs(alerts.mispupdate_code.misp, client)
 
+    def test_teams_webhook_http_error_is_reported_as_failure(self):
+        alerts._teams_webhook = 'https://example.com/webhook'
+        response = mock.Mock()
+        response.raise_for_status.side_effect = alerts.requests.HTTPError('500 Server Error')
+        with mock.patch.object(alerts.requests, 'post', return_value=response):
+            self.assertFalse(alerts._send_teams('message'))
+
     def test_init_from_config_without_global_section(self):
         with tempfile.NamedTemporaryFile('w', delete=False) as f:
             path = f.name

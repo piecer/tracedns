@@ -183,7 +183,8 @@ def _send_teams(message: str, title: str = 'C2 TXT Alert'):
         'text': message
     }
     try:
-        requests.post(_teams_webhook, json=payload, timeout=10)
+        response = requests.post(_teams_webhook, json=payload, timeout=10)
+        response.raise_for_status()
         return True
     except Exception as e:
         logger.warning("Teams webhook send failed: %s", e)
