@@ -174,20 +174,57 @@ def handle_resolve(ctx: HttpContext, handler) -> None:
     if data is None:
         send_json(handler, {"error": "invalid json"}, 400)
         return
-    if ctx.config_lock is not None:
-        with ctx.config_lock:
-            req = {}
-            if "domains" in data:
-                from config_manager import normalize_domains
-                req["domains"] = normalize_domains(data["domains"])
-            elif "domain" in data:
-                req["domains"] = [{"name": str(data["domain"]).strip(), "type": "A"}]
-            if req:
-                queue = ctx.shared_config.setdefault("_force_resolve_queue", [])
-                if len(queue) >= 64:
-                    send_json(handler, {"error": "resolve request queue is full"}, 429)
-                    return
-                queue.append(req)
+    from config_manager import domain_identity, normalize_domains
+
+    lock = ctx.config_lock if ctx.config_lock is not None else _NullCtx()
+    with lock:
+        if "domains" in data:
+            if not isinstance(data["domains"], list):
+                send_json(handler, {"error": "domains must be a list"}, 400)
+                return
+            domains = normalize_domains(data["domains"])
+        elif "domain" in data:
+            domains = normalize_domains([
+                {"name": str(data["domain"] or "").strip(), "type": "A"},
+            ])
+        else:
+            send_json(handler, {"error": "domain or domains required"}, 400)
+            return
+        if not domains:
+            send_json(handler, {"error": "domain or domains required"}, 400)
+            return
+        if len(domains) > 64:
+            send_json(handler, {"error": "domains must contain at most 64 entries"}, 400)
+            return
+
+        configured_domains = list(ctx.shared_config.get("domains", []) or [])
+        configured_ids = {domain_identity(domain) for domain in configured_domains}
+        if any(domain_identity(domain) not in configured_ids for domain in domains):
+            send_json(handler, {"error": "domains must be configured"}, 400)
+            return
+
+        configured_servers = [
+            str(server).strip()
+            for server in (ctx.shared_config.get("servers", []) or [])
+            if str(server or "").strip()
+        ]
+        servers = data.get("servers", configured_servers)
+        if not isinstance(servers, list) or not servers:
+            send_json(handler, {"error": "servers must be a non-empty list"}, 400)
+            return
+        servers = [str(server).strip() for server in servers if str(server or "").strip()]
+        if not servers or len(servers) > 64:
+            send_json(handler, {"error": "servers must contain between 1 and 64 entries"}, 400)
+            return
+        if any(server not in configured_servers for server in servers):
+            send_json(handler, {"error": "servers must be configured"}, 400)
+            return
+
+        queue = ctx.shared_config.setdefault("_force_resolve_queue", [])
+        if len(queue) >= 64:
+            send_json(handler, {"error": "resolve request queue is full"}, 429)
+            return
+        queue.append({"domains": domains, "servers": servers})
     send_json(handler, {"status": "ok", "requested": True})
 
 
