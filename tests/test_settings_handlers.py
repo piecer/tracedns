@@ -26,6 +26,25 @@ class FakeHandler:
 
 
 class TestSettingsPersistence(unittest.TestCase):
+    def test_oversized_request_uses_shared_body_limit(self):
+        ctx = HttpContext(
+            frontend_html="",
+            shared_config={},
+            config_lock=threading.RLock(),
+            config_path="",
+            history_dir="/tmp",
+            current_results={},
+            history={},
+            purge_removed_domains_state=lambda *args: None,
+            max_body_bytes=4,
+        )
+        handler = FakeHandler(b"12345")
+
+        handle_settings_post(ctx, handler)
+
+        self.assertEqual(handler.status, 413)
+        self.assertIn("413 Request Entity Too Large", handler.wfile.getvalue().decode())
+
     def test_save_failure_returns_500_without_mutating_runtime_settings(self):
         original = {"vt_cache_ttl_days": 7}
         shared = {"alerts": dict(original)}

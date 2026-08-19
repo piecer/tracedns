@@ -16,6 +16,7 @@ except Exception:
         return 1
 
 from .context import HttpContext
+from .request_limits import get_request_body
 from .utils import send_json
 
 logger = logging.getLogger(__name__)
@@ -50,12 +51,15 @@ def handle_settings_get(ctx: HttpContext, handler) -> None:
 
 
 def handle_settings_post(ctx: HttpContext, handler) -> None:
-    length = int(handler.headers.get('Content-Length', '0'))
-    body = handler.rfile.read(length) if length > 0 else b''
+    body, too_large = get_request_body(handler, max_length=ctx.max_body_bytes)
+    if too_large:
+        return
     try:
         data = json.loads(body.decode('utf-8')) if body else {}
     except Exception:
         return send_json(handler, {'error': 'invalid json'}, 400)
+    if not isinstance(data, dict):
+        return send_json(handler, {'error': 'json object required'}, 400)
 
     alerts = data.get('alerts')
     if alerts is None or not isinstance(alerts, dict):
