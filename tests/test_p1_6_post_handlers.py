@@ -116,6 +116,21 @@ class TestHandleConfigPost(unittest.TestCase):
         domains = [d["name"] if isinstance(d, dict) else d for d in ctx.shared_config.get("domains", [])]
         self.assertIn("a.com", domains)
 
+    def test_config_post_updates_ens_and_sns_endpoints(self):
+        ctx = make_ctx(config_path="")
+        payload = json.dumps({
+            "ens_rpc_url": "https://rpc.example",
+            "DEFAULT_SNS_PROXY_HOSTS": ["https://sns.example"],
+        }).encode()
+
+        handle_config_post(ctx, FakeHandler(payload))
+
+        self.assertEqual(ctx.shared_config["ens_rpc_url"], "https://rpc.example")
+        self.assertEqual(
+            ctx.shared_config["DEFAULT_SNS_PROXY_HOSTS"],
+            ["https://sns.example"],
+        )
+
 
 class TestHandleResolve(unittest.TestCase):
     def test_resolve_sets_force_resolve(self):

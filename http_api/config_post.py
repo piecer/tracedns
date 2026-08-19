@@ -45,7 +45,11 @@ def handle_config_post(ctx: HttpContext, handler) -> None:
         send_json(handler, {"error": "invalid json"}, 400)
         return
     if "domains" not in data:
-        if "interval" not in data and "servers" not in data:
+        update_keys = {
+            "interval", "servers", "ens_rpc_url", "DEFAULT_SNS_PROXY_HOSTS",
+            "custom_decoders", "custom_a_decoders",
+        }
+        if not update_keys.intersection(data):
             if ctx.config_lock is not None:
                 with ctx.config_lock:
                     snapshot_domains = list(ctx.shared_config.get("domains", []))
@@ -90,6 +94,16 @@ def handle_config_post(ctx: HttpContext, handler) -> None:
             candidate["servers"] = list(data["servers"] or [])
         if "interval" in data:
             candidate["interval"] = data["interval"]
+        if "ens_rpc_url" in data:
+            candidate["ens_rpc_url"] = str(data["ens_rpc_url"] or "").strip()
+        if "DEFAULT_SNS_PROXY_HOSTS" in data:
+            hosts = data["DEFAULT_SNS_PROXY_HOSTS"]
+            if not isinstance(hosts, list):
+                send_json(handler, {"error": "DEFAULT_SNS_PROXY_HOSTS must be a list"}, 400)
+                return
+            candidate["DEFAULT_SNS_PROXY_HOSTS"] = [
+                str(host).strip() for host in hosts if str(host or "").strip()
+            ]
         for key in ("custom_decoders", "custom_a_decoders"):
             if key in data:
                 candidate[key] = list(data[key] or [])
@@ -118,6 +132,12 @@ def handle_config_post(ctx: HttpContext, handler) -> None:
         cfg["domains"] = list(ctx.shared_config.get("domains", []))
     if "servers" in ctx.shared_config:
         cfg["servers"] = list(ctx.shared_config.get("servers", []))
+    if "ens_rpc_url" in ctx.shared_config:
+        cfg["ens_rpc_url"] = str(ctx.shared_config.get("ens_rpc_url") or "")
+    if "DEFAULT_SNS_PROXY_HOSTS" in ctx.shared_config:
+        cfg["DEFAULT_SNS_PROXY_HOSTS"] = list(
+            ctx.shared_config.get("DEFAULT_SNS_PROXY_HOSTS", []) or []
+        )
     if cfg:
         payload["config"] = cfg
     send_json(handler, payload)
