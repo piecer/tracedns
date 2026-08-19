@@ -26,7 +26,12 @@ _IP_REL_JOB_LOCK = threading.Lock()
 _IP_REL_JOBS: Dict[str, Dict[str, Any]] = {}
 _IP_REL_JOB_EXECUTOR: Optional[ProcessPoolExecutor] = None
 _IP_REL_JOB_MAX_WORKERS = max(1, int(os.environ.get("TRACEDNS_IP_REL_JOB_WORKERS", "1") or "1"))
+_IP_REL_JOB_MAX_PENDING = max(1, int(os.environ.get("TRACEDNS_IP_REL_JOB_MAX_PENDING", "16") or "16"))
 _IP_REL_JOB_TTL_SECONDS = max(300, int(os.environ.get("TRACEDNS_IP_REL_JOB_TTL_SECONDS", "3600") or "3600"))
+
+
+class RelationshipJobCapacityError(RuntimeError):
+    """Raised when the bounded relationship-job queue is full."""
 
 
 def _get_ip_rel_job_executor() -> ProcessPoolExecutor:
@@ -108,8 +113,23 @@ def start_ip_relationship_job(data: Dict[str, Any], shared_config: Optional[Dict
         "error": None,
     }
     with _IP_REL_JOB_LOCK:
+        active_jobs = sum(
+            1 for existing in _IP_REL_JOBS.values()
+            if existing.get("status") in ("queued", "running")
+        )
+        if active_jobs >= _IP_REL_JOB_MAX_PENDING:
+            raise RelationshipJobCapacityError("relationship job queue is full")
         _IP_REL_JOBS[job_id] = job
-    fut = _get_ip_rel_job_executor().submit(_run_ip_relationship_analysis_payload, data, dict(shared_config or {}))
+    try:
+        fut = _get_ip_rel_job_executor().submit(
+            _run_ip_relationship_analysis_payload,
+            data,
+            dict(shared_config or {}),
+        )
+    except Exception:
+        with _IP_REL_JOB_LOCK:
+            _IP_REL_JOBS.pop(job_id, None)
+        raise
     with _IP_REL_JOB_LOCK:
         if job_id in _IP_REL_JOBS:
             _IP_REL_JOBS[job_id]["future"] = fut

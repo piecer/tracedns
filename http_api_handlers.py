@@ -32,6 +32,7 @@ from http_api.request_limits import (
 from http_api.settings_handlers import handle_settings_get as _handle_settings_get_basic
 from http_api.settings_handlers import handle_settings_post as _handle_settings_post_basic
 from http_api.relationship_handlers import (
+    RelationshipJobCapacityError,
     cancel_ip_relationship_job as _cancel_ip_relationship_job,
     get_ip_relationship_job as _get_ip_relationship_job,
     handle_ip_relationship_analysis as _handle_ip_relationship_analysis,
@@ -2171,7 +2172,11 @@ def attach_api_handlers(
                 data = json.loads(body.decode('utf-8')) if body else {}
             except Exception:
                 return self._send_json({'error': 'invalid json'}, 400)
-            return self._send_json(_start_ip_relationship_job(data, shared_config), 202)
+            try:
+                job = _start_ip_relationship_job(data, shared_config)
+            except RelationshipJobCapacityError as exc:
+                return self._send_json({'error': str(exc)}, 429)
+            return self._send_json(job, 202)
         if parsed.path.startswith('/ip-relationship-jobs/'):
             parts = [p for p in parsed.path.split('/') if p]
             if len(parts) >= 3 and parts[2] == 'cancel':
