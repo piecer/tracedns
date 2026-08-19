@@ -120,7 +120,7 @@ class TestAlertBatching(unittest.TestCase):
             )
         self.assertEqual(
             added,
-            [('10.10.10.10', 'sns.example [ENS:ipv6]', 'SNS')],
+            [('10.10.10.10', 'sns.example [SNS:TXT]', 'SNS')],
         )
 
 if __name__ == '__main__':

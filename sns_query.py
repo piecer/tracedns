@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import requests
+from urllib.parse import quote
 
 DEFAULT_SOLAR_PROXY_HOSTS = [
     "https://sdk-proxy.sns.id",
@@ -20,12 +21,21 @@ def normalize_sns_name(name: str) -> str:
     return n
 
 
-def fetch_sns_txt_record(proxy_host: str, name: str, timeout: int = 15, verify_tls: bool = True) -> str:
+def fetch_sns_record(
+    proxy_host: str,
+    name: str,
+    record_key: str,
+    timeout: int = 15,
+    verify_tls: bool = True,
+) -> str:
     base_url = str(proxy_host or '').strip().rstrip('/')
     if not base_url:
         raise ValueError('empty SNS proxy host')
     sns_name = normalize_sns_name(name)
-    url = f"{base_url}/record-v2/{sns_name}/TXT"
+    key = str(record_key or '').strip()
+    if not key:
+        raise ValueError('empty SNS record key')
+    url = f"{base_url}/record-v2/{sns_name}/{quote(key, safe='')}"
     resp = requests.get(
         url,
         timeout=int(timeout),
@@ -37,3 +47,19 @@ def fetch_sns_txt_record(proxy_host: str, name: str, timeout: int = 15, verify_t
     )
     resp.raise_for_status()
     return str(resp.text or '')
+
+
+def fetch_sns_txt_record(
+    proxy_host: str,
+    name: str,
+    timeout: int = 15,
+    verify_tls: bool = True,
+) -> str:
+    """Compatibility wrapper for callers that explicitly request TXT."""
+    return fetch_sns_record(
+        proxy_host,
+        name,
+        'TXT',
+        timeout=timeout,
+        verify_tls=verify_tls,
+    )
