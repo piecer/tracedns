@@ -13,11 +13,13 @@ DEFAULT_SOLAR_PROXY_HOSTS = [
 
 
 def normalize_sns_name(name: str) -> str:
-    n = str(name or '').strip()
+    n = str(name or '').strip().lower()
     if not n:
         raise ValueError('empty SNS name')
     if not n.endswith('.sol'):
         n += '.sol'
+    if len(n) > 255:
+        raise ValueError('SNS name too long')
     return n
 
 
@@ -35,7 +37,7 @@ def fetch_sns_record(
     key = str(record_key or '').strip()
     if not key:
         raise ValueError('empty SNS record key')
-    url = f"{base_url}/record-v2/{sns_name}/{quote(key, safe='')}"
+    url = f"{base_url}/record-v2/{quote(sns_name, safe='')}/{quote(key, safe='')}"
     resp = requests.get(
         url,
         timeout=int(timeout),

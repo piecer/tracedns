@@ -23,6 +23,21 @@ class TestSnsRecordQueries(unittest.TestCase):
             "https://proxy.example/record-v2/name.sol/IPFS%2Fpath",
         )
 
+    def test_name_is_canonicalized_and_url_encoded(self):
+        response = mock.Mock(text="value")
+        response.raise_for_status.return_value = None
+        with mock.patch.object(sns_query.requests, "get", return_value=response) as get:
+            sns_query.fetch_sns_record(
+                "https://proxy.example",
+                "Alice/Team.SOL",
+                "TXT",
+            )
+
+        self.assertEqual(
+            get.call_args.args[0],
+            "https://proxy.example/record-v2/alice%2Fteam.sol/TXT",
+        )
+
     def test_collection_passes_configured_record_key(self):
         domain = DomainSpec(
             name="name.sol",
