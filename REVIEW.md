@@ -176,3 +176,48 @@ to keep rollback and review straightforward.
 10. **P2 — Worker exception aborts a full domain cycle:** an unexpected query
     worker exception escaped `Future.result()` and stopped remaining result
     processing. Fixed in `a38af68` with per-future isolation and accounting.
+
+## 2026-08-19 delayed parallel-audit follow-up
+
+The delayed audit reports were produced against older commits, so every item
+was checked again against current `master`. Findings already covered by the
+hardening pass above were discarded. The following independently reproduced
+issues were fixed:
+
+1. **P1 — Active relationship jobs expired from capacity accounting:** TTL
+   cleanup removed queued/running jobs and allowed the pending-job bound to be
+   bypassed. Fixed in `df87540`; only terminal jobs age out now.
+2. **P1 — Forced resolution persisted arbitrary domains:** `/resolve` could
+   create unbounded in-memory and per-domain history state outside the active
+   configuration. Fixed in `49935c3` by requiring configured identities and
+   limiting each request to 64 domains.
+3. **P2 — Forced resolution ignored requested resolvers:** the handler dropped
+   `servers` before the engine consumed the queue entry. Fixed in `49935c3`;
+   configured resolver subsets are validated and preserved.
+4. **P2 — SNS proxy path ambiguity:** mixed-case `.SOL` names were suffixed a
+   second time and path separators were inserted unescaped. Fixed in `21f1a95`
+   with lowercase canonicalization, length checks, and segment encoding.
+5. **P1 — Slow HTTP clients held workers indefinitely:** accepted sockets had
+   no read timeout. Fixed in `93a1590` with a bounded socket timeout.
+6. **P1 — Full HTTP worker capacity blocked the accept loop:** semaphore
+   acquisition waited indefinitely and could also block shutdown. Fixed in
+   `93a1590` with non-blocking admission and an explicit 503 response.
+7. **P2 — Concurrent VirusTotal misses duplicated outbound requests:** cache
+   misses for one IP were not coalesced. Fixed in `fc03571` with per-IP
+   single-flight coordination.
+8. **P2 — VirusTotal cache writes were non-atomic and failures were forgotten:**
+   direct truncating writes could corrupt the cache, while failed flushes still
+   cleared the dirty flag. Fixed in `fc03571` using fsync plus atomic replace
+   and retry-preserving dirty state.
+9. **P2 — BTEA decoder discarded a valid plaintext IPv4:** only the transformed
+   word-order variant was returned. Fixed in `74d7d8d` by preserving the
+   decoded address while retaining the compatibility variant.
+10. **P2 — `/verify` returned fabricated negative results:** the endpoint did
+    no lookup but responded 200 with `verified: false`. Fixed in `55dc73c` by
+    returning an explicit 501 until real verification is implemented.
+
+Still-open candidates requiring a larger design decision rather than a safe
+localized patch include ENSIP-15 normalization, strict decoder option schemas,
+durable retry semantics for history write failures, cycle-wide executor
+scheduling, lifecycle-metadata persistence policy, and graceful SIGTERM plus
+relationship-executor shutdown.
