@@ -47,7 +47,7 @@ def handle_config_post(ctx: HttpContext, handler) -> None:
     if "domains" not in data:
         update_keys = {
             "interval", "servers", "ens_rpc_url", "DEFAULT_SNS_PROXY_HOSTS",
-            "custom_decoders", "custom_a_decoders",
+            "custom_decoders", "custom_a_decoders", "max_workers",
         }
         if not update_keys.intersection(data):
             if ctx.config_lock is not None:
@@ -91,9 +91,26 @@ def handle_config_post(ctx: HttpContext, handler) -> None:
             removed = sorted(removed_config_keys | orphan_keys)
             candidate["domains"] = normalized
         if "servers" in data:
-            candidate["servers"] = list(data["servers"] or [])
+            if not isinstance(data["servers"], list):
+                send_json(handler, {"error": "servers must be a list"}, 400)
+                return
+            servers = [str(server).strip() for server in data["servers"] if str(server or "").strip()]
+            if len(servers) > 64:
+                send_json(handler, {"error": "servers must contain at most 64 entries"}, 400)
+                return
+            candidate["servers"] = servers
         if "interval" in data:
-            candidate["interval"] = data["interval"]
+            interval = data["interval"]
+            if isinstance(interval, bool) or not isinstance(interval, int) or not 1 <= interval <= 86400:
+                send_json(handler, {"error": "interval must be an integer between 1 and 86400"}, 400)
+                return
+            candidate["interval"] = interval
+        if "max_workers" in data:
+            max_workers = data["max_workers"]
+            if isinstance(max_workers, bool) or not isinstance(max_workers, int) or not 1 <= max_workers <= 64:
+                send_json(handler, {"error": "max_workers must be an integer between 1 and 64"}, 400)
+                return
+            candidate["max_workers"] = max_workers
         if "ens_rpc_url" in data:
             candidate["ens_rpc_url"] = str(data["ens_rpc_url"] or "").strip()
         if "DEFAULT_SNS_PROXY_HOSTS" in data:
@@ -106,7 +123,10 @@ def handle_config_post(ctx: HttpContext, handler) -> None:
             ]
         for key in ("custom_decoders", "custom_a_decoders"):
             if key in data:
-                candidate[key] = list(data[key] or [])
+                if not isinstance(data[key], list):
+                    send_json(handler, {"error": f"{key} must be a list"}, 400)
+                    return
+                candidate[key] = list(data[key])
         if ctx.config_path:
             import config_manager as _CM
             try:
@@ -132,6 +152,10 @@ def handle_config_post(ctx: HttpContext, handler) -> None:
         cfg["domains"] = list(ctx.shared_config.get("domains", []))
     if "servers" in ctx.shared_config:
         cfg["servers"] = list(ctx.shared_config.get("servers", []))
+    if "interval" in ctx.shared_config:
+        cfg["interval"] = ctx.shared_config.get("interval")
+    if "max_workers" in ctx.shared_config:
+        cfg["max_workers"] = ctx.shared_config.get("max_workers")
     if "ens_rpc_url" in ctx.shared_config:
         cfg["ens_rpc_url"] = str(ctx.shared_config.get("ens_rpc_url") or "")
     if "DEFAULT_SNS_PROXY_HOSTS" in ctx.shared_config:
