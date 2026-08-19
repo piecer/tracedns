@@ -104,17 +104,22 @@ def _setup_logging():
     )
 
 
-def main():
-    _setup_logging()
-
+def build_arg_parser():
     parser = argparse.ArgumentParser(description="DNS monitor (multiple domains, web UI)")
     parser.add_argument("-d", "--domains", default="", help="Domains to monitor (comma or newline separated)")
     parser.add_argument("-s", "--servers", default="8.8.8.8,1.1.1.1", help="Comma-separated list of DNS servers to query")
     parser.add_argument("-i", "--interval", type=int, default=60, help="Check interval in seconds")
     parser.add_argument("-c", "--config", default="dns_config.json", help="Path to JSON config file")
+    parser.add_argument("--http-host", default="127.0.0.1", help="HTTP UI bind host")
     parser.add_argument("--http-port", type=int, default=8000, help="HTTP UI port")
     parser.add_argument("--max-workers", type=int, default=8, help="Max worker threads for per-domain parallel DNS queries")
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    _setup_logging()
+
+    args = build_arg_parser().parse_args()
 
     cli_specified = {
         'domains': any(o in sys.argv for o in ('-d', '--domains')),
@@ -135,6 +140,7 @@ def main():
     servers_arg = [s.strip() for s in args.servers.split(",") if s.strip()]
     interval_arg = max(1, int(args.interval))
     config_path = args.config
+    http_host = str(args.http_host).strip() or '127.0.0.1'
     http_port = int(args.http_port)
     max_workers_arg = max(1, int(args.max_workers))
 
@@ -286,10 +292,10 @@ def main():
 
     # start HTTP server
     handler_class = make_handler(shared_config, config_lock, config_path, history_dir, current_results, history)
-    httpd = ThreadingHTTPServer(('0.0.0.0', http_port), handler_class)
+    httpd = ThreadingHTTPServer((http_host, http_port), handler_class)
     http_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     http_thread.start()
-    logger.info("HTTP config UI running on http://0.0.0.0:%s/", http_port)
+    logger.info("HTTP config UI running on http://%s:%s/", http_host, http_port)
 
     running = True
 
