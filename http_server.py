@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 
 from http_api_handlers import attach_api_handlers
+from history_manager import history_file_path
 from monitor.runtime_state import bump_state_version, state_lock
 
 
@@ -32,7 +33,7 @@ def purge_removed_domains_state(current_results, history, history_dir, removed_d
     for domain in removed:
         try:
             if history_dir:
-                fp = os.path.join(history_dir, f"{domain}.json")
+                fp = history_file_path(history_dir, domain)
                 if os.path.isfile(fp):
                     os.remove(fp)
         except Exception:

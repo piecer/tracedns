@@ -6,8 +6,15 @@ import os
 import json
 import sys
 import logging
+from urllib.parse import quote, unquote
 
 logger = logging.getLogger(__name__)
+
+
+def history_file_path(history_dir, domain):
+    """Return a reversible filename that cannot escape ``history_dir``."""
+    key = quote(str(domain), safe=".-_|")
+    return os.path.join(history_dir, f"{key}.json")
 
 
 
@@ -44,7 +51,7 @@ def load_history_files(history_dir):
     for fn in os.listdir(history_dir):
         if not fn.endswith('.json'):
             continue
-        dom = fn[:-5]
+        dom = unquote(fn[:-5])
         try:
             with open(os.path.join(history_dir, fn), 'r', encoding='utf-8') as f:
                 data = json.load(f)
@@ -84,7 +91,7 @@ def persist_history_entry(history_dir, domain, history_obj):
     """
     try:
         ensure_history_dir(history_dir)
-        fn = os.path.join(history_dir, f"{domain}.json")
+        fn = history_file_path(history_dir, domain)
         # normalize to dict
         if isinstance(history_obj, list):
             ts_list = [e.get('ts', 0) for e in history_obj if isinstance(e, dict) and 'ts' in e]
