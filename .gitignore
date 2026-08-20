@@ -10,7 +10,10 @@ __pycache__/
 venv/
 
 # Runtime/cache artifacts
+.coverage*
 vt_cache.json
+vt_cache.json.lock
+vt_cache.json.tmp.*
 misp_sighting_batch.json
 dns_history/
 dns_config.json

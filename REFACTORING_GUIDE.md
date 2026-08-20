@@ -47,8 +47,6 @@ TraceDNS는 초기에 단일 `dns_monitor.py` 중심으로 구현되었고, 현�
 
 ## 테스트
 
-repo 루트가 곧 `tracedns` 패키지 디렉터리라서, 테스트 실행 시 부모 디렉터리를 `PYTHONPATH`에 넣어야 합니다.
-
 ```bash
 make test
 ```
@@ -56,10 +54,22 @@ make test
 위 명령은 다음과 동일합니다.
 
 ```bash
-PYTHONPATH=$(pwd)/.. python3 -m unittest discover -s tests -p 'test_*.py' -v
+python3 -m pytest -q tests
 ```
 
 브라우저 무응답 관련 변경을 검증할 때는 Botnet IP Analysis에서 300개 이상의 IP를 넣고, Relationships 설정을 `Top pairs=5000`, `Pair gate=off`, `Min score=0`으로 둔 뒤 Table/Graph/Map 전환을 반복해 확인합니다. VT API 호출이 필수는 아니며, VT off 또는 캐시된 응답으로도 UI 안정성을 확인할 수 있습니다.
+
+### Botnet relationship 품질 및 coverage gate
+
+`quality` 응답은 전체 완전성(`analysis_complete`)과 후보 분석/VT enrichment 완전성(`candidate_analysis_complete`, `enrichment_complete`), 후보/bucket/pair heap 제한, VT eligible/attempted/report coverage와 `warning_codes`를 제공합니다. 기본 VT 정책은 global-unicast IP만 외부 조회 대상으로 삼고, 각 `ip_features` 항목의 `scope`, `vt_eligible`, `vt_source`, `country_source`로 enrichment 출처를 설명합니다. 비동기 job은 아직 취소 가능한 executor future일 때만 `cancelled: true`를 반환하며, 이미 실행 중인 작업은 HTTP 409와 `reason: already_running`을 반환합니다. 완료 결과 보존은 `TRACEDNS_IP_REL_JOB_MAX_TERMINAL` 개수와 `TRACEDNS_IP_REL_JOB_MAX_RESULT_BYTES` 총 byte 상한으로 제한됩니다.
+
+핵심 relationship handler의 branch coverage gate는 전체 `tests` suite를 실행하고 80% 미만이면 실패합니다. coverage data 파일은 성공과 실패 모두 자동 정리됩니다.
+
+```bash
+make botnet-coverage
+```
+
+Task 6 측정 기록: 테스트 보강 전 `http_api/relationship_handlers.py`는 branch coverage 75%로 `--fail-under=80` gate가 실패했고, 보강 후 93%로 통과했습니다.
 
 ## 향후 정리 후보
 
