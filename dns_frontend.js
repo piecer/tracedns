@@ -1996,9 +1996,21 @@ function setIpIntelRelationshipInsights(inputSignature, relCache){
   const serverHints = Array.isArray(payload.insights) ? payload.insights : null;
   const serverCharacteristics = (payload.characteristics && typeof payload.characteristics === 'object') ? payload.characteristics : null;
   const built = serverHints ? { hints: serverHints, characteristics: serverCharacteristics } : buildIpIntelRelationshipInsights(relCache);
+  const hints = Array.isArray(built.hints) ? [...built.hints] : [];
+  const quality = (payload.quality && typeof payload.quality === 'object') ? payload.quality : null;
+  if(quality && quality.analysis_complete === false){
+    const warnings = Array.isArray(quality.warning_codes) ? quality.warning_codes.map(code=>String(code).replace(/_/g, ' ')) : [];
+    hints.unshift({
+      level: 'warn',
+      title: 'Incomplete Relationship Analysis',
+      detail: warnings.length ? `Partial results: ${warnings.join(', ')}.` : 'Resource or enrichment limits produced partial results.',
+      source: 'Cluster',
+      signal: 'analysis_quality'
+    });
+  }
   state.relationship = {
     signature: String(inputSignature || ''),
-    hints: Array.isArray(built.hints) ? built.hints : [],
+    hints,
     characteristics: (built.characteristics && typeof built.characteristics === 'object') ? built.characteristics : null,
   };
   renderMergedIpIntelHints();
@@ -4829,11 +4841,77 @@ if(document.readyState === 'loading'){
   wireIpRelProfileControls();
 }
 
+function renderIpRelationshipError(pairBody, clusterBody, message){
+  if(pairBody) setSummaryMessage(pairBody, 4, message);
+  if(clusterBody) setSummaryMessage(clusterBody, 8, message);
+}
+
+function formatIpRelationshipQuality(j){
+  const quality = (j && j.quality && typeof j.quality === 'object') ? j.quality : null;
+  if(!quality) return '';
+
+  const finiteCount = (value)=>{
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 ? Math.trunc(number) : 0;
+  };
+  const evaluated = finiteCount(quality.evaluated_candidate_count);
+  const candidateLimit = finiteCount(quality.candidate_limit);
+  const vtReports = finiteCount(quality.vt_report_count);
+  const vtEligible = finiteCount(quality.vt_eligible_count);
+  const vtSkipped = finiteCount(quality.vt_skipped_non_global);
+  const rawCoverage = Number(quality.vt_report_coverage);
+  const fallbackCoverage = vtEligible > 0 ? vtReports / vtEligible : 0;
+  const coverage = Number.isFinite(rawCoverage) ? rawCoverage : fallbackCoverage;
+  const coveragePct = Math.round(Math.max(0, Math.min(1, coverage)) * 100);
+
+  const warningLabels = {
+    bucket_truncated: 'oversized buckets truncated',
+    bucket_skipped: 'oversized buckets skipped',
+    candidate_limit_reached: 'candidate limit reached',
+    pair_heap_truncated: 'pair results truncated',
+    vt_partial_coverage: 'partial VT coverage'
+  };
+  const warnings = (Array.isArray(quality.warning_codes) ? quality.warning_codes : [])
+    .map(code=> warningLabels[String(code || '')] || String(code || '').replace(/_/g, ' '))
+    .filter(Boolean);
+
+  const hasValue = (name)=> Object.prototype.hasOwnProperty.call(quality, name) && quality[name] !== null;
+  let text = '';
+  if(hasValue('evaluated_candidate_count') || hasValue('candidate_limit')){
+    text += ` / candidates evaluated ${hasValue('evaluated_candidate_count') ? evaluated : 'unknown'}`;
+    text += ` / limit ${hasValue('candidate_limit') ? candidateLimit : 'unknown'}`;
+  }
+  if(quality.vt_enabled === true){
+    text += ` / VT reports ${hasValue('vt_report_count') ? vtReports : 'unknown'}`;
+    text += ` / eligible ${hasValue('vt_eligible_count') ? vtEligible : 'unknown'}`;
+    text += ` / skipped ${hasValue('vt_skipped_non_global') ? vtSkipped : 'unknown'}`;
+    const hasCoverage = hasValue('vt_report_coverage') || (hasValue('vt_report_count') && hasValue('vt_eligible_count'));
+    text += ` / coverage ${hasCoverage ? `${coveragePct}%` : 'unknown'}`;
+  }
+  if(quality.analysis_complete === false){
+    text += ' / ⚠ incomplete analysis';
+    if(warnings.length) text += ` (${warnings.join(', ')})`;
+  }else if(warnings.length){
+    text += ` / warnings: ${warnings.join(', ')}`;
+  }
+  return text;
+}
+
+async function cancelIpRelationshipJob(jobId){
+  try{
+    const response = await fetch(`/ip-relationship-jobs/${encodeURIComponent(jobId)}/cancel`, {
+      method: 'POST'
+    });
+    return response.ok;
+  }catch(e){
+    return false;
+  }
+}
+
 async function fetchIpRelationshipJobResult(requestBody, controller, onStatus){
   const submit = await fetch('/ip-relationship-jobs', {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
-    signal: controller ? controller.signal : undefined,
     body: JSON.stringify(requestBody)
   });
   const sj = await submit.json();
@@ -4841,15 +4919,29 @@ async function fetchIpRelationshipJobResult(requestBody, controller, onStatus){
     return { ok: false, status: submit.status, body: sj || {} };
   }
   const jobId = String(sj.job_id || '');
+  if(onStatus) onStatus(jobId, 'active');
+  if(controller && controller.signal && controller.signal.aborted){
+    await cancelIpRelationshipJob(jobId);
+    if(onStatus) onStatus(jobId, 'terminal');
+    return { ok: false, status: 499, body: { error: 'relationship request cancelled' } };
+  }
   let delayMs = 600;
   for(let attempt = 0; attempt < 900; attempt += 1){
     if(onStatus) onStatus(jobId, 'running');
     await new Promise((resolve, reject)=>{
-      const timer = setTimeout(resolve, delayMs);
-      if(controller && controller.signal){
-        const onAbort = ()=>{ clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); };
-        controller.signal.addEventListener('abort', onAbort, { once: true });
+      const signal = controller && controller.signal;
+      let onAbort = null;
+      const cleanup = ()=>{
+        if(signal && onAbort) signal.removeEventListener('abort', onAbort);
+      };
+      const timer = setTimeout(()=>{ cleanup(); resolve(); }, delayMs);
+      if(!signal) return;
+      onAbort = ()=>{ clearTimeout(timer); cleanup(); reject(new DOMException('Aborted', 'AbortError')); };
+      if(signal.aborted){
+        onAbort();
+        return;
       }
+      signal.addEventListener('abort', onAbort, { once: true });
     });
     const rr = await fetch(`/ip-relationship-jobs/${encodeURIComponent(jobId)}?result=1`, {
       method: 'GET',
@@ -4860,9 +4952,11 @@ async function fetchIpRelationshipJobResult(requestBody, controller, onStatus){
       return { ok: false, status: rr.status, body: jj || {} };
     }
     if(jj.status === 'completed'){
+      if(onStatus) onStatus(jobId, 'terminal');
       return { ok: true, status: Number(jj.status_code || 200), body: jj.result || {} };
     }
     if(jj.status === 'failed' || jj.status === 'cancelled'){
+      if(onStatus) onStatus(jobId, 'terminal');
       return { ok: false, status: Number(jj.status_code || 500), body: jj.result || { error: jj.error || `job ${jj.status}` } };
     }
     delayMs = Math.min(2500, Math.round(delayMs * 1.25));
@@ -4892,6 +4986,14 @@ async function analyzeIpRelationships(){
   const meta = document.getElementById('ipRelMeta');
   const pairsBody = document.querySelector('#ipRelPairsTable tbody');
   const clustersBody = document.querySelector('#ipRelClustersTable tbody');
+  let activeRelationshipJobId = null;
+  let relationshipJobTerminal = false;
+  let relationshipJobCancelRequested = false;
+  const cancelActiveRelationshipJob = ()=>{
+    if(!activeRelationshipJobId || relationshipJobTerminal || relationshipJobCancelRequested) return;
+    relationshipJobCancelRequested = true;
+    void cancelIpRelationshipJob(activeRelationshipJobId);
+  };
 
   if(ipRelAnalyzeController){
     try{ ipRelAnalyzeController.abort(); }catch(e){}
@@ -4938,15 +5040,24 @@ async function analyzeIpRelationships(){
       pair_gate_mid_min: pairGateMidMin,
       pair_gate_fallback_score: pairGateFallbackScore
     };
-    const jobResult = await fetchIpRelationshipJobResult(requestBody, controller, (jobId)=>{
+    const jobResult = await fetchIpRelationshipJobResult(requestBody, controller, (jobId, state)=>{
+      if(state === 'active'){
+        activeRelationshipJobId = jobId;
+      }
+      if(state === 'terminal'){
+        relationshipJobTerminal = true;
+      }
       if(meta && !isStale()) meta.textContent = `Analyzing similarity... job ${jobId.slice(0, 8)}`;
     });
     const j = jobResult.body;
-    if(isStale()) return;
+    if(isStale()){
+      cancelActiveRelationshipJob();
+      return;
+    }
     if(!jobResult.ok || !j || j.status !== 'ok'){
+      cancelActiveRelationshipJob();
       if(meta) meta.textContent = `Similarity analysis failed: ${(j && j.error) ? j.error : 'HTTP '+jobResult.status}`;
-      if(pairsBody) setSummaryMessage(pairsBody, 4, 'No data');
-      if(clustersBody) setSummaryMessage(clustersBody, 8, 'No data');
+      renderIpRelationshipError(pairsBody, clustersBody, 'No data');
       clearIpIntelRelationshipInsights(inputSignature);
       return;
     }
@@ -4975,6 +5086,7 @@ async function analyzeIpRelationships(){
         }
       }
       if(j.geoip_enabled) txt += ' / GeoIP ok';
+      txt += formatIpRelationshipQuality(j);
       meta.textContent = txt;
     }
 
@@ -4993,13 +5105,17 @@ async function analyzeIpRelationships(){
 
     touchOverviewTs();
   }catch(e){
-    if(isAbortError(e) || isStale()) return;
+    if(isAbortError(e) || isStale()){
+      cancelActiveRelationshipJob();
+      return;
+    }
     clearIpIntelRelationshipInsights(inputSignature);
     if(meta) meta.textContent = 'Similarity analysis error: ' + e;
+    renderIpRelationshipError(pairsBody, clustersBody, 'Analysis failed');
   }finally{
     if(ipRelAnalyzeController === controller){
       ipRelAnalyzeController = null;
+      setIpIntelBusy(false);
     }
-    setIpIntelBusy(false);
   }
 }
