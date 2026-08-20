@@ -5,6 +5,7 @@ PyMISP==2.4.140
 # Optional packages (useful for local development / testing)
 python-dotenv==1.0.0
 pytest==7.3.1
+coverage[toml]>=7.6,<8
 
 # Optional: GeoIP (country code fallback when VT lacks coverage)
 geoip2==4.8.0
