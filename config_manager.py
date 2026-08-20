@@ -41,7 +41,8 @@ def domain_identity(value):
             text_key = str(value.get('ens_text_key') or default_key).strip().lower() or default_key.lower()
             if typ == 'ENS':
                 ens_node = str(value.get('ens_node') or '').strip().lower()
-                return f"{name}|ENS|{text_key}|{ens_node}"
+                ens_resolver = str(value.get('ens_resolver') or '').strip().lower()
+                return f"{name}|ENS|{text_key}|{ens_node}|{ens_resolver}"
             return f"{name}|SNS|{text_key}"
         return name
     return str(value or '').strip().rstrip('.').lower()
@@ -59,7 +60,10 @@ def domain_storage_name(value):
             if typ == 'ENS':
                 ens_node = str(value.get('ens_node') or '').strip()
                 if ens_node:
-                    suffix += f" node:{ens_node[:10]}…"
+                    suffix += f" node:{ens_node}"
+                ens_resolver = str(value.get('ens_resolver') or '').strip()
+                if ens_resolver:
+                    suffix += f" resolver:{ens_resolver}"
             return f"{name} [{suffix}]"
         return name
     return str(value or '').strip().rstrip('.')

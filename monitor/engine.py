@@ -98,6 +98,16 @@ def _dedupe_alert(action: str, entries: List[Tuple[str, str, str]]) -> List[Tupl
     return keep
 
 
+def _domain_storage_name(domain: DomainSpec) -> str:
+    return domain_storage_name({
+        'name': domain.name,
+        'type': domain.type,
+        'ens_text_key': domain.ens_text_key,
+        'ens_node': domain.ens_node,
+        'ens_resolver': domain.ens_resolver,
+    })
+
+
 def run_domain_cycle(
     *,
     domain: DomainSpec,
@@ -117,11 +127,7 @@ def run_domain_cycle(
     """
     query_name = domain.name
     rtype = str(domain.type or 'A').upper()
-    name = domain_storage_name({
-        'name': query_name,
-        'type': rtype,
-        'ens_text_key': domain.ens_text_key,
-    })
+    name = _domain_storage_name(domain)
     if not query_name or not name:
         return []
 
@@ -364,11 +370,7 @@ def run_full_cycle(
     # Ensure entries
     for ds in domains:
         if ds.name:
-            storage_name = domain_storage_name({
-                'name': ds.name,
-                'type': ds.type,
-                'ens_text_key': ds.ens_text_key,
-            })
+            storage_name = _domain_storage_name(ds)
             current_results.setdefault(storage_name, {})
             history.setdefault(storage_name, {'meta': {}, 'events': [], 'current': {}})
 
@@ -432,7 +434,7 @@ def run_full_cycle(
     full_domain_scan = not (force_req and 'domains' in force_req)
     if full_domain_scan:
         configured_names = {
-            domain_storage_name({'name': ds.name, 'type': ds.type, 'ens_text_key': ds.ens_text_key})
+            _domain_storage_name(ds)
             for ds in domains
             if ds.name
         }
@@ -440,7 +442,7 @@ def run_full_cycle(
 
     # For forced subset, don't update baseline
     configured_names = {
-        domain_storage_name({'name': ds.name, 'type': ds.type, 'ens_text_key': ds.ens_text_key})
+        _domain_storage_name(ds)
         for ds in domains
         if ds.name
     }

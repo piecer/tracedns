@@ -1,6 +1,7 @@
 import unittest
 import os
 import sys
+import tempfile
 from unittest import mock
 
 HERE = os.path.dirname(__file__)
@@ -90,8 +91,55 @@ class TestAlertBatching(unittest.TestCase):
         self.assertIn('same.eth [ENS:ipv6]', history)
         self.assertIn('same.eth [ENS:network]', history)
 
+    def test_run_domain_cycle_uses_full_raw_ens_target_storage_key(self):
+        node = "0x" + "01" * 32
+        resolver = "0x" + "ab" * 20
+        domain = DomainSpec(
+            name="same.eth",
+            type="ENS",
+            ens_text_key="node",
+            ens_node=node,
+            ens_resolver=resolver,
+        )
+        collected = Collected(
+            query=QueryResult(
+                server="https://rpc.example",
+                domain="same.eth",
+                rtype="ENS",
+                status="ok",
+                values=["2001:db8:12e7:13d7::1"],
+            ),
+            snapshot=Snapshot(
+                type="ENS",
+                values=["2001:db8:12e7:13d7::1"],
+                decoded_ips=["1.2.3.4"],
+                ts=1234567890,
+                ens_text_key="node",
+                ens_node=node,
+                ens_resolver=resolver,
+            ),
+        )
+        current_results = {}
+        history = {}
 
+        with tempfile.TemporaryDirectory() as history_dir, mock.patch.object(
+            engine,
+            "collect_snapshot",
+            return_value=collected,
+        ):
+            engine.run_domain_cycle(
+                domain=domain,
+                servers=["https://rpc.example"],
+                current_results=current_results,
+                history=history,
+                history_dir=history_dir,
+                query_fail_counts={},
+                max_workers=1,
+            )
 
+        expected = f"same.eth [ENS:node node:{node} resolver:{resolver}]"
+        self.assertIn(expected, current_results)
+        self.assertIn(expected, history)
 
     def test_run_domain_cycle_detects_sns_added_ips(self):
         current_results = {}

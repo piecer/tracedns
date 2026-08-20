@@ -173,7 +173,9 @@ def _normalize_address(value: str) -> str:
     s = str(value or '').strip()
     if not s:
         return ''
-    if not s.startswith('0x'):
+    if s.lower().startswith('0x'):
+        s = '0x' + s[2:]
+    else:
         s = '0x' + s
     if len(s) != 42:
         raise ValueError(f"invalid resolver address length: {value}")
@@ -201,6 +203,22 @@ def fetch_ens_text_record(
     if not text_key:
         raise EnsQueryError('invalid_text_key', 'text key is required', rpc_url=rpc, ens_name=name, key=text_key, ens_node=node_hint, resolver_address=resolver_hint)
 
+    try:
+        node = _parse_bytes32_hex(node_hint) if node_hint else namehash(name)
+    except EnsQueryError:
+        raise
+    except Exception as e:
+        code = 'nodehash_invalid' if node_hint else 'namehash_failed'
+        msg = 'invalid raw ENS nodehash' if node_hint else 'failed to calculate ENS namehash'
+        raise EnsQueryError(code, msg, rpc_url=rpc, ens_name=name, key=text_key, ens_node=node_hint, resolver_address=resolver_hint, cause=e) from e
+
+    resolver_text = ''
+    if resolver_hint:
+        try:
+            resolver_text = _normalize_address(resolver_hint)
+        except Exception as e:
+            raise EnsQueryError('resolver_invalid', f'invalid resolver address: {resolver_hint}', rpc_url=rpc, ens_name=name, key=text_key, ens_node=node_hint, resolver_address=resolver_hint, cause=e) from e
+
     if Web3 is None:
         raise EnsQueryError('dependency_missing', 'web3 package is required for ENS queries', rpc_url=rpc, ens_name=name, key=text_key, ens_node=node_hint, resolver_address=resolver_hint)
     try:
@@ -215,21 +233,7 @@ def fetch_ens_text_record(
     if not connected:
         raise EnsQueryError('rpc_not_connected', 'failed to connect to Ethereum RPC', rpc_url=rpc, ens_name=name, key=text_key, ens_node=node_hint, resolver_address=resolver_hint)
 
-    try:
-        node = _parse_bytes32_hex(node_hint) if node_hint else namehash(name)
-    except EnsQueryError:
-        raise
-    except Exception as e:
-        code = 'nodehash_invalid' if node_hint else 'namehash_failed'
-        msg = 'invalid raw ENS nodehash' if node_hint else 'failed to calculate ENS namehash'
-        raise EnsQueryError(code, msg, rpc_url=rpc, ens_name=name, key=text_key, ens_node=node_hint, resolver_address=resolver_hint, cause=e) from e
-
-    if resolver_hint:
-        try:
-            resolver_text = _normalize_address(resolver_hint)
-        except Exception as e:
-            raise EnsQueryError('resolver_invalid', f'invalid resolver address: {resolver_hint}', rpc_url=rpc, ens_name=name, key=text_key, ens_node=node_hint, resolver_address=resolver_hint, cause=e) from e
-    else:
+    if not resolver_text:
         try:
             registry = w3.eth.contract(address=Web3.to_checksum_address(ENS_REGISTRY_ADDRESS), abi=ENS_REGISTRY_ABI)
         except Exception as e:
