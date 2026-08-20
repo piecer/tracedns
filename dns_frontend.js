@@ -91,6 +91,13 @@ function setIpIntelBusy(isBusy){
   });
 }
 
+function finalizeIpRelationshipRun(controller){
+  const isCurrent = ipRelAnalyzeController === controller;
+  if(isCurrent) ipRelAnalyzeController = null;
+  setIpIntelBusy(false);
+  return isCurrent;
+}
+
 function isAbortError(e){
   return !!(e && String(e.name || '') === 'AbortError');
 }
@@ -2026,6 +2033,21 @@ function clearIpIntelRelationshipInsights(inputSignature){
   renderMergedIpIntelHints();
 }
 
+function setIpIntelResultState(state, message){
+  const empty = document.getElementById('ipIntelResultsEmpty');
+  const content = document.getElementById('ipIntelResultsContent');
+  const ready = state === 'ready';
+  if(empty){
+    empty.hidden = ready;
+    if(!ready){
+      empty.textContent = message || (state === 'loading'
+        ? 'Enriching per-IP details…'
+        : 'Run “Enrich Per-IP Details” to populate summaries and evidence.');
+    }
+  }
+  if(content) content.hidden = !ready;
+}
+
 async function analyzeIpIntel(){
   const raw = String((document.getElementById('ipIntelInput') || {}).value || '').trim();
   const inputSignature = computeIpIntelInputSignature(raw);
@@ -2048,6 +2070,7 @@ async function analyzeIpIntel(){
 
   if(!raw){
     if(meta) meta.textContent = 'Input IP list first';
+    setIpIntelResultState('idle');
     renderMergedIpIntelHints();
     return;
   }
@@ -2057,6 +2080,7 @@ async function analyzeIpIntel(){
   const requestSeq = ipIntelAnalyzeSeq;
   const isStale = ()=> requestSeq !== ipIntelAnalyzeSeq || ipIntelAnalyzeController !== controller;
   setIpIntelBusy(true);
+  setIpIntelResultState('loading');
 
   if(meta) meta.textContent = 'Analyzing...';
 
@@ -2084,6 +2108,7 @@ async function analyzeIpIntel(){
       if(cspBody) setSummaryMessage(cspBody, 5, 'No data');
       setIpIntelInfraInsights(inputSignature, [], null);
       if(invalidBox) invalidBox.textContent = '-';
+      setIpIntelResultState('error', 'Per-IP enrichment failed. Review the status above and try again.');
       return;
     }
 
@@ -2225,11 +2250,13 @@ async function analyzeIpIntel(){
         invalidBox.textContent = invalid.join(', ');
       }
     }
+    setIpIntelResultState('ready');
     touchOverviewTs();
   }catch(e){
     if(isAbortError(e) || isStale()) return;
     setIpIntelInfraInsights(inputSignature, [], null);
     if(meta) meta.textContent = 'Analyze error: ' + e;
+    setIpIntelResultState('error', 'Per-IP enrichment failed. Review the status above and try again.');
   }finally{
     if(ipIntelAnalyzeController === controller){
       ipIntelAnalyzeController = null;
@@ -2258,11 +2285,7 @@ async function loadIpIntelFromMisp(autoAnalyze){
     }
 
     const ips = Array.isArray(j.ips) ? j.ips : [];
-    const ta = document.getElementById('ipIntelInput');
-    if(ta){
-      ta.value = ips.join('\n');
-    }
-    renderMergedIpIntelHints();
+    setIpIntelInputValue(ips.join('\n'));
     if(!eventId){
       const eidEl = document.getElementById('ipIntelMispEventId');
       if(eidEl && j.event_id != null){
@@ -3796,7 +3819,307 @@ window.IP_REL_GRAPH = window.IP_REL_GRAPH || null;
 window.IP_REL_MAP = window.IP_REL_MAP || null;
 window.IP_REL_MAP_MARKERS = window.IP_REL_MAP_MARKERS || [];
 window.IP_REL_MAP_SVG = window.IP_REL_MAP_SVG || null;
+window.IP_REL_LAST_SUCCESS = window.IP_REL_LAST_SUCCESS || null;
+let ipRelActiveJobId = null;
+const ipRelCancelRequestedJobs = new Set();
 const IP_REL_CUSTOM_PROFILE_STORAGE_KEY = 'tracedns.iprel.custom_profile.v1';
+
+function summarizeIpIntelInput(rawInput){
+  const tokens = String(rawInput || '').split(/[\s,;|]+/).map(value=>value.trim()).filter(Boolean);
+  const unique = new Set(tokens);
+  return {
+    tokenCount: tokens.length,
+    uniqueCount: unique.size,
+    duplicateCount: tokens.length - unique.size,
+    isEmpty: tokens.length === 0
+  };
+}
+
+function updateIpIntelInputStats(){
+  const input = document.getElementById('ipIntelInput');
+  const output = document.getElementById('ipIntelInputStats');
+  if(!output) return;
+  const summary = summarizeIpIntelInput((input || {}).value);
+  output.textContent = summary.isEmpty
+    ? 'No IPs entered'
+    : `${summary.tokenCount} tokens · ${summary.uniqueCount} unique · ${summary.duplicateCount} duplicates`;
+}
+
+function setIpIntelInputValue(value){
+  const input = document.getElementById('ipIntelInput');
+  if(!input) return false;
+  const nextValue = String(value == null ? '' : value);
+  if(String(input.value || '') === nextValue) return false;
+  input.value = nextValue;
+  updateIpIntelInputStats();
+  renderMergedIpIntelHints();
+  markIpRelationshipResultsStale();
+  return true;
+}
+
+function buildIpRelationshipResultModel(rawResult){
+  const result = (rawResult && typeof rawResult === 'object') ? rawResult : {};
+  const quality = (result.quality && typeof result.quality === 'object') ? result.quality : {};
+  const hasQualityContract = Object.prototype.hasOwnProperty.call(quality, 'analysis_complete');
+  const count = value=>{
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 ? Math.trunc(number) : 0;
+  };
+  const pairs = Array.isArray(result.pairs) ? result.pairs : [];
+  const clusters = Array.isArray(result.clusters) ? result.clusters : [];
+  const invalidCount = count(result.invalid_count);
+  const pairCount = Object.prototype.hasOwnProperty.call(result, 'pair_count') ? count(result.pair_count) : pairs.length;
+  const evaluated = count(quality.evaluated_candidate_count);
+  // candidate_limit is a resource safety ceiling, not the number of available
+  // candidates.  Treating it as a denominator makes a complete small analysis
+  // look almost entirely uncovered.  Only use an explicit candidate_count;
+  // otherwise communicate completeness without fake precision.
+  const candidateTotal = count(result.candidate_count);
+  const vtReports = count(quality.vt_report_count);
+  const vtEligible = count(quality.vt_eligible_count);
+  const rawVtCoverage = Number(quality.vt_report_coverage);
+  const vtCoverage = Number.isFinite(rawVtCoverage)
+    ? rawVtCoverage
+    : (vtEligible > 0 ? vtReports / vtEligible : 1);
+  const pct = ratio=>`${Math.round(Math.max(0, Math.min(1, ratio)) * 100)}%`;
+  const warningCodes = Array.isArray(quality.warning_codes) ? quality.warning_codes.map(String) : [];
+  const vtPartial = quality.vt_enabled === true
+    && (vtCoverage < 1 || warningCodes.includes('vt_partial_coverage'));
+  const candidateIncomplete = quality.candidate_analysis_complete === false
+    || warningCodes.some(code=>code !== 'vt_partial_coverage');
+  const vtOnlyIncomplete = vtPartial && !candidateIncomplete;
+  const candidateCoverage = !hasQualityContract
+    ? 'Unknown'
+    : vtOnlyIncomplete
+    ? pct(vtCoverage)
+    : candidateIncomplete && candidateTotal <= evaluated
+    ? 'Partial'
+    : candidateTotal > 0
+    ? pct(evaluated / candidateTotal)
+    : (quality.analysis_complete === false ? 'Partial' : 'Complete');
+  let state = 'neutral';
+  let label = 'Quality unavailable';
+  let detail = 'This response does not include analysis quality metadata.';
+  if(hasQualityContract && vtOnlyIncomplete){
+    state = 'vt-partial';
+    label = '⚠ VT partial coverage';
+    detail = `VirusTotal reports cover ${pct(vtCoverage)} of eligible IPs.`;
+  }else if(hasQualityContract && quality.analysis_complete === false){
+    state = 'incomplete';
+    label = '⚠ Incomplete analysis';
+    const warningLabels = {
+      bucket_truncated: 'Oversized candidate buckets were truncated.',
+      bucket_skipped: 'Oversized candidate buckets were skipped.',
+      candidate_limit_reached: 'Candidate evaluation reached its configured limit.',
+      pair_heap_truncated: 'Pair results were truncated.',
+      vt_partial_coverage: 'VirusTotal enrichment is partial.'
+    };
+    detail = warningCodes.map(code=>warningLabels[code] || String(code).replace(/_/g, ' ')).join(' ') || 'Resource limits produced partial results.';
+  }else if(hasQualityContract && vtPartial){
+    state = 'vt-partial';
+    label = '⚠ VT partial coverage';
+    detail = `VirusTotal reports cover ${pct(vtCoverage)} of eligible IPs.`;
+  }else if(hasQualityContract && quality.analysis_complete === true && pairCount === 0){
+    state = 'empty';
+    label = '○ Complete — no relationships found';
+    detail = 'The analysis completed successfully but no pairs met the current threshold.';
+  }else if(hasQualityContract && quality.analysis_complete === true){
+    state = 'complete';
+    label = '✓ Complete analysis';
+    detail = 'All available relationship candidates were evaluated.';
+  }
+  if(invalidCount > 0){
+    detail += ` ${invalidCount} invalid input${invalidCount === 1 ? '' : 's'} ${invalidCount === 1 ? 'was' : 'were'} excluded.`;
+  }
+  return {
+    metrics: {
+      ips: count(result.valid_count != null ? result.valid_count : result.submitted_count),
+      pairs: pairCount,
+      clusters: clusters.length,
+      coverage: candidateCoverage
+    },
+    quality: {state, label, detail}
+  };
+}
+
+function relationshipValueMatches(value, normalizedQuery){
+  if(value == null) return false;
+  if(Array.isArray(value)) return value.some(item=>relationshipValueMatches(item, normalizedQuery));
+  if(typeof value === 'object'){
+    return Object.keys(value).some(key=>relationshipValueMatches(value[key], normalizedQuery));
+  }
+  return String(value).toLowerCase().includes(normalizedQuery);
+}
+
+function filterIpRelationshipResults(cache, query){
+  const source = (cache && typeof cache === 'object') ? cache : {};
+  const normalized = String(query || '').trim().toLowerCase();
+  const pairs = Array.isArray(source.pairs) ? source.pairs : [];
+  const clusters = Array.isArray(source.clusters) ? source.clusters : [];
+  return {
+    pairs: (normalized ? pairs.filter(item=>relationshipValueMatches(item, normalized)) : pairs).slice(),
+    clusters: (normalized ? clusters.filter(item=>relationshipValueMatches(item, normalized)) : clusters).slice()
+  };
+}
+
+function stableJsonValue(value){
+  if(Array.isArray(value)) return value.map(stableJsonValue);
+  if(value && typeof value === 'object'){
+    const output = {};
+    Object.keys(value).sort().forEach(key=>{
+      Object.defineProperty(output, key, {
+        value: stableJsonValue(value[key]),
+        enumerable: true,
+        configurable: true,
+        writable: true
+      });
+    });
+    return output;
+  }
+  return value;
+}
+
+function serializeIpRelationshipResult(result){
+  return JSON.stringify(stableJsonValue(result), null, 2) + '\n';
+}
+
+function buildIpRelationshipExport(result, now){
+  const date = (now instanceof Date && !Number.isNaN(now.getTime())) ? now : new Date();
+  const stamp = date.toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+  return {
+    filename: `tracedns-ip-relationships-${stamp}.json`,
+    content: serializeIpRelationshipResult(result)
+  };
+}
+
+function isKeyboardActivation(event){
+  const key = String((event && event.key) || '');
+  return key === 'Enter' || key === ' ' || key === 'Spacebar';
+}
+
+function setIpRelationshipRunState(state, message){
+  const normalized = ['idle', 'running', 'complete', 'stale', 'cancelled', 'error'].includes(state) ? state : 'idle';
+  const defaults = {
+    idle: 'Ready to analyze relationships',
+    running: 'Analyzing relationships…',
+    complete: 'Relationship analysis complete',
+    stale: 'Inputs changed — showing results from the previous run',
+    cancelled: 'Relationship analysis cancelled',
+    error: 'Relationship analysis failed'
+  };
+  const status = document.getElementById('ipRelRunStatus');
+  if(status){
+    status.textContent = String(message || defaults[normalized]);
+    if(status.dataset) status.dataset.state = normalized;
+  }
+  const running = normalized === 'running';
+  const cancel = document.getElementById('cancelIpRelationshipBtn');
+  const run = document.getElementById('runIpRelationshipBtn');
+  const filter = document.getElementById('ipRelFilterInput');
+  const exportButton = document.getElementById('exportIpRelationshipBtn');
+  if(cancel){
+    cancel.disabled = !running;
+    cancel.hidden = !running;
+    cancel.setAttribute('aria-hidden', running ? 'false' : 'true');
+  }
+  if(run) run.disabled = running;
+  [
+    'ipIntelInput', 'ipIntelIncludeVt', 'ipIntelVtBudget', 'ipIntelVtWorkers',
+    'ipRelProfileSelect', 'ipRelSaveCustomBtn', 'ipRelMinScore', 'ipRelTopPairs',
+    'ipRelMaxNeighbors', 'ipRelBucketMax', 'ipRelBucketOverflowMode',
+    'ipRelPairGateEnabled', 'ipRelGateStrongMin', 'ipRelGateMidMin',
+    'ipRelGateFallbackScore'
+  ].forEach(id=>{
+    const control = document.getElementById(id);
+    if(control) control.disabled = running;
+  });
+  if(!running && typeof updateIpRelGateUi === 'function') updateIpRelGateUi();
+  const hasResult = !!window.IP_REL_LAST_SUCCESS;
+  if(filter) filter.disabled = running || !hasResult;
+  if(exportButton) exportButton.disabled = running || !hasResult;
+}
+
+function markIpRelationshipResultsStale(){
+  if(!window.IP_REL_LAST_SUCCESS) return false;
+  const status = document.getElementById('ipRelRunStatus');
+  if(status && status.dataset && status.dataset.state === 'running') return false;
+  setIpRelationshipRunState('stale');
+  const banner = document.getElementById('ipRelQualityBanner');
+  if(banner){
+    if(banner.dataset) banner.dataset.state = 'stale';
+    banner.textContent = 'Inputs changed — these results are from the previous run. Run the analysis again before making a decision.';
+  }
+  return true;
+}
+
+function cancelActiveIpRelationshipAnalysis(){
+  const controller = ipRelAnalyzeController;
+  if(!controller || (controller.signal && controller.signal.aborted)) return false;
+  const jobId = ipRelActiveJobId;
+  const requestSeq = ipRelAnalyzeSeq;
+  controller.abort();
+  if(jobId && !ipRelCancelRequestedJobs.has(jobId)){
+    ipRelCancelRequestedJobs.add(jobId);
+    void cancelIpRelationshipJob(jobId).then(cancelled=>{
+      if(cancelled || requestSeq !== ipRelAnalyzeSeq) return;
+      controller.serverCancelUnconfirmed = true;
+      setIpRelationshipRunState(
+        'cancelled',
+        'Client polling stopped, but server cancellation could not be confirmed.'
+      );
+    });
+  }
+  setIpRelationshipRunState('cancelled');
+  renderIpRelationshipError(
+    document.querySelector('#ipRelPairsTable tbody'),
+    document.querySelector('#ipRelClustersTable tbody'),
+    'Analysis cancelled'
+  );
+  return true;
+}
+
+function renderIpRelationshipProductSummary(result){
+  const model = buildIpRelationshipResultModel(result);
+  const metricValues = {
+    ipRelMetricIps: model.metrics.ips,
+    ipRelMetricPairs: model.metrics.pairs,
+    ipRelMetricClusters: model.metrics.clusters,
+    ipRelMetricCoverage: model.metrics.coverage
+  };
+  Object.keys(metricValues).forEach(id=>{
+    const element = document.getElementById(id);
+    if(element) element.textContent = String(metricValues[id]);
+  });
+  const banner = document.getElementById('ipRelQualityBanner');
+  if(banner){
+    banner.dataset.state = model.quality.state;
+    banner.textContent = `${model.quality.label} ${model.quality.detail}`;
+  }
+  return model;
+}
+
+function renderFilteredIpRelationshipResults(){
+  if(!window.IP_REL_CACHE) return;
+  const filter = document.getElementById('ipRelFilterInput');
+  const filtered = filterIpRelationshipResults(window.IP_REL_CACHE, (filter || {}).value);
+  renderIpRelationshipPairsTable(document.querySelector('#ipRelPairsTable tbody'), filtered.pairs);
+  renderIpRelationshipClustersTable(document.querySelector('#ipRelClustersTable tbody'), filtered.clusters, !!window.IP_REL_CACHE.vt_enabled);
+}
+
+function exportLastIpRelationshipResult(){
+  if(!window.IP_REL_LAST_SUCCESS) return false;
+  const exported = buildIpRelationshipExport(window.IP_REL_LAST_SUCCESS, new Date());
+  const blob = new Blob([exported.content], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = exported.filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  return true;
+}
 const IP_REL_SELECTED_PROFILE_STORAGE_KEY = 'tracedns.iprel.selected_profile.v1';
 
 function safeLocalStorageGet(key){
@@ -3820,16 +4143,25 @@ function setIpRelView(name){
   const table = document.getElementById('ipRelTableView');
   const graph = document.getElementById('ipRelGraphView');
   const map = document.getElementById('ipRelMapView');
-  if(table) table.style.display = (name === 'table') ? '' : 'none';
-  if(graph) graph.style.display = (name === 'graph') ? '' : 'none';
-  if(map) map.style.display = (name === 'map') ? '' : 'none';
+  const panels = [[table, 'table'], [graph, 'graph'], [map, 'map']];
+  panels.forEach(([panel, panelName])=>{
+    if(!panel) return;
+    const selected = name === panelName;
+    panel.hidden = !selected;
+    panel.style.display = selected ? '' : 'none';
+    panel.setAttribute('aria-hidden', selected ? 'false' : 'true');
+  });
 
   const b1 = document.getElementById('ipRelViewTableBtn');
   const b2 = document.getElementById('ipRelViewGraphBtn');
   const b3 = document.getElementById('ipRelViewMapBtn');
-  if(b1) b1.classList.toggle('active', name === 'table');
-  if(b2) b2.classList.toggle('active', name === 'graph');
-  if(b3) b3.classList.toggle('active', name === 'map');
+  [[b1, 'table'], [b2, 'graph'], [b3, 'map']].forEach(([button, buttonName])=>{
+    if(!button) return;
+    const selected = name === buttonName;
+    button.classList.toggle('active', selected);
+    button.setAttribute('aria-selected', selected ? 'true' : 'false');
+    button.setAttribute('tabindex', selected ? '0' : '-1');
+  });
 
   // Lazy render visualizations from last cache
   if(name === 'graph') renderIpRelGraphFromCache();
@@ -3912,7 +4244,7 @@ function getClusterColor(clusterIndex, clusterCount){
   const idx = Math.max(0, Number(clusterIndex || 0));
   const total = Math.max(1, Number(clusterCount || 1));
   const hue = Math.round(((idx % total) * 360) / total);
-  return `hsl(${hue}, 66%, 46%)`;
+  return `hsl(${hue}, 70%, 25%)`;
 }
 
 function resetIpRelVisualCaches(){
@@ -4125,7 +4457,7 @@ function renderIpRelGraphFromCache(){
   const cy = window.IP_REL_GRAPH;
   if(details){
     const limited = (pairs.length < totalPairs) ? `\nRendered with caps: ${nodesSet.size}/${IP_REL_GRAPH_NODE_RENDER_LIMIT} nodes, ${pairs.length}/${totalPairs} edges.` : '';
-    details.textContent = `Click a node/edge to see details.\nClusters: ${clusters.length} / MinScore: ${minScore} / Layout: ${layout.name}${serverGraph ? ' / Server graph' : ''}${limited}`;
+    details.textContent = `Click a node/edge to see details. Keyboard users can use the equivalent pair and cluster controls in Table view.\nClusters: ${clusters.length} / MinScore: ${minScore} / Layout: ${layout.name}${serverGraph ? ' / Server graph' : ''}${limited}`;
   }
 
   cy.on('tap', 'node', (evt)=>{
@@ -4306,6 +4638,41 @@ function geojsonToPath(feature, width, height){
   return parts.join('');
 }
 
+function getIpRelMapRadius(ipCount, maxCount){
+  const count = Math.max(0, Number(ipCount || 0));
+  const maximum = Math.max(1, Number(maxCount || 1));
+  return 12 + 20 * Math.sqrt(Math.min(1, count / maximum));
+}
+
+function formatIpRelCountrySummary(row){
+  const country = String((row && row.country) || 'Unknown').toUpperCase();
+  const ipCount = Math.max(0, Number((row && row.ip_count) || 0));
+  const malicious = Math.max(0, Number((row && row.malicious_ips) || 0));
+  const ratio = ipCount > 0 ? Math.round((malicious / ipCount) * 100) : 0;
+  return `${country}: ${ipCount} IPs, ${malicious} malicious (${ratio}%)`;
+}
+
+function renderIpRelCountrySummary(rows){
+  const summary = document.getElementById('ipRelMapSummary');
+  if(!summary) return;
+  summary.innerHTML = '';
+  const values = (Array.isArray(rows) ? rows : [])
+    .filter(row=>Number((row && row.ip_count) || 0) > 0)
+    .slice()
+    .sort((a, b)=>Number(b.ip_count || 0) - Number(a.ip_count || 0));
+  if(!values.length){
+    const item = document.createElement('li');
+    item.textContent = 'No country risk values are available.';
+    summary.appendChild(item);
+    return;
+  }
+  values.forEach(row=>{
+    const item = document.createElement('li');
+    item.textContent = formatIpRelCountrySummary(row);
+    summary.appendChild(item);
+  });
+}
+
 function buildIpRelMapSignature(cache, width, height){
   const rows = Array.isArray(cache && cache.country_summary) ? cache.country_summary.slice() : [];
   rows.sort((a, b)=>String((a && a.country) || '').localeCompare(String((b && b.country) || '')));
@@ -4324,11 +4691,15 @@ async function renderIpRelMapFromCache(){
   const el = document.getElementById('ipRelMap');
   if(!el) return;
   if(!cache || !Array.isArray(cache.country_summary)){
+    renderIpRelCountrySummary([]);
     window.IP_REL_MAP_SVG = null;
     window.IP_REL_MAP_SIGNATURE = '';
     el.innerHTML = '<div style="padding:12px;color:#5b6a77;">Run Relationships first.</div>';
     return;
   }
+
+  const rows = cache.country_summary || [];
+  renderIpRelCountrySummary(rows);
 
   const centroids = await loadCountryCentroids();
   if(!centroids){
@@ -4371,7 +4742,6 @@ async function renderIpRelMapFromCache(){
     landGroup.appendChild(path);
   });
 
-  const rows = cache.country_summary || [];
   const maxCount = Math.max(1, ...rows.map(x=>Number(x.ip_count||0)));
   const toColor = (ratio)=>{
     const r = Math.max(0, Math.min(1, Number(ratio||0)));
@@ -4390,7 +4760,7 @@ async function renderIpRelMapFromCache(){
 
     const mal = Number(row.malicious_ips || 0);
     const ratio = mal / Math.max(1, ipCount);
-    const radius = 6 + 26 * Math.sqrt(ipCount / maxCount);
+    const radius = getIpRelMapRadius(ipCount, maxCount);
     const lat = Number(c[0]);
     const lon = Number(c[1]);
     if(!Number.isFinite(lat) || !Number.isFinite(lon)) return;
@@ -4405,31 +4775,94 @@ async function renderIpRelMapFromCache(){
     circle.setAttribute('stroke', '#1b2a41');
     circle.setAttribute('stroke-width', '1');
     circle.style.cursor = 'pointer';
+    circle.setAttribute('role', 'button');
+    circle.setAttribute('tabindex', '0');
+    circle.setAttribute('aria-label', `${cc}: ${ipCount} IPs, ${mal} malicious. Analyze this country`);
 
     const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
     title.textContent = `${cc}  IPs:${ipCount}  M:${mal}`;
     circle.appendChild(title);
 
-    circle.addEventListener('click', async ()=>{
+    const activateCountry = async ()=>{
       const ipFeat = cache.ip_features || {};
       const ips = Object.keys(ipFeat).filter(ip=> String((ipFeat[ip]||{}).country||'').toUpperCase() === cc);
-      const ta = document.getElementById('ipIntelInput');
-      if(ta) ta.value = ips.join('\n');
+      setIpIntelInputValue(ips.join('\n'));
       await analyzeIpRelationships();
-      setIpRelView('table');
+      returnIpRelFocusToTable();
+    };
+    circle.addEventListener('click', activateCountry);
+    circle.addEventListener('keydown', event=>{
+      if(!isKeyboardActivation(event)) return;
+      event.preventDefault();
+      void activateCountry();
     });
 
     svg.appendChild(circle);
   });
 }
 
+function returnIpRelFocusToTable(){
+  setIpRelView('table');
+  const tableTab = document.getElementById('ipRelViewTableBtn');
+  if(tableTab) tableTab.focus();
+}
+
 function wireIpRelViewButtons(){
   const b1 = document.getElementById('ipRelViewTableBtn');
   const b2 = document.getElementById('ipRelViewGraphBtn');
   const b3 = document.getElementById('ipRelViewMapBtn');
-  if(b1) b1.onclick = ()=> setIpRelView('table');
-  if(b2) b2.onclick = ()=> setIpRelView('graph');
-  if(b3) b3.onclick = ()=> setIpRelView('map');
+  const tabs = [[b1, 'table', 'ipRelTableView'], [b2, 'graph', 'ipRelGraphView'], [b3, 'map', 'ipRelMapView']];
+  tabs.forEach(([button, name, panelId], index)=>{
+    if(!button) return;
+    button.setAttribute('role', 'tab');
+    button.setAttribute('aria-controls', panelId);
+    button.onclick = ()=>{
+      setIpRelView(name);
+      // Visualization libraries may move focus to their canvas while rendering.
+      // Restore the active tab so arrow-key navigation remains available.
+      button.focus();
+    };
+    button.onkeydown = event=>{
+      if(isKeyboardActivation(event)){
+        event.preventDefault();
+        setIpRelView(name);
+        return;
+      }
+      if(event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      event.preventDefault();
+      const direction = event.key === 'ArrowRight' ? 1 : -1;
+      const available = tabs.filter(item=>!!item[0]);
+      const current = available.findIndex(item=>item[0] === tabs[index][0]);
+      const next = available[(current + direction + available.length) % available.length];
+      setIpRelView(next[1]);
+      next[0].focus();
+    };
+  });
+  setIpRelView('table');
+}
+
+function wireIpRelationshipProductControls(){
+  const input = document.getElementById('ipIntelInput');
+  const cancel = document.getElementById('cancelIpRelationshipBtn');
+  const filter = document.getElementById('ipRelFilterInput');
+  const exportButton = document.getElementById('exportIpRelationshipBtn');
+  if(input) input.addEventListener('input', ()=>{
+    updateIpIntelInputStats();
+    markIpRelationshipResultsStale();
+  });
+  ['ipIntelIncludeVt', 'ipIntelVtBudget', 'ipIntelVtWorkers'].forEach(id=>{
+    const control = document.getElementById(id);
+    if(!control) return;
+    control.addEventListener('change', markIpRelationshipResultsStale);
+    if(String(control.type || '').toLowerCase() !== 'checkbox'){
+      control.addEventListener('input', markIpRelationshipResultsStale);
+    }
+  });
+  if(cancel) cancel.addEventListener('click', cancelActiveIpRelationshipAnalysis);
+  if(filter) filter.addEventListener('input', renderFilteredIpRelationshipResults);
+  if(exportButton) exportButton.addEventListener('click', exportLastIpRelationshipResult);
+  updateIpIntelInputStats();
+  setIpRelationshipRunState('idle');
 }
 
 function setIpRelPairsPanelVisible(visible, options){
@@ -4667,7 +5100,10 @@ function wireIpRelProfileControls(){
   const saveBtn = document.getElementById('ipRelSaveCustomBtn');
 
   if(profileSel){
-    profileSel.addEventListener('change', ()=> applyIpRelProfile(profileSel.value, { saveSelected: true }));
+    profileSel.addEventListener('change', ()=>{
+      applyIpRelProfile(profileSel.value, { saveSelected: true });
+      markIpRelationshipResultsStale();
+    });
   }
   if(saveBtn){
     saveBtn.addEventListener('click', ()=>{
@@ -4678,6 +5114,7 @@ function wireIpRelProfileControls(){
       }
       applyIpRelProfile('custom', { saveSelected: true });
       persistCustomProfileIfSelected('button');
+      markIpRelationshipResultsStale();
     });
   }
 
@@ -4689,6 +5126,7 @@ function wireIpRelProfileControls(){
         updateIpRelGateUi();
       }
       persistCustomProfileIfSelected('auto');
+      markIpRelationshipResultsStale();
     };
     el.addEventListener('change', onChange);
     if(el.tagName !== 'SELECT' && String(el.type || '').toLowerCase() !== 'checkbox'){
@@ -4727,21 +5165,24 @@ function renderIpRelationshipPairsTable(tbody, pairs){
     const score = Number((it && it.score) || 0);
     const ev = it && it.evidence;
 
-    const tdA = document.createElement('td');
-    tdA.textContent = a;
-    if(isIPv4(a)){
-      tdA.style.cursor = 'pointer';
-      tdA.title = 'Open in Query';
-      tdA.onclick = ()=> openQueryForValue(a);
-    }
-
-    const tdB = document.createElement('td');
-    tdB.textContent = b;
-    if(isIPv4(b)){
-      tdB.style.cursor = 'pointer';
-      tdB.title = 'Open in Query';
-      tdB.onclick = ()=> openQueryForValue(b);
-    }
+    const ipCell = ip=>{
+      const td = document.createElement('td');
+      if(!isIPv4(ip)){
+        td.textContent = ip;
+        return td;
+      }
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'table-link-button';
+      button.textContent = ip;
+      button.setAttribute('aria-label', `Open ${ip} in Query`);
+      button.title = 'Open in Query';
+      button.onclick = ()=> openQueryForValue(ip);
+      td.appendChild(button);
+      return td;
+    };
+    const tdA = ipCell(a);
+    const tdB = ipCell(b);
 
     const tdS = document.createElement('td'); tdS.textContent = String(score);
     const tdE = document.createElement('td');
@@ -4796,7 +5237,7 @@ function renderIpRelationshipClustersTable(tbody, clusters, vtEnabled){
       ? `M:${vt.malicious_total || 0} S:${vt.suspicious_total || 0}`
       : (vtEnabled ? '-' : 'VT off');
 
-    const tdId = document.createElement('td'); tdId.textContent = String(idx + 1);
+    const tdId = document.createElement('td');
     const tdSz = document.createElement('td'); tdSz.textContent = String((c && c.size) || ips.length || 0);
     const tdCoh = document.createElement('td'); tdCoh.textContent = (c && c.cohesion != null) ? Number(c.cohesion).toFixed(1) : '-';
     const tdAsn = document.createElement('td'); tdAsn.textContent = ((c && c.top_asn) || []).map(x=>x[0]+'('+x[1]+')').join(', ') || '-';
@@ -4805,20 +5246,25 @@ function renderIpRelationshipClustersTable(tbody, clusters, vtEnabled){
     const tdCsp = document.createElement('td'); tdCsp.textContent = ((c && c.top_csp) || []).map(x=>x[0]+'('+x[1]+')').join(', ') || '-';
     const tdVt = document.createElement('td'); tdVt.textContent = vtTxt;
 
-    tr.style.cursor = 'pointer';
     const fp = [];
     if(Array.isArray(c && c.top_network) && c.top_network.length) fp.push('net ' + c.top_network.map(x=>x[0]+'('+x[1]+')').join(', '));
     if(Array.isArray(c && c.top_rir) && c.top_rir.length) fp.push('rir ' + c.top_rir.map(x=>x[0]+'('+x[1]+')').join(', '));
     if(Array.isArray(c && c.top_jarm) && c.top_jarm.length) fp.push('jarm ' + c.top_jarm.map(x=>x[0]+'('+x[1]+')').join(', '));
     if(Array.isArray(c && c.top_cert) && c.top_cert.length) fp.push('cert ' + c.top_cert.map(x=>x[0]+'('+x[1]+')').join(', '));
-    tr.title = fp.length
-      ? `Click to analyze this cluster in Per-IP Details\n${fp.join(' | ')}`
-      : 'Click to analyze this cluster in Per-IP Details';
-    tr.onclick = async ()=>{
-      const ta = document.getElementById('ipIntelInput');
-      if(ta) ta.value = ips.join('\n');
+    const activateCluster = async ()=>{
+      setIpIntelInputValue(ips.join('\n'));
       await analyzeIpIntel();
     };
+    const clusterButton = document.createElement('button');
+    clusterButton.type = 'button';
+    clusterButton.className = 'table-link-button';
+    clusterButton.textContent = String(idx + 1);
+    clusterButton.setAttribute('aria-label', `Analyze cluster ${idx + 1}, ${ips.length} IPs`);
+    clusterButton.title = fp.length
+      ? `Analyze this cluster in Per-IP Details\n${fp.join(' | ')}`
+      : 'Analyze this cluster in Per-IP Details';
+    clusterButton.onclick = activateCluster;
+    tdId.appendChild(clusterButton);
 
     tr.appendChild(tdId); tr.appendChild(tdSz); tr.appendChild(tdCoh); tr.appendChild(tdAsn); tr.appendChild(tdOwn); tr.appendChild(tdCty); tr.appendChild(tdCsp); tr.appendChild(tdVt);
     frag.appendChild(tr);
@@ -4834,16 +5280,33 @@ if(document.readyState === 'loading'){
     wireIpRelViewButtons();
     wireIpRelPairsToggle();
     wireIpRelProfileControls();
+    wireIpRelationshipProductControls();
   });
 } else {
   wireIpRelViewButtons();
   wireIpRelPairsToggle();
   wireIpRelProfileControls();
+  wireIpRelationshipProductControls();
 }
 
 function renderIpRelationshipError(pairBody, clusterBody, message){
   if(pairBody) setSummaryMessage(pairBody, 4, message);
   if(clusterBody) setSummaryMessage(clusterBody, 8, message);
+}
+
+function restorePreviousIpRelationshipResult(previous, pairsBody, clustersBody){
+  if(!previous || typeof previous !== 'object') return false;
+  window.IP_REL_CACHE = previous;
+  window.IP_REL_LAST_SUCCESS = previous;
+  renderIpRelationshipProductSummary(previous);
+  renderIpRelationshipPairsTable(pairsBody, Array.isArray(previous.pairs) ? previous.pairs : []);
+  renderIpRelationshipClustersTable(clustersBody, Array.isArray(previous.clusters) ? previous.clusters : [], !!previous.vt_enabled);
+  const banner = document.getElementById('ipRelQualityBanner');
+  if(banner){
+    if(banner.dataset) banner.dataset.state = 'stale';
+    banner.textContent = 'Previous successful result preserved — the latest run did not complete. These metrics and exports belong to the previous successful run.';
+  }
+  return true;
 }
 
 function formatIpRelationshipQuality(j){
@@ -4965,6 +5428,9 @@ async function fetchIpRelationshipJobResult(requestBody, controller, onStatus){
 }
 
 async function analyzeIpRelationships(){
+  const updateRelationshipRunState = (...args)=>{
+    if(typeof setIpRelationshipRunState === 'function') setIpRelationshipRunState(...args);
+  };
   const raw = String((document.getElementById('ipIntelInput') || {}).value || '').trim();
   const inputSignature = computeIpIntelInputSignature(raw);
   const includeVT = !!(document.getElementById('ipIntelIncludeVt') && document.getElementById('ipIntelIncludeVt').checked);
@@ -4986,12 +5452,18 @@ async function analyzeIpRelationships(){
   const meta = document.getElementById('ipRelMeta');
   const pairsBody = document.querySelector('#ipRelPairsTable tbody');
   const clustersBody = document.querySelector('#ipRelClustersTable tbody');
+  const previousSuccessfulResult = window.IP_REL_LAST_SUCCESS || null;
   let activeRelationshipJobId = null;
   let relationshipJobTerminal = false;
   let relationshipJobCancelRequested = false;
   const cancelActiveRelationshipJob = ()=>{
     if(!activeRelationshipJobId || relationshipJobTerminal || relationshipJobCancelRequested) return;
+    if(typeof ipRelCancelRequestedJobs !== 'undefined' && ipRelCancelRequestedJobs.has(activeRelationshipJobId)){
+      relationshipJobCancelRequested = true;
+      return;
+    }
     relationshipJobCancelRequested = true;
+    if(typeof ipRelCancelRequestedJobs !== 'undefined') ipRelCancelRequestedJobs.add(activeRelationshipJobId);
     void cancelIpRelationshipJob(activeRelationshipJobId);
   };
 
@@ -5001,10 +5473,16 @@ async function analyzeIpRelationships(){
   ipRelAnalyzeSeq += 1;
 
   if(!raw){
-    resetIpRelVisualCaches();
-    if(meta) meta.textContent = 'Input IP list first';
-    if(pairsBody) setSummaryMessage(pairsBody, 4, 'No data');
-    if(clustersBody) setSummaryMessage(clustersBody, 8, 'No data');
+    if(previousSuccessfulResult){
+      if(meta) meta.textContent = 'Input is empty. Previous successful result retained as stale.';
+      markIpRelationshipResultsStale();
+    }else{
+      resetIpRelVisualCaches();
+      if(meta) meta.textContent = 'Input IP list first';
+      if(pairsBody) setSummaryMessage(pairsBody, 4, 'No data');
+      if(clustersBody) setSummaryMessage(clustersBody, 8, 'No data');
+      updateRelationshipRunState('idle', 'Enter IPs to begin analysis');
+    }
     renderMergedIpIntelHints();
     return;
   }
@@ -5014,6 +5492,8 @@ async function analyzeIpRelationships(){
   const requestSeq = ipRelAnalyzeSeq;
   const isStale = ()=> requestSeq !== ipRelAnalyzeSeq || ipRelAnalyzeController !== controller;
   setIpIntelBusy(true);
+  ipRelActiveJobId = null;
+  updateRelationshipRunState('running');
 
   // default view
   setIpRelView('table');
@@ -5041,12 +5521,16 @@ async function analyzeIpRelationships(){
       pair_gate_fallback_score: pairGateFallbackScore
     };
     const jobResult = await fetchIpRelationshipJobResult(requestBody, controller, (jobId, state)=>{
+      if(isStale()) return;
       if(state === 'active'){
         activeRelationshipJobId = jobId;
       }
+      if(state === 'active') ipRelActiveJobId = jobId;
       if(state === 'terminal'){
         relationshipJobTerminal = true;
       }
+      if(state === 'terminal' && typeof ipRelCancelRequestedJobs !== 'undefined') ipRelCancelRequestedJobs.delete(jobId);
+      if(state === 'terminal' && ipRelActiveJobId === jobId) ipRelActiveJobId = null;
       if(meta && !isStale()) meta.textContent = `Analyzing similarity... job ${jobId.slice(0, 8)}`;
     });
     const j = jobResult.body;
@@ -5056,15 +5540,24 @@ async function analyzeIpRelationships(){
     }
     if(!jobResult.ok || !j || j.status !== 'ok'){
       cancelActiveRelationshipJob();
-      if(meta) meta.textContent = `Similarity analysis failed: ${(j && j.error) ? j.error : 'HTTP '+jobResult.status}`;
-      renderIpRelationshipError(pairsBody, clustersBody, 'No data');
+      const errorText = (j && j.error) ? String(j.error) : `HTTP ${jobResult.status}`;
+      const cancelled = jobResult.status === 499 || /cancel/i.test(errorText);
+      const restored = restorePreviousIpRelationshipResult(previousSuccessfulResult, pairsBody, clustersBody);
+      if(meta){
+        const statusText = cancelled ? 'Similarity analysis cancelled' : `Similarity analysis failed: ${errorText}`;
+        meta.textContent = restored ? `${statusText}. Previous successful result preserved.` : statusText;
+      }
+      if(!restored) renderIpRelationshipError(pairsBody, clustersBody, cancelled ? 'Analysis cancelled' : 'No data');
+      updateRelationshipRunState(cancelled ? 'cancelled' : 'error', cancelled ? undefined : errorText);
       clearIpIntelRelationshipInsights(inputSignature);
       return;
     }
 
     window.IP_REL_CACHE = j;
+    window.IP_REL_LAST_SUCCESS = j;
     resetIpRelVisualCaches();
     setIpIntelRelationshipInsights(inputSignature, j);
+    renderIpRelationshipProductSummary(j);
 
     if(meta){
       const pairCount = Number(j.pair_count || 0);
@@ -5090,32 +5583,36 @@ async function analyzeIpRelationships(){
       meta.textContent = txt;
     }
 
-    // pairs
-    if(pairsBody){
-      const pairs = Array.isArray(j.pairs) ? j.pairs : [];
-      setIpRelPairsPanelVisible(pairPanelWasOpen, { pairCount: pairs.length });
-      renderIpRelationshipPairsTable(pairsBody, pairs);
-    }
-
-    // clusters
-    if(clustersBody){
-      const clusters = Array.isArray(j.clusters) ? j.clusters : [];
-      renderIpRelationshipClustersTable(clustersBody, clusters, !!j.vt_enabled);
-    }
+    const pairs = Array.isArray(j.pairs) ? j.pairs : [];
+    setIpRelPairsPanelVisible(pairPanelWasOpen, { pairCount: pairs.length });
+    renderFilteredIpRelationshipResults();
 
     touchOverviewTs();
+    updateRelationshipRunState('complete');
   }catch(e){
     if(isAbortError(e) || isStale()){
       cancelActiveRelationshipJob();
+      if(isAbortError(e) && !isStale()){
+        const restored = restorePreviousIpRelationshipResult(previousSuccessfulResult, pairsBody, clustersBody);
+        const cancellationMessage = controller && controller.serverCancelUnconfirmed
+          ? 'Client polling stopped, but server cancellation could not be confirmed.'
+          : 'Similarity analysis cancelled';
+        if(meta) meta.textContent = `${cancellationMessage}${restored ? ' Previous successful result preserved.' : ''}`;
+        if(!restored) renderIpRelationshipError(pairsBody, clustersBody, 'Analysis cancelled');
+        updateRelationshipRunState('cancelled', cancellationMessage);
+      }
       return;
     }
     clearIpIntelRelationshipInsights(inputSignature);
-    if(meta) meta.textContent = 'Similarity analysis error: ' + e;
-    renderIpRelationshipError(pairsBody, clustersBody, 'Analysis failed');
+    const restored = restorePreviousIpRelationshipResult(previousSuccessfulResult, pairsBody, clustersBody);
+    if(meta) meta.textContent = `Similarity analysis error: ${e}${restored ? '. Previous successful result preserved.' : ''}`;
+    if(!restored) renderIpRelationshipError(pairsBody, clustersBody, 'Analysis failed');
+    updateRelationshipRunState('error', String(e));
   }finally{
-    if(ipRelAnalyzeController === controller){
-      ipRelAnalyzeController = null;
-      setIpIntelBusy(false);
+    if(activeRelationshipJobId && typeof ipRelCancelRequestedJobs !== 'undefined'){
+      ipRelCancelRequestedJobs.delete(activeRelationshipJobId);
     }
+    if(ipRelAnalyzeController === controller) ipRelActiveJobId = null;
+    finalizeIpRelationshipRun(controller);
   }
 }

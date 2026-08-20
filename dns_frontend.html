@@ -342,195 +342,141 @@
   </table>
 </div>
 
-<div id="ipintel" class="section">
-  <h3>🛰️ Botnet IP Analysis</h3>
-  <p style="color:#5b6a77;margin-bottom:10px;">Paste IP list and extract VT-based AS/Country patterns to estimate botnet characteristics.</p>
-  <label>Input IP list (newline/comma/space separated)
-    <textarea id="ipIntelInput" rows="6" placeholder="1.2.3.4&#10;8.8.8.8, 9.9.9.9"></textarea>
-  </label>
-  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
-    <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
-      <input id="ipIntelIncludeVt" type="checkbox" checked style="width:auto;margin:0;" />
-      Include VT enrichment
-    </label>
-    <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
-      Row limit
-      <input id="ipIntelRowLimit" type="number" min="100" max="5000" value="1500" style="width:96px;margin-top:0;" />
-    </label>
-    <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
-      VT lookup budget
-      <input id="ipIntelVtBudget" type="number" min="0" max="5000" value="1200" style="width:96px;margin-top:0;" />
-    </label>
-    <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
-      VT workers
-      <input id="ipIntelVtWorkers" type="number" min="1" max="32" value="8" style="width:84px;margin-top:0;" />
-    </label>
-    <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
-      MISP Event ID
-      <input id="ipIntelMispEventId" type="text" placeholder="push_event_id" style="width:140px;margin-top:0;" />
-    </label>
-    <button id="loadIpIntelMispBtn">📥 Load from MISP</button>
-    <button id="runIpIntelBtn">🔍 Analyze IP List</button>
-    <button id="runIpRelationshipBtn">🧬 Relationships</button>
-    <span id="ipIntelMeta" style="font-size:.78rem;color:#5b6a77;"></span>
-  </div>
-  <p style="font-size:.78rem;color:#5b6a77;margin:2px 0 10px;">Supports up to 10,000 valid IPs. Per-IP rows are intentionally limited for browser stability.</p>
+<div id="ipintel" class="section" aria-labelledby="ipIntelHeading">
+  <h3 id="ipIntelHeading">🛰️ Botnet IP Analysis</h3>
+  <p class="section-intro">Find infrastructure relationships in an infected-host IP list, then inspect or export the evidence.</p>
 
-  <h4>Estimated Characteristics</h4>
-  <div id="ipIntelHintsBox" class="ipintel-hints-box"></div>
+  <section class="ipintel-input-panel" aria-labelledby="ipIntelInputHeading">
+    <h4 id="ipIntelInputHeading">1. Prepare IPs</h4>
+    <label for="ipIntelInput">Input IP list <span class="label-note">(newline, comma, or space separated)</span></label>
+    <textarea id="ipIntelInput" rows="6" aria-describedby="ipIntelInputHelp ipIntelInputStats" placeholder="1.2.3.4&#10;8.8.8.8, 9.9.9.9"></textarea>
+    <p id="ipIntelInputHelp" class="field-help">Supports up to 10,000 valid IPs. Duplicate entries are analyzed once.</p>
+    <p id="ipIntelInputStats" class="input-stats" role="status" aria-live="polite" aria-atomic="true">No IPs entered.</p>
 
-  <div class="summary-card" style="margin-bottom:12px;">
-    <h4>Relationship Summary (Similarity, input IPs)</h4>
-    <p style="margin:6px 0 10px;font-size:.78rem;color:#5b6a77;">Designed for infected-host IP lists: relationships are inferred from VT/GeoIP infrastructure similarity (ASN/Owner/CSP/Country + optional net proximity). This is NOT based on DNS domain sharing.</p>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
-      <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
-        Min score
-        <input id="ipRelMinScore" type="number" min="0" max="100" value="40" style="width:86px;margin-top:0;" />
-      </label>
-      <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
-        Top pairs
-        <input id="ipRelTopPairs" type="number" min="1" max="5000" value="200" style="width:96px;margin-top:0;" />
-      </label>
-      <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
-        Max neighbors/IP
-        <input id="ipRelMaxNeighbors" type="number" min="1" max="200" value="30" style="width:110px;margin-top:0;" />
-      </label>
-      <span id="ipRelMeta" role="status" aria-live="polite" aria-atomic="true" style="font-size:.78rem;color:#5b6a77;">-</span>
-      <span style="flex:1"></span>
-      <button id="ipRelViewTableBtn" type="button">Table</button>
-      <button id="ipRelViewGraphBtn" type="button">Graph</button>
-      <button id="ipRelViewMapBtn" type="button">Map</button>
+    <div class="iprel-action-row">
+      <button id="runIpRelationshipBtn" class="button-primary" type="button">🧬 Analyze Relationships</button>
+      <button id="cancelIpRelationshipBtn" class="button-danger" type="button" disabled="disabled" hidden="hidden">Cancel analysis</button>
+      <button id="loadIpIntelMispBtn" class="button-secondary" type="button">📥 Load from MISP</button>
+      <button id="runIpIntelBtn" class="button-secondary" type="button">🔍 Enrich Per-IP Details</button>
     </div>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:8px;">
-      <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
-        Bucket max
-        <input id="ipRelBucketMax" type="number" min="50" max="2000" value="450" style="width:92px;margin-top:0;" />
-      </label>
-      <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
-        Overflow
-        <select id="ipRelBucketOverflowMode" style="width:auto;min-width:96px;">
-          <option value="truncate" selected>truncate</option>
-          <option value="skip">skip</option>
-        </select>
-      </label>
-      <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
-        <input id="ipRelPairGateEnabled" type="checkbox" checked style="width:auto;margin:0;" />
-        Pair gate
-      </label>
-      <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
-        Strong ≥
-        <input id="ipRelGateStrongMin" type="number" min="0" max="3" value="1" style="width:64px;margin-top:0;" />
-      </label>
-      <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
-        Mid ≥
-        <input id="ipRelGateMidMin" type="number" min="0" max="5" value="2" style="width:64px;margin-top:0;" />
-      </label>
-      <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
-        Fallback score
-        <input id="ipRelGateFallbackScore" type="number" min="0" max="100" value="55" style="width:76px;margin-top:0;" />
-      </label>
-    </div>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:8px;">
-      <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
-        Profile
-        <select id="ipRelProfileSelect" style="width:auto;min-width:180px;">
-          <option value="balanced" selected>Balanced (Recommended)</option>
-          <option value="conservative">Conservative</option>
-          <option value="aggressive">Aggressive</option>
-          <option value="custom">Custom (Saved)</option>
-        </select>
-      </label>
-      <button id="ipRelSaveCustomBtn" type="button">Save Current as Custom</button>
-      <span id="ipRelProfileHint" style="font-size:.78rem;color:#5b6a77;">
-        Balanced: practical default for daily triage.
-      </span>
+    <p id="ipRelRunStatus" class="run-status" role="status" aria-live="polite" aria-atomic="true">Ready to analyze relationships.</p>
+    <span id="ipIntelMeta" class="supporting-status"></span>
+
+    <details class="ipintel-enrichment-settings">
+      <summary>Per-IP enrichment options</summary>
+      <div class="settings-control-grid">
+        <label class="checkbox-control"><input id="ipIntelIncludeVt" type="checkbox" checked /> Include VT enrichment</label>
+        <label for="ipIntelRowLimit">Row limit<input id="ipIntelRowLimit" type="number" min="100" max="5000" value="1500" /></label>
+        <label for="ipIntelVtBudget">VT lookup budget<input id="ipIntelVtBudget" type="number" min="0" max="5000" value="1200" /></label>
+        <label for="ipIntelVtWorkers">VT workers<input id="ipIntelVtWorkers" type="number" min="1" max="32" value="8" /></label>
+        <label for="ipIntelMispEventId">MISP Event ID<input id="ipIntelMispEventId" type="text" placeholder="push_event_id" /></label>
+      </div>
+    </details>
+  </section>
+
+  <section class="iprel-workbench" aria-labelledby="ipRelWorkbenchHeading">
+    <div class="workbench-heading-row">
+      <div>
+        <h4 id="ipRelWorkbenchHeading">2. Relationship Workbench</h4>
+        <p>Relationships use VT and GeoIP infrastructure similarity, not shared DNS domains.</p>
+      </div>
+      <div class="iprel-result-actions">
+        <label for="ipRelFilterInput">Filter results</label>
+        <input id="ipRelFilterInput" type="search" aria-label="Filter relationship results" placeholder="IP, owner, country, evidence…" disabled="disabled" />
+        <button id="exportIpRelationshipBtn" class="button-secondary" type="button" disabled="disabled">Export JSON</button>
+      </div>
     </div>
 
-    <div id="ipRelTableView" style="margin-top:10px;">
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px;">
-        <h4 style="margin:0;">Top Similar IP Pairs</h4>
-        <span style="flex:1"></span>
-        <button id="ipRelPairsToggleBtn" type="button" aria-expanded="false">Show pairs</button>
+    <div class="iprel-profile-row">
+      <label for="ipRelProfileSelect">Analysis profile</label>
+      <select id="ipRelProfileSelect">
+        <option value="balanced" selected>Balanced (Recommended)</option>
+        <option value="conservative">Conservative</option>
+        <option value="aggressive">Aggressive</option>
+        <option value="custom">Custom (Saved)</option>
+      </select>
+      <button id="ipRelSaveCustomBtn" class="button-secondary" type="button">Save Current as Custom</button>
+      <span id="ipRelProfileHint" class="field-help">Balanced: practical default for daily triage.</span>
+    </div>
+
+    <details id="ipRelAdvancedSettings" class="advanced-settings">
+      <summary>Advanced relationship settings</summary>
+      <div class="settings-control-grid">
+        <label for="ipRelMinScore">Minimum score<input id="ipRelMinScore" type="number" min="0" max="100" value="40" /></label>
+        <label for="ipRelTopPairs">Top pairs<input id="ipRelTopPairs" type="number" min="1" max="5000" value="200" /></label>
+        <label for="ipRelMaxNeighbors">Max neighbors per IP<input id="ipRelMaxNeighbors" type="number" min="1" max="200" value="30" /></label>
+        <label for="ipRelBucketMax">Bucket maximum<input id="ipRelBucketMax" type="number" min="50" max="2000" value="450" /></label>
+        <label for="ipRelBucketOverflowMode">Bucket overflow<select id="ipRelBucketOverflowMode"><option value="truncate" selected>truncate</option><option value="skip">skip</option></select></label>
+        <label class="checkbox-control"><input id="ipRelPairGateEnabled" type="checkbox" checked /> Pair gate</label>
+        <label for="ipRelGateStrongMin">Strong evidence minimum<input id="ipRelGateStrongMin" type="number" min="0" max="3" value="1" /></label>
+        <label for="ipRelGateMidMin">Mid evidence minimum<input id="ipRelGateMidMin" type="number" min="0" max="5" value="2" /></label>
+        <label for="ipRelGateFallbackScore">Fallback score<input id="ipRelGateFallbackScore" type="number" min="0" max="100" value="55" /></label>
+      </div>
+    </details>
+
+    <div class="iprel-metrics" aria-label="Relationship analysis summary">
+      <div class="iprel-metric"><span>Analyzed IPs</span><strong id="ipRelMetricIps" data-empty-value="—">—</strong></div>
+      <div class="iprel-metric"><span>Relationships</span><strong id="ipRelMetricPairs" data-empty-value="—">—</strong></div>
+      <div class="iprel-metric"><span>Clusters</span><strong id="ipRelMetricClusters" data-empty-value="—">—</strong></div>
+      <div class="iprel-metric"><span>Coverage</span><strong id="ipRelMetricCoverage" data-empty-value="—">—</strong></div>
+    </div>
+    <div id="ipRelQualityBanner" class="quality-banner quality-neutral" role="status" aria-live="polite" aria-atomic="true">Run an analysis to assess result quality.</div>
+    <span id="ipRelMeta" class="supporting-status" role="status" aria-live="polite" aria-atomic="true">Detailed job metadata appears after analysis.</span>
+
+    <div class="iprel-tabs" role="tablist" aria-label="Relationship result views">
+      <button id="ipRelViewTableBtn" type="button" role="tab" aria-controls="ipRelTableView" aria-selected="true" tabindex="0">Table</button>
+      <button id="ipRelViewGraphBtn" type="button" role="tab" aria-controls="ipRelGraphView" aria-selected="false" tabindex="-1">Graph</button>
+      <button id="ipRelViewMapBtn" type="button" role="tab" aria-controls="ipRelMapView" aria-selected="false" tabindex="-1">Map</button>
+    </div>
+
+    <div id="ipRelTableView" role="tabpanel" aria-labelledby="ipRelViewTableBtn" tabindex="0">
+      <div class="result-heading-row">
+        <h4>Top Similar IP Pairs</h4>
+        <button id="ipRelPairsToggleBtn" type="button" aria-expanded="false" aria-controls="ipRelPairsPanel">Show pairs</button>
       </div>
       <div id="ipRelPairsPanel" style="display:none;">
-        <table id="ipRelPairsTable">
-          <thead><tr><th>IP A</th><th>IP B</th><th>Score</th><th>Evidence</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-      <h4 style="margin-top:12px;">Clusters</h4>
-      <table id="ipRelClustersTable">
-        <thead><tr><th>Cluster</th><th>Size</th><th>Cohesion</th><th>Top ASN</th><th>Top Owner</th><th>Top Country</th><th>Top CSP</th><th>VT Summary</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-
-    <div id="ipRelGraphView" style="margin-top:10px;display:none;">
-      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;">
-        <div id="ipRelGraph" style="flex:1;min-width:520px;height:520px;border:1px solid #d7e4eb;border-radius:10px;"></div>
-        <div style="width:360px;max-width:100%;">
-          <div class="summary-card" style="margin:0;">
-            <h4 style="margin-top:0;">Selection</h4>
-            <pre id="ipRelGraphDetails" style="white-space:pre-wrap;word-break:break-word;max-height:470px;overflow:auto;margin:0;"></pre>
-          </div>
+        <div id="ipRelPairsTableScroll" class="table-scroll" role="region" aria-label="Top similar IP pairs table" tabindex="0">
+          <table id="ipRelPairsTable"><thead><tr><th>IP A</th><th>IP B</th><th>Score</th><th>Evidence</th></tr></thead><tbody><tr><td colspan="4">Run an analysis to populate similar IP pairs.</td></tr></tbody></table>
         </div>
       </div>
-    </div>
-
-    <div id="ipRelMapView" style="margin-top:10px;display:none;">
-      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;">
-        <div id="ipRelMap" style="flex:1;min-width:520px;height:520px;border:1px solid #d7e4eb;border-radius:10px;"></div>
-        <div style="width:360px;max-width:100%;">
-          <div class="summary-card" style="margin:0;">
-            <h4 style="margin-top:0;">Country Bubble Legend</h4>
-            <div style="font-size:.82rem;color:#5b6a77;">Bubble size: infected IP count. Bubble color: malicious ratio (VT).
-              <div style="margin-top:8px;">Click a bubble to filter input IPs to that country and re-run analysis.</div>
-            </div>
-          </div>
-        </div>
+      <h4>Clusters</h4>
+      <div id="ipRelClustersTableScroll" class="table-scroll" role="region" aria-label="Relationship clusters table" tabindex="0">
+        <table id="ipRelClustersTable"><thead><tr><th>Cluster</th><th>Size</th><th>Cohesion</th><th>Top ASN</th><th>Top Owner</th><th>Top Country</th><th>Top CSP</th><th>VT Summary</th></tr></thead><tbody><tr><td colspan="8">Run an analysis to populate clusters.</td></tr></tbody></table>
       </div>
     </div>
-  </div>
 
-  <div class="domain-summary-grid ipintel-summary-grid">
-    <div class="summary-card span-all">
-      <h4>CSP Footprint Summary</h4>
-      <table id="ipIntelCspSummaryTable">
-        <thead><tr><th>CSP</th><th>IPs</th><th>ASNs</th><th>Countries</th><th>Malicious</th></tr></thead>
-        <tbody></tbody>
-      </table>
+    <div id="ipRelGraphView" role="tabpanel" aria-labelledby="ipRelViewGraphBtn" tabindex="0" style="display:none;">
+      <div class="visual-result-layout">
+        <div id="ipRelGraph" class="iprel-visual" aria-label="Relationship graph"></div>
+        <aside class="summary-card visual-sidebar" aria-label="Graph selection details"><h4>Selection</h4><p>Keyboard users can inspect and activate the equivalent pair and cluster controls in Table view.</p><pre id="ipRelGraphDetails"></pre></aside>
+      </div>
     </div>
-    <div class="summary-card">
-      <h4>AS Group Summary</h4>
-      <table id="ipIntelAsSummaryTable">
-        <thead><tr><th>ASN</th><th>AS Owner</th><th>CSP</th><th>IPs</th><th>Malicious</th><th>Countries</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-    <div class="summary-card">
-      <h4>Country Summary</h4>
-      <table id="ipIntelCountrySummaryTable">
-        <thead><tr><th>Country</th><th>IPs</th><th>ASNs</th><th>Malicious</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-    <div class="summary-card">
-      <h4>AS × Country Intersection</h4>
-      <table id="ipIntelAsCountrySummaryTable">
-        <thead><tr><th>ASN</th><th>Country</th><th>AS Owner</th><th>CSP</th><th>IPs</th><th>Malicious</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </div>
 
-  <h4>Per-IP Details</h4>
-  <table id="ipIntelResultTable">
-    <thead><tr><th>IP</th><th>ASN</th><th>AS Owner</th><th>CSP</th><th>Country</th><th>VT (M/S)</th></tr></thead>
-    <tbody></tbody>
-  </table>
+    <div id="ipRelMapView" role="tabpanel" aria-labelledby="ipRelViewMapBtn" tabindex="0" style="display:none;">
+      <div class="visual-result-layout">
+        <div id="ipRelMap" class="iprel-visual" aria-label="Relationship country map"></div>
+        <aside class="summary-card visual-sidebar" aria-label="Map legend"><h4>Country Bubble Legend</h4><p>Bubble size shows infected IP count. Bubble color shows malicious ratio from VT.</p><p>Activate a bubble to filter the input IPs to that country and rerun analysis.</p><ul id="ipRelMapSummary" class="iprel-map-summary" aria-label="Country risk values"><li>Run Relationships to populate country risk values.</li></ul></aside>
+      </div>
+    </div>
+  </section>
 
-  <h4>Invalid Inputs</h4>
-  <div id="ipIntelInvalidBox" style="background:#fff7e6;padding:12px;border:1px solid #f0d39e;border-radius:10px;"></div>
+  <section class="ipintel-secondary-results" aria-labelledby="ipIntelSecondaryHeading">
+    <h4 id="ipIntelSecondaryHeading">3. Per-IP Enrichment Results</h4>
+    <div id="ipIntelHintsBox" class="ipintel-hints-box"></div>
+    <p id="ipIntelResultsEmpty" class="empty-state" role="status">Run “Enrich Per-IP Details” to populate summaries and evidence.</p>
+    <div id="ipIntelResultsContent" hidden="hidden">
+    <div class="domain-summary-grid ipintel-summary-grid">
+      <div class="summary-card span-all"><h4 id="ipIntelCspSummaryHeading">CSP Footprint Summary</h4><div class="table-scroll" role="region" aria-labelledby="ipIntelCspSummaryHeading" tabindex="0"><table id="ipIntelCspSummaryTable"><thead><tr><th>CSP</th><th>IPs</th><th>ASNs</th><th>Countries</th><th>Malicious</th></tr></thead><tbody></tbody></table></div></div>
+      <div class="summary-card"><h4 id="ipIntelAsSummaryHeading">AS Group Summary</h4><div class="table-scroll" role="region" aria-labelledby="ipIntelAsSummaryHeading" tabindex="0"><table id="ipIntelAsSummaryTable"><thead><tr><th>ASN</th><th>AS Owner</th><th>CSP</th><th>IPs</th><th>Malicious</th><th>Countries</th></tr></thead><tbody></tbody></table></div></div>
+      <div class="summary-card"><h4 id="ipIntelCountrySummaryHeading">Country Summary</h4><div class="table-scroll" role="region" aria-labelledby="ipIntelCountrySummaryHeading" tabindex="0"><table id="ipIntelCountrySummaryTable"><thead><tr><th>Country</th><th>IPs</th><th>ASNs</th><th>Malicious</th></tr></thead><tbody></tbody></table></div></div>
+      <div class="summary-card"><h4 id="ipIntelAsCountrySummaryHeading">AS × Country Intersection</h4><div class="table-scroll" role="region" aria-labelledby="ipIntelAsCountrySummaryHeading" tabindex="0"><table id="ipIntelAsCountrySummaryTable"><thead><tr><th>ASN</th><th>Country</th><th>AS Owner</th><th>CSP</th><th>IPs</th><th>Malicious</th></tr></thead><tbody></tbody></table></div></div>
+    </div>
+    <h4>Per-IP Details</h4>
+    <div class="table-scroll" role="region" aria-label="Per-IP enrichment details table" tabindex="0"><table id="ipIntelResultTable"><thead><tr><th>IP</th><th>ASN</th><th>AS Owner</th><th>CSP</th><th>Country</th><th>VT (M/S)</th></tr></thead><tbody></tbody></table></div>
+    <h4>Invalid Inputs</h4>
+    <div id="ipIntelInvalidBox" class="invalid-inputs-box"></div>
+    </div>
+  </section>
 </div>
 
 <div id="ips" class="section">

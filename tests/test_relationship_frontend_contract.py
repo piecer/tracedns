@@ -80,11 +80,11 @@ def test_relationship_analysis_tracks_active_job_and_cancels_abort_once_before_t
         re.DOTALL,
     )
     assert re.search(r"if\(!jobResult\.ok.*?cancelActiveRelationshipJob\(\);", analyze_body, re.DOTALL)
-    assert re.search(
-        r"if\(ipRelAnalyzeController === controller\)\s*\{\s*ipRelAnalyzeController = null;\s*setIpIntelBusy\(false\);\s*\}",
-        analyze_body,
-        re.DOTALL,
-    )
+    assert "finalizeIpRelationshipRun(controller);" in analyze_body
+    cleanup_body = _plain_function_body("finalizeIpRelationshipRun", "isAbortError")
+    assert "ipRelAnalyzeController === controller" in cleanup_body
+    assert "if(isCurrent) ipRelAnalyzeController = null;" in cleanup_body
+    assert "setIpIntelBusy(false);" in cleanup_body
 
 
 def test_successful_relationship_meta_consumes_quality_formatter():
@@ -241,6 +241,10 @@ global.ipRelAnalyzeSeq = 0;
 global.computeIpIntelInputSignature = value => value;
 global.parseBoundedInt = (_value, fallback) => fallback;
 global.setIpIntelBusy = () => {{}};
+global.finalizeIpRelationshipRun = controller => {{
+  if(ipRelAnalyzeController === controller) ipRelAnalyzeController = null;
+  setIpIntelBusy(false);
+}};
 global.setIpRelView = () => {{}};
 global.setSummaryMessage = () => {{}};
 global.clearIpIntelRelationshipInsights = () => {{}};
@@ -249,6 +253,7 @@ global.renderMergedIpIntelHints = () => {{}};
 global.renderIpRelationshipError = (_pairs, _clusters, message) => {{
   assert.strictEqual(message, 'No data');
 }};
+global.restorePreviousIpRelationshipResult = () => false;
 global.isAbortError = () => false;
 let cancelCount = 0;
 global.cancelIpRelationshipJob = async jobId => {{
