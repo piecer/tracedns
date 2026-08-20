@@ -5,6 +5,7 @@ import io
 import json
 import threading
 import unittest
+from unittest import mock
 
 from http_api.context import HttpContext
 from http_api.config_post import (
@@ -333,6 +334,13 @@ class TestDoPostDelegation(unittest.TestCase):
         setattr(settings, "path", "/settings")
         getattr(TestHandler, "do_POST")(settings)
         self.assertEqual(settings.get_code(), 200)
+
+        analysis = FakeHandler(b'{"ips": "1.1.1.1"}')
+        setattr(analysis, "path", "/ip-list-analysis")
+        analysis_handler = mock.Mock()
+        setattr(analysis, "_handle_ip_list_analysis", analysis_handler)
+        getattr(TestHandler, "do_POST")(analysis)
+        analysis_handler.assert_called_once_with()
 
 
 if __name__ == "__main__":
