@@ -14,11 +14,19 @@ from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 try:
-    from vt_lookup import begin_cache_batch, end_cache_batch, get_ip_report
+    from vt_lookup import (
+        apply_runtime_config as apply_vt_runtime_config,
+        begin_cache_batch,
+        end_cache_batch,
+        get_ip_report,
+        get_runtime_config as get_vt_runtime_config,
+    )
 except Exception:
+    apply_vt_runtime_config = None
     begin_cache_batch = None
     end_cache_batch = None
     get_ip_report = None
+    get_vt_runtime_config = None
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +36,27 @@ _IP_REL_JOB_EXECUTOR: Optional[ProcessPoolExecutor] = None
 _IP_REL_JOB_MAX_WORKERS = max(1, int(os.environ.get("TRACEDNS_IP_REL_JOB_WORKERS", "1") or "1"))
 _IP_REL_JOB_MAX_PENDING = max(1, int(os.environ.get("TRACEDNS_IP_REL_JOB_MAX_PENDING", "16") or "16"))
 _IP_REL_JOB_TTL_SECONDS = max(300, int(os.environ.get("TRACEDNS_IP_REL_JOB_TTL_SECONDS", "3600") or "3600"))
+_IP_REL_JOB_MAX_TERMINAL = max(1, int(os.environ.get("TRACEDNS_IP_REL_JOB_MAX_TERMINAL", "32") or "32"))
+_IP_REL_JOB_MAX_RESULT_BYTES = max(
+    1024 * 1024,
+    int(os.environ.get("TRACEDNS_IP_REL_JOB_MAX_RESULT_BYTES", str(64 * 1024 * 1024)) or str(64 * 1024 * 1024)),
+)
+_IP_REL_MAX_TOKENS = 20000
+_IP_REL_MAX_UNIQUE_IPS = 10000
 
 
 class RelationshipJobCapacityError(RuntimeError):
     """Raised when the bounded relationship-job queue is full."""
+
+
+class RelationshipRequestError(ValueError):
+    """Raised when a relationship request cannot be admitted."""
+
+    status_code = 400
+
+    def __init__(self, message: str, **details: Any):
+        super().__init__(message)
+        self.payload = {"error": message, **details}
 
 
 def _get_ip_rel_job_executor() -> ProcessPoolExecutor:
@@ -40,6 +65,25 @@ def _get_ip_rel_job_executor() -> ProcessPoolExecutor:
         if _IP_REL_JOB_EXECUTOR is None:
             _IP_REL_JOB_EXECUTOR = ProcessPoolExecutor(max_workers=_IP_REL_JOB_MAX_WORKERS)
         return _IP_REL_JOB_EXECUTOR
+
+
+def _bound_terminal_jobs_locked(keep_job_id: Optional[str] = None):
+    terminal = sorted(
+        (
+            (str(job_id), float(job.get("done_at") or 0), int(job.get("result_bytes") or 0))
+            for job_id, job in _IP_REL_JOBS.items()
+            if job.get("status") in ("completed", "failed", "cancelled")
+        ),
+        key=lambda item: (item[1], item[0]),
+    )
+    total_bytes = sum(item[2] for item in terminal)
+    while len(terminal) > _IP_REL_JOB_MAX_TERMINAL or total_bytes > _IP_REL_JOB_MAX_RESULT_BYTES:
+        evict_at = next((idx for idx, item in enumerate(terminal) if item[0] != keep_job_id), None)
+        if evict_at is None:
+            break
+        job_id, _done_at, result_bytes = terminal.pop(evict_at)
+        total_bytes -= result_bytes
+        _IP_REL_JOBS.pop(job_id, None)
 
 
 def _cleanup_ip_rel_jobs(now: Optional[float] = None):
@@ -54,6 +98,7 @@ def _cleanup_ip_rel_jobs(now: Optional[float] = None):
                 old_ids.append(job_id)
         for job_id in old_ids:
             _IP_REL_JOBS.pop(job_id, None)
+        _bound_terminal_jobs_locked()
 
 
 class _CapturingRelationshipHandler:
@@ -71,7 +116,13 @@ class _CapturingRelationshipHandler:
         return {"status_code": self.status_code, "payload": self.response}
 
 
-def _run_ip_relationship_analysis_payload(data: Dict[str, Any], shared_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _run_ip_relationship_analysis_payload(
+    data: Dict[str, Any],
+    shared_config: Optional[Dict[str, Any]] = None,
+    vt_runtime_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if apply_vt_runtime_config is not None and vt_runtime_config is not None:
+        apply_vt_runtime_config(vt_runtime_config)
     handler = _CapturingRelationshipHandler(data, shared_config)
     result = handle_ip_relationship_analysis(handler)
     if isinstance(result, dict) and "payload" in result:
@@ -83,7 +134,7 @@ def _ip_rel_job_done(job_id: str, fut):
     now = time.time()
     with _IP_REL_JOB_LOCK:
         job = _IP_REL_JOBS.get(job_id)
-        if not job:
+        if not job or job.get("status") == "cancelled":
             return
         job["done_at"] = now
         if fut.cancelled():
@@ -92,15 +143,23 @@ def _ip_rel_job_done(job_id: str, fut):
         try:
             result = fut.result()
             job["result"] = result.get("payload") if isinstance(result, dict) else result
+            job["result_bytes"] = len(
+                json.dumps(job["result"], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            )
             job["status_code"] = int((result or {}).get("status_code") or 200) if isinstance(result, dict) else 200
             job["status"] = "completed" if int(job.get("status_code") or 200) < 400 else "failed"
-        except Exception as exc:
+        except Exception:
+            logger.exception("IP relationship analysis worker failed")
+            job.pop("result", None)
+            job["result_bytes"] = 0
             job["status"] = "failed"
             job["status_code"] = 500
-            job["error"] = str(exc)
+            job["error"] = "relationship analysis failed"
+        _bound_terminal_jobs_locked(keep_job_id=job_id)
 
 
-def start_ip_relationship_job(data: Dict[str, Any], shared_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def start_ip_relationship_job(data: Any, shared_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    _validate_relationship_request(data)
     _cleanup_ip_rel_jobs()
     job_id = uuid.uuid4().hex
     now = time.time()
@@ -125,6 +184,7 @@ def start_ip_relationship_job(data: Dict[str, Any], shared_config: Optional[Dict
             _run_ip_relationship_analysis_payload,
             data,
             dict(shared_config or {}),
+            get_vt_runtime_config() if get_vt_runtime_config is not None else None,
         )
     except Exception:
         with _IP_REL_JOB_LOCK:
@@ -158,23 +218,62 @@ def get_ip_relationship_job(job_id: str, *, include_result: bool = False) -> Tup
 
 
 def cancel_ip_relationship_job(job_id: str) -> Tuple[Dict[str, Any], int]:
+    job_key = str(job_id or "")
     with _IP_REL_JOB_LOCK:
-        job = _IP_REL_JOBS.get(str(job_id or ""))
+        job = _IP_REL_JOBS.get(job_key)
         if not job:
             return ({"error": "job not found"}, 404)
+        if job.get("status") == "cancelled":
+            return ({"status": "cancelled", "job_id": job_id, "cancelled": True}, 200)
+        if job.get("status") in ("completed", "failed"):
+            return (
+                {
+                    "status": job.get("status"),
+                    "job_id": job_id,
+                    "cancelled": False,
+                    "reason": "already_finished",
+                },
+                409,
+            )
         fut = job.get("future")
-        cancelled = bool(fut.cancel()) if fut is not None else False
+
+    cancelled = bool(fut.cancel()) if fut is not None else False
+
+    with _IP_REL_JOB_LOCK:
+        job = _IP_REL_JOBS.get(job_key)
+        if not job:
+            return ({"error": "job not found"}, 404)
         if cancelled:
             job["status"] = "cancelled"
             job["done_at"] = time.time()
-        return ({"status": job.get("status"), "job_id": job_id, "cancelled": cancelled}, 200)
+            return ({"status": "cancelled", "job_id": job_id, "cancelled": True}, 200)
+        reason = (
+            "already_finished"
+            if job.get("status") in ("completed", "failed")
+            else "already_running"
+        )
+        return (
+            {
+                "status": job.get("status"),
+                "job_id": job_id,
+                "cancelled": False,
+                "reason": reason,
+            },
+            409,
+        )
 
 
+def shutdown_ip_relationship_jobs(*, wait: bool = False) -> None:
+    """Cancel queued work and release the analysis pool during server shutdown."""
+    global _IP_REL_JOB_EXECUTOR
+    with _IP_REL_JOB_LOCK:
+        executor = _IP_REL_JOB_EXECUTOR
+        _IP_REL_JOB_EXECUTOR = None
+    if executor is not None:
+        executor.shutdown(wait=wait, cancel_futures=True)
 
-def _parse_ip_tokens(raw: Any) -> Tuple[List[str], List[str]]:
-    """Return (valid_ips, invalid_tokens). De-dupes while preserving order."""
-    import ipaddress as _ip
 
+def _tokenize_ip_input(raw: Any) -> List[str]:
     tokens: List[str] = []
     if isinstance(raw, str):
         tokens = [x.strip() for x in re.split(r"[\s,;|]+", raw) if x and x.strip()]
@@ -187,8 +286,14 @@ def _parse_ip_tokens(raw: Any) -> Tuple[List[str], List[str]]:
                 continue
             parts = [x.strip() for x in re.split(r"[\s,;|]+", s) if x and x.strip()]
             tokens.extend(parts)
-    else:
-        return ([], [])
+    return tokens
+
+
+def _parse_ip_tokens(raw: Any) -> Tuple[List[str], List[str]]:
+    """Return (valid_ips, invalid_tokens). De-dupes while preserving order."""
+    import ipaddress as _ip
+
+    tokens = _tokenize_ip_input(raw)
 
     unique: List[str] = []
     seen = set()
@@ -203,7 +308,12 @@ def _parse_ip_tokens(raw: Any) -> Tuple[List[str], List[str]]:
     seen_valid = set()
     for tok in unique:
         try:
-            ip_s = str(_ip.ip_address(tok))
+            if "%" in tok:
+                raise ValueError("scoped IPv6 addresses are not supported")
+            addr = _ip.ip_address(tok)
+            if isinstance(addr, _ip.IPv6Address) and addr.ipv4_mapped is not None:
+                addr = addr.ipv4_mapped
+            ip_s = str(addr)
             if ip_s not in seen_valid:
                 seen_valid.add(ip_s)
                 valid.append(ip_s)
@@ -211,6 +321,48 @@ def _parse_ip_tokens(raw: Any) -> Tuple[List[str], List[str]]:
             invalid.append(tok)
 
     return (valid, invalid)
+
+
+def _classify_ip_scope(ip: str) -> Tuple[str, bool]:
+    """Return a stable scope label and whether an IP may be sent to VT."""
+    addr = ipaddress.ip_address(ip)
+    if addr.is_unspecified:
+        return "unspecified", False
+    if addr.is_loopback:
+        return "loopback", False
+    if addr.is_link_local:
+        return "link_local", False
+    if addr.is_multicast:
+        return "multicast", False
+    if addr.is_reserved:
+        return "reserved", False
+    if addr.is_private:
+        return "private", False
+    if addr.is_global:
+        return "global", True
+    return "non_global", False
+
+
+def _validate_relationship_request(data: Any) -> Tuple[List[str], List[str]]:
+    if not isinstance(data, dict):
+        raise RelationshipRequestError("request body must be a JSON object")
+    if "bucket_max" in data:
+        try:
+            int(data["bucket_max"])
+        except (TypeError, ValueError):
+            raise RelationshipRequestError("bucket_max must be an integer")
+    raw_ips = data.get("ips")
+    if not isinstance(raw_ips, (str, list)):
+        raise RelationshipRequestError("ips must be a string or list")
+    tokens = _tokenize_ip_input(raw_ips)
+    if len(tokens) > _IP_REL_MAX_TOKENS:
+        raise RelationshipRequestError(f"too many ip tokens (max {_IP_REL_MAX_TOKENS})")
+    valid_ips, invalid = _parse_ip_tokens(raw_ips)
+    if not valid_ips:
+        raise RelationshipRequestError("no valid ips", invalid_inputs=invalid[:200])
+    if len(valid_ips) > _IP_REL_MAX_UNIQUE_IPS:
+        raise RelationshipRequestError(f"too many ips (max {_IP_REL_MAX_UNIQUE_IPS})")
+    return valid_ips, invalid
 
 
 def _classify_csp(as_owner: Any) -> Dict[str, Any]:
@@ -289,6 +441,13 @@ def _normalize_text(value: Any) -> str:
     if not s:
         return ""
     return re.sub(r"\s+", " ", s)
+
+
+def _is_missing_feature_value(value: Any, *, csp: bool = False) -> bool:
+    normalized = str(value or "").strip().lower()
+    if normalized in ("", "-", "n/a", "unknown", "none", "null", "other/unknown"):
+        return True
+    return csp and normalized in ("other", "unknown", "other/unknown")
 
 
 def _normalize_hash(value: Any) -> str:
@@ -429,23 +588,23 @@ def _compare_features(
     b_net_obj = cb.get("network_obj")
 
     # Infra similarity signals
-    if a_asn and b_asn and a_asn == b_asn:
+    if not _is_missing_feature_value(a_asn) and not _is_missing_feature_value(b_asn) and a_asn == b_asn:
         score += 25
         ev.append({"type": "same_asn", "value": a_asn, "weight": 25})
 
-    if a_owner_n and b_owner_n and a_owner_n == b_owner_n:
+    if not _is_missing_feature_value(a_owner_n) and not _is_missing_feature_value(b_owner_n) and a_owner_n == b_owner_n:
         score += 20
         ev.append({"type": "same_owner", "value": fa.get("as_owner") or "-", "weight": 20})
 
-    if a_csp and b_csp and a_csp == b_csp and a_csp != "other":
+    if not _is_missing_feature_value(a_csp, csp=True) and not _is_missing_feature_value(b_csp, csp=True) and a_csp == b_csp:
         score += 15
         ev.append({"type": "same_csp", "value": fa.get("csp_label") or a_csp, "weight": 15})
 
-    if a_country and b_country and a_country == b_country and a_country != "-":
+    if not _is_missing_feature_value(a_country) and not _is_missing_feature_value(b_country) and a_country == b_country:
         score += 5
         ev.append({"type": "same_country", "value": a_country, "weight": 5})
 
-    if a_network and b_network and a_network == b_network:
+    if not _is_missing_feature_value(a_network) and not _is_missing_feature_value(b_network) and a_network == b_network:
         score += 24
         ev.append({"type": "same_network_exact", "value": a_network, "weight": 24})
     elif a_net_obj is not None and b_net_obj is not None:
@@ -461,23 +620,23 @@ def _compare_features(
         except Exception:
             pass
 
-    if a_jarm and b_jarm and a_jarm == b_jarm:
+    if not _is_missing_feature_value(fa.get("jarm")) and not _is_missing_feature_value(fb.get("jarm")) and a_jarm and b_jarm and a_jarm == b_jarm:
         score += 34
         ev.append({"type": "same_jarm", "value": _short_token(a_jarm), "weight": 34})
 
-    if a_cert and b_cert and a_cert == b_cert:
+    if not _is_missing_feature_value(fa.get("cert_sha256")) and not _is_missing_feature_value(fb.get("cert_sha256")) and a_cert and b_cert and a_cert == b_cert:
         score += 36
         ev.append({"type": "same_cert_sha256", "value": _short_token(a_cert), "weight": 36})
 
-    if a_rdap_name and b_rdap_name and a_rdap_name == b_rdap_name:
+    if not _is_missing_feature_value(a_rdap_name) and not _is_missing_feature_value(b_rdap_name) and a_rdap_name == b_rdap_name:
         score += 12
         ev.append({"type": "same_rdap_name", "value": fa.get("rdap_name") or "-", "weight": 12})
 
-    if a_rdap_type and b_rdap_type and a_rdap_type == b_rdap_type and a_rdap_type not in ("-", "n/a"):
+    if not _is_missing_feature_value(a_rdap_type) and not _is_missing_feature_value(b_rdap_type) and a_rdap_type == b_rdap_type:
         score += 3
         ev.append({"type": "same_rdap_type", "value": a_rdap_type, "weight": 3})
 
-    if a_rir and b_rir and a_rir == b_rir and a_rir not in ("-", "N/A"):
+    if not _is_missing_feature_value(a_rir) and not _is_missing_feature_value(b_rir) and a_rir == b_rir:
         score += 4
         ev.append({"type": "same_rir", "value": a_rir, "weight": 4})
 
@@ -487,7 +646,7 @@ def _compare_features(
     p24b = _ipv4_prefix24(b_ip)
     if p24a and p24b and p24a == p24b:
         hosted_hint = False
-        if (fa.get("csp") and fa.get("csp") != "other") or (fb.get("csp") and fb.get("csp") != "other"):
+        if not _is_missing_feature_value(fa.get("csp"), csp=True) or not _is_missing_feature_value(fb.get("csp"), csp=True):
             hosted_hint = True
         if (fa.get("csp_major") or fb.get("csp_major")):
             hosted_hint = True
@@ -750,7 +909,7 @@ def _build_relationship_graph(
         "edge_limit": int(edge_limit),
     }
 
-def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
+def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None, body: Optional[bytes] = None):
     """Similarity analysis among a user-supplied infected-host IP list.
 
     IMPORTANT: This endpoint used to be "shared domain" relationships.
@@ -764,6 +923,7 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
       - include_vt: bool (default true)
       - vt_workers: int (default 8)
       - vt_budget: int (default 2000)
+      - candidate_limit: int (default 500000, clamped to 1000..2000000)
 
     GeoIP fallback:
       - If VT is disabled/unavailable/missing per-IP context, we can optionally
@@ -777,20 +937,18 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
       - country_summary: for bubble map
     """
 
-    length = int(handler.headers.get("Content-Length", "0"))
-    body = handler.rfile.read(length) if length > 0 else b""
+    if body is None:
+        length = int(handler.headers.get("Content-Length", "0"))
+        body = handler.rfile.read(length) if length > 0 else b""
     try:
         data = json.loads(body.decode("utf-8")) if body else {}
     except Exception:
         return handler._send_json({"error": "invalid json"}, 400)
 
-    valid_ips, invalid = _parse_ip_tokens(data.get("ips"))
-    if not valid_ips:
-        return handler._send_json({"error": "no valid ips", "invalid_inputs": invalid[:200]}, 400)
-
-    max_ips = 10000
-    if len(valid_ips) > max_ips:
-        return handler._send_json({"error": f"too many ips (max {max_ips})"}, 400)
+    try:
+        valid_ips, invalid = _validate_relationship_request(data)
+    except RelationshipRequestError as exc:
+        return handler._send_json(exc.payload, exc.status_code)
 
     def _to_int(name, default, min_v=None, max_v=None):
         raw = data.get(name, default)
@@ -828,24 +986,39 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
     pair_gate_strong_min = _to_int("pair_gate_strong_min", 1, 0, 3)
     pair_gate_mid_min = _to_int("pair_gate_mid_min", 2, 0, 5)
     pair_gate_fallback_score = _to_int("pair_gate_fallback_score", max(min_score, 55), 0, 100)
+    candidate_limit = _to_int("candidate_limit", 500000, 1000, 2000000)
 
     # GeoIP config (best-effort; optional)
     geoip_mmdb_path = None
+    geoip_source = "none"
     try:
         geoip_mmdb_path = getattr(handler, "shared_config", {}).get("geoip_mmdb_path")  # type: ignore
     except Exception:
         geoip_mmdb_path = None
+    if geoip_mmdb_path:
+        geoip_source = "config"
     if not geoip_mmdb_path:
         geoip_mmdb_path = os.environ.get("GEOIP_MMDB_PATH")
+        if geoip_mmdb_path:
+            geoip_source = "environment"
 
     geoip_reader = _load_geoip_reader(geoip_mmdb_path)
     geoip_enabled = bool(geoip_reader)
 
     vt_enabled = bool(include_vt and get_ip_report)
+    ip_scope_metadata = {
+        ip: _classify_ip_scope(ip)
+        for ip in valid_ips
+    }
+    vt_eligible_ips = [ip for ip in valid_ips if ip_scope_metadata[ip][1]]
+    vt_eligible_count = len(vt_eligible_ips)
+    vt_skipped_non_global = len(valid_ips) - vt_eligible_count
 
     # VT lookup
     vt_attempted = 0
     vt_reports: Dict[str, Any] = {}
+    vt_live_lookup_ips: Set[str] = set()
+    vt_cache_only_ips: Set[str] = set()
 
     batch_started = False
     if vt_enabled and begin_cache_batch and end_cache_batch:
@@ -857,8 +1030,10 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
 
     try:
         if vt_enabled and vt_budget > 0:
-            lookup_ips = valid_ips[:vt_budget]
-            tail_ips = valid_ips[vt_budget:]
+            lookup_ips = vt_eligible_ips[:vt_budget]
+            tail_ips = vt_eligible_ips[vt_budget:]
+            vt_live_lookup_ips = set(lookup_ips)
+            vt_cache_only_ips = set(tail_ips)
             vt_attempted = len(lookup_ips)
 
             # cache-only for tail (budget limited)
@@ -938,18 +1113,36 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
 
         # country fallback
         country = str(vt_country).upper() if vt_country else None
+        country_source = "vt" if country and country != "-" else "unknown"
         if not country or country == "-":
             cc = _geoip_country(geoip_reader, ip)
             if cc:
                 country = cc
+                country_source = "geoip"
         if not country:
             country = "-"
+
+        if not vt_enabled:
+            vt_source = "disabled"
+        elif not ip_scope_metadata[ip][1]:
+            vt_source = "skipped_non_global"
+        elif isinstance(rep, dict):
+            vt_source = "report" if ip in vt_live_lookup_ips else "cached_report"
+        elif ip in vt_live_lookup_ips:
+            vt_source = "unavailable"
+        elif ip in vt_cache_only_ips:
+            vt_source = "cache_miss"
+        else:
+            vt_source = "budget_exhausted"
 
         owner_norm = _normalize_owner(as_owner)
         csp_info = _classify_csp(as_owner)
 
         feat = {
             "ip": ip,
+            "scope": ip_scope_metadata[ip][0],
+            "vt_eligible": ip_scope_metadata[ip][1],
+            "vt_source": vt_source,
             "asn": str(asn) if asn is not None else "-",
             "as_owner": str(as_owner) if as_owner else "-",
             "as_owner_norm": owner_norm,
@@ -957,6 +1150,7 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
             "csp_label": csp_info.get("csp_label", "Other/Unknown"),
             "csp_major": bool(csp_info.get("csp_major", False)),
             "country": str(country) if country else "-",
+            "country_source": country_source,
             "malicious": malicious,
             "suspicious": suspicious,
             "network": network if network else "-",
@@ -1003,7 +1197,7 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
     buckets: Dict[str, List[str]] = {}
 
     def _add_bucket(prefix: str, key: str, ip: str):
-        if not key or key in ("-", "N/A"):
+        if _is_missing_feature_value(key, csp=(prefix == "csp")):
             return
         buckets.setdefault(f"{prefix}:{key}", []).append(ip)
 
@@ -1022,11 +1216,7 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
             _add_bucket("p24", p24, ip)
 
     # Hard cap per bucket to avoid quadratic explosion (especially country buckets)
-    BUCKET_MAX = int(data.get("bucket_max", 450) or 450)
-    if BUCKET_MAX < 50:
-        BUCKET_MAX = 50
-    if BUCKET_MAX > 2000:
-        BUCKET_MAX = 2000
+    BUCKET_MAX = _to_int("bucket_max", 450, 50, 2000)
 
     bucket_overflow_mode = str(data.get("bucket_overflow_mode", "truncate") or "truncate").strip().lower()
     if bucket_overflow_mode not in ("truncate", "skip"):
@@ -1045,19 +1235,56 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
     pair_gate_kept = 0
     pair_gate_dropped = 0
     candidate_count = 0
+    candidate_enumeration_count = 0
     deduped_candidate_count = 0
+    candidate_limit_reached = False
+    pair_heap_truncated = False
+
+    # Keep analysis topology independent from response-display limits. Every
+    # accepted edge updates the component accumulator, while the bounded heap
+    # below controls only which pair details are returned to the client.
+    parent: Dict[str, str] = {ip: ip for ip in valid_ips}
+    component_size = {ip: 1 for ip in valid_ips}
+    component_score_sum = defaultdict(int)
+    component_edge_count = defaultdict(int)
+
+    def find(x: str) -> str:
+        while parent.get(x) != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union_edge(x: str, y: str, score: int):
+        rx, ry = find(x), find(y)
+        if rx == ry:
+            component_score_sum[rx] += score
+            component_edge_count[rx] += 1
+            return
+        if component_size[rx] < component_size[ry]:
+            rx, ry = ry, rx
+        parent[ry] = rx
+        component_size[rx] += component_size.pop(ry)
+        component_score_sum[rx] += component_score_sum.pop(ry, 0) + score
+        component_edge_count[rx] += component_edge_count.pop(ry, 0) + 1
 
     def _score_and_offer_pair(a: str, b: str):
-        nonlocal pair_gate_kept, pair_gate_dropped, candidate_count, deduped_candidate_count
+        nonlocal pair_gate_kept, pair_gate_dropped
+        nonlocal candidate_count, candidate_enumeration_count, deduped_candidate_count
+        nonlocal candidate_limit_reached, pair_heap_truncated
         if not a or not b or a == b:
             return
         if a > b:
             a, b = b, a
         pair_key = (a, b)
-        candidate_count += 1
         if pair_key in seen_pairs:
+            candidate_enumeration_count += 1
             deduped_candidate_count += 1
             return
+        if candidate_count >= candidate_limit:
+            candidate_limit_reached = True
+            return
+        candidate_enumeration_count += 1
+        candidate_count += 1
         seen_pairs.add(pair_key)
         fa = ip_features.get(a) or {}
         fb = ip_features.get(b) or {}
@@ -1069,7 +1296,7 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
             ca=ip_similarity_context.get(a),
             cb=ip_similarity_context.get(b),
         )
-        if sc <= 0:
+        if sc < min_score:
             return
         gate_ok, gate_reason = _pair_gate_decision(
             sc,
@@ -1084,17 +1311,21 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
             pair_gate_dropped += 1
             return
         pair_gate_kept += 1
+        union_edge(a, b, int(sc))
         item = {"a": a, "b": b, "score": sc, "evidence": ev, "gate_reason": gate_reason}
         heap_key = (int(sc), str(a), str(b), item)
         if len(pair_heap) < heap_limit:
             heapq.heappush(pair_heap, heap_key)
         else:
+            pair_heap_truncated = True
             # Keep the highest scoring bounded working set; deterministic tie
             # breakers preserve stable output for equal scores.
             if (int(sc), str(a), str(b)) > (pair_heap[0][0], pair_heap[0][1], pair_heap[0][2]):
                 heapq.heapreplace(pair_heap, heap_key)
 
     for k, ips in buckets.items():
+        if candidate_limit_reached:
+            break
         if not ips or len(ips) < 2:
             continue
         uniq = sorted(set(ips))
@@ -1105,9 +1336,13 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
             uniq = uniq[:BUCKET_MAX]
             bucket_truncated_count += 1
         for i in range(len(uniq)):
+            if candidate_limit_reached:
+                break
             a = uniq[i]
             for j in range(i + 1, len(uniq)):
                 _score_and_offer_pair(a, uniq[j])
+                if candidate_limit_reached:
+                    break
 
     ranked_pairs = [entry[3] for entry in sorted(pair_heap, key=lambda x: (-x[0], x[1], x[2]))]
 
@@ -1128,43 +1363,9 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
         if len(kept) >= top_pairs:
             break
 
-    # Cluster using union-find on edges with score>=min_score
-    parent: Dict[str, str] = {ip: ip for ip in valid_ips}
-
-    def find(x):
-        while parent.get(x) != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(x, y):
-        rx, ry = find(x), find(y)
-        if rx != ry:
-            parent[ry] = rx
-
-    for it in kept:
-        if int(it.get("score") or 0) >= min_score:
-            union(str(it.get("a")), str(it.get("b")))
-
     clusters: Dict[str, List[str]] = {}
     for ip in valid_ips:
         clusters.setdefault(find(ip), []).append(ip)
-
-    # Cohesion: avg score of in-cluster edges (from kept list)
-    cluster_edges_score_sum = defaultdict(int)
-    cluster_edges_n = defaultdict(int)
-    for it in kept:
-        a = str(it.get("a") or "")
-        b = str(it.get("b") or "")
-        sc = int(it.get("score") or 0)
-        if sc < min_score:
-            continue
-        ra = find(a)
-        rb = find(b)
-        if ra != rb:
-            continue
-        cluster_edges_score_sum[ra] += sc
-        cluster_edges_n[ra] += 1
 
     def _top_k(items: List[str], k: int = 3):
         freq = defaultdict(int)
@@ -1202,8 +1403,8 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
                 ss += 1
 
         cohesion = None
-        if cluster_edges_n.get(root):
-            cohesion = cluster_edges_score_sum[root] / max(1, cluster_edges_n[root])
+        if component_edge_count.get(root):
+            cohesion = component_score_sum[root] / component_edge_count[root]
 
         cluster_list.append({
             "cluster_id": root,
@@ -1233,6 +1434,49 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
     except Exception:
         pass
 
+    unique_candidate_count = len(seen_pairs)
+    vt_report_count = sum(1 for report in vt_reports.values() if isinstance(report, dict))
+    # No eligible addresses means the global-only VT policy covered every
+    # address it was allowed to query; it is not a partial-coverage warning.
+    vt_report_coverage = vt_report_count / vt_eligible_count if vt_eligible_count else 1.0
+    candidate_analysis_complete = not (
+        bucket_oversized_count > 0
+        or candidate_limit_reached
+        or pair_heap_truncated
+    )
+    enrichment_complete = not vt_enabled or vt_eligible_count == 0 or vt_report_coverage >= 1.0
+    analysis_complete = candidate_analysis_complete and enrichment_complete
+    warning_codes = []
+    if bucket_oversized_count > 0:
+        warning_codes.append("bucket_truncated" if bucket_truncated_count > 0 else "bucket_skipped")
+    if candidate_limit_reached:
+        warning_codes.append("candidate_limit_reached")
+    if pair_heap_truncated:
+        warning_codes.append("pair_heap_truncated")
+    if vt_enabled and vt_eligible_count > 0 and vt_report_coverage < 1.0:
+        warning_codes.append("vt_partial_coverage")
+
+    quality = {
+        "analysis_complete": bool(analysis_complete),
+        "candidate_analysis_complete": bool(candidate_analysis_complete),
+        "enrichment_complete": bool(enrichment_complete),
+        "candidate_limit": int(candidate_limit),
+        "candidate_limit_reached": bool(candidate_limit_reached),
+        "unique_candidate_count": int(unique_candidate_count),
+        "evaluated_candidate_count": int(unique_candidate_count),
+        "deduped_candidate_count": int(deduped_candidate_count),
+        "bucket_oversized_count": int(bucket_oversized_count),
+        "bucket_truncated_count": int(bucket_truncated_count),
+        "pair_heap_truncated": bool(pair_heap_truncated),
+        "vt_enabled": bool(vt_enabled),
+        "vt_attempted": int(vt_attempted),
+        "vt_eligible_count": int(vt_eligible_count),
+        "vt_skipped_non_global": int(vt_skipped_non_global),
+        "vt_report_count": int(vt_report_count),
+        "vt_report_coverage": float(vt_report_coverage),
+        "warning_codes": warning_codes,
+    }
+
     response = {
         "status": "ok",
         "submitted_count": len(valid_ips) + len(invalid),
@@ -1249,6 +1493,11 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
         "pairs": kept,
         "pair_count": len(kept),
         "candidate_count": int(candidate_count),
+        "candidate_enumeration_count": int(candidate_enumeration_count),
+        "candidate_limit": int(candidate_limit),
+        "unique_candidate_count": int(unique_candidate_count),
+        "candidate_limit_reached": bool(candidate_limit_reached),
+        "analysis_complete": bool(analysis_complete),
         "deduped_candidate_count": int(deduped_candidate_count),
         "pair_heap_limit": int(heap_limit),
         "pair_gate": {
@@ -1262,10 +1511,15 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None):
         "clusters": cluster_list,
         "vt_enabled": vt_enabled,
         "vt_attempted": vt_attempted,
+        "vt_eligible_count": int(vt_eligible_count),
+        "vt_skipped_non_global": int(vt_skipped_non_global),
+        "vt_report_count": int(vt_report_count),
+        "vt_report_coverage": float(vt_report_coverage),
         "vt_budget": vt_budget,
         "vt_workers": vt_workers,
         "geoip_enabled": geoip_enabled,
-        "geoip_mmdb_path": geoip_mmdb_path if geoip_enabled else None,
+        "geoip_source": geoip_source,
+        "quality": quality,
         "ip_features": ip_features,
         "country_summary": country_summary,
         "note": "Similarity is inferred from VT/GeoIP infrastructure features (for infected-host IP lists).",

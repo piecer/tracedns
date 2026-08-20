@@ -33,6 +33,7 @@ from http_api.settings_handlers import handle_settings_get as _handle_settings_g
 from http_api.settings_handlers import handle_settings_post as _handle_settings_post_basic
 from http_api.relationship_handlers import (
     RelationshipJobCapacityError,
+    RelationshipRequestError,
     cancel_ip_relationship_job as _cancel_ip_relationship_job,
     get_ip_relationship_job as _get_ip_relationship_job,
     handle_ip_relationship_analysis as _handle_ip_relationship_analysis,
@@ -2176,6 +2177,8 @@ def attach_api_handlers(
                 return self._send_json({'error': 'invalid json'}, 400)
             try:
                 job = _start_ip_relationship_job(data, shared_config)
+            except RelationshipRequestError as exc:
+                return self._send_json(exc.payload, exc.status_code)
             except RelationshipJobCapacityError as exc:
                 return self._send_json({'error': str(exc)}, 429)
             return self._send_json(job, 202)
@@ -2185,7 +2188,14 @@ def attach_api_handlers(
                 payload, status = _cancel_ip_relationship_job(parts[1])
                 return self._send_json(payload, status)
         if parsed.path == '/ip-relationship-analysis':
-            return _handle_ip_relationship_analysis(self, gather_ip_map_fn=self._gather_ip_map)
+            body, body_error = get_request_body(self, max_length=self.max_body_bytes)
+            if body_error:
+                return
+            return _handle_ip_relationship_analysis(
+                self,
+                gather_ip_map_fn=self._gather_ip_map,
+                body=body,
+            )
         if parsed.path == '/misp/search':
             return self._handle_misp_search({})
         if parsed.path == '/misp/event-ips':

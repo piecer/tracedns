@@ -20,6 +20,11 @@ import urllib.request
 import urllib.error
 from contextlib import contextmanager
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback has no cross-process flock.
+    fcntl = None
+
 CACHE_FILE = os.path.join(os.path.dirname(__file__), 'vt_cache.json')
 _DEFAULT_CACHE_TTL_SECONDS = int(os.environ.get('VT_CACHE_TTL_SECONDS', str(60 * 60 * 24)))
 CACHE_TTL = _DEFAULT_CACHE_TTL_SECONDS  # default 24h
@@ -81,14 +86,57 @@ def get_cache_ttl_days():
     return max(1, int((secs + 86399) // 86400))
 
 
+def get_runtime_config():
+    """Return mutable VT settings that process workers refresh per task."""
+    return {'api_key': _GLOBAL_API_KEY, 'cache_ttl': int(CACHE_TTL)}
+
+
+def apply_runtime_config(config):
+    """Apply a parent-process VT settings snapshot inside a worker process."""
+    global CACHE_TTL
+    config = config if isinstance(config, dict) else {}
+    set_api_key(config.get('api_key'))
+    try:
+        ttl = int(config.get('cache_ttl'))
+    except (TypeError, ValueError):
+        return
+    if ttl > 0:
+        CACHE_TTL = ttl
+
+
+@contextmanager
+def _cache_file_lock():
+    with open(f'{CACHE_FILE}.lock', 'a+b') as lock_file:
+        if fcntl is not None:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def _save_cache_locked():
     tmp_path = f'{CACHE_FILE}.tmp.{os.getpid()}.{threading.get_ident()}'
     try:
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            json.dump(_CACHE, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, CACHE_FILE)
+        with _cache_file_lock():
+            try:
+                with open(CACHE_FILE, 'r', encoding='utf-8') as existing_file:
+                    existing = json.load(existing_file)
+            except Exception:
+                existing = {}
+            merged = dict(existing) if isinstance(existing, dict) else {}
+            for ip, entry in _CACHE.items():
+                persisted = merged.get(ip)
+                if not isinstance(persisted, dict) or int(entry.get('fetched_at', 0)) >= int(persisted.get('fetched_at', 0)):
+                    merged[ip] = entry
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(merged, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, CACHE_FILE)
+            _CACHE.clear()
+            _CACHE.update(merged)
         return True
     except Exception:
         try:
@@ -196,9 +244,6 @@ def get_ip_report(ip, force=False, cache_only=False):
         if entry and not force:
             ts = entry.get('fetched_at', 0)
             if now - ts < CACHE_TTL:
-                return entry.get('report')
-            if cache_only:
-                # cache-only mode returns stale cache rather than making network requests
                 return entry.get('report')
         if cache_only:
             return None
