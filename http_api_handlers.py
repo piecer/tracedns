@@ -2163,6 +2163,8 @@ def attach_api_handlers(
 
         if parsed.path == '/domain-precheck':
             return self._handle_domain_precheck()
+        if parsed.path == '/ip-list-analysis':
+            return self._handle_ip_list_analysis()
         if parsed.path == '/ip-relationship-jobs':
             _body, _body_413 = get_request_body(self, max_length=self.max_body_bytes)
             if _body_413:
