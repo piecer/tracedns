@@ -336,6 +336,8 @@ def main():
     logger.info("Exiting DNS monitor.")
     httpd.shutdown()
     httpd.server_close()
+    from http_api.relationship_handlers import shutdown_ip_relationship_jobs
+    shutdown_ip_relationship_jobs(wait=False)
 
 
 if __name__ == "__main__":

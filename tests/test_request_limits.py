@@ -19,6 +19,7 @@ These tests cover:
 """
 
 import os
+import json
 import threading
 import unittest
 from unittest import mock
@@ -199,6 +200,28 @@ class GetRequestBodyTests(unittest.TestCase):
 
 
 class HandlerWiringTests(unittest.TestCase):
+    def _relationship_handler(self, *, content_length=None, body=b"", max_body_bytes=100):
+        import http_api_handlers as api_handlers
+
+        class RelationshipHandler(_FakeHandler):
+            pass
+
+        api_handlers.attach_api_handlers(
+            RelationshipHandler,
+            frontend_html="<html></html>",
+            shared_config={"domains": [], "servers": ["8.8.8.8"], "interval": 60},
+            config_lock=threading.Lock(),
+            config_path=None,
+            history_dir=None,
+            current_results={},
+            history={},
+            purge_removed_domains_state=lambda *_args, **_kwargs: None,
+            max_body_bytes=max_body_bytes,
+        )
+        handler = RelationshipHandler(content_length=content_length, body=body)
+        handler.path = "/ip-relationship-analysis"
+        return RelationshipHandler, handler
+
     def test_handler_class_exposes_max_body_bytes_default(self) -> None:
         import http_server as hs
 
@@ -226,6 +249,49 @@ class HandlerWiringTests(unittest.TestCase):
             max_body_bytes=12345,
         )
         self.assertEqual(handler_cls.max_body_bytes, 12345)
+
+    def test_sync_relationship_route_rejects_oversized_body_without_reading(self) -> None:
+        handler_cls, handler = self._relationship_handler(content_length=101, max_body_bytes=100)
+
+        handler_cls.do_POST(handler)
+
+        self.assertEqual(handler.sent_status, 413)
+        self.assertEqual(handler.rfile.read_lengths, [])
+
+    def test_sync_relationship_route_rejects_transfer_encoding_without_reading(self) -> None:
+        handler_cls, handler = self._relationship_handler(content_length=None, body=b"4\r\ntest")
+        handler.headers["Transfer-Encoding"] = "chunked"
+
+        handler_cls.do_POST(handler)
+
+        self.assertEqual(handler.sent_status, 400)
+        self.assertEqual(handler.rfile.read_lengths, [])
+
+    def test_sync_relationship_route_passes_bounded_body_without_second_read(self) -> None:
+        import http_api_handlers as api_handlers
+
+        body = json.dumps({"ips": ["1.1.1.1"]}).encode("utf-8")
+        handler_cls, handler = self._relationship_handler(content_length=len(body), body=body)
+        captured = {}
+
+        def capture(_handler, *, gather_ip_map_fn=None, body=None):
+            captured["body"] = body
+
+        with mock.patch.object(api_handlers, "_handle_ip_relationship_analysis", capture):
+            handler_cls.do_POST(handler)
+
+        self.assertEqual(captured["body"], body)
+        self.assertEqual(handler.rfile.read_lengths, [len(body)])
+
+    def test_async_relationship_route_returns_typed_request_error_as_json_400(self) -> None:
+        body = b"[]"
+        handler_cls, handler = self._relationship_handler(content_length=len(body), body=body)
+        handler.path = "/ip-relationship-jobs"
+
+        handler_cls.do_POST(handler)
+
+        self.assertEqual(handler.sent_status, 400)
+        self.assertEqual(json.loads(handler._buf), {"error": "request body must be a JSON object"})
 
 
 class BodyTooLargeErrorTests(unittest.TestCase):
