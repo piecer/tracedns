@@ -253,6 +253,7 @@ def coerce_domains(domains: List[Any]) -> List[DomainSpec]:
             'type': ds.type,
             'ens_text_key': ds.ens_text_key,
             'ens_node': ds.ens_node,
+            'ens_resolver': ds.ens_resolver,
         })
         if ident in seen:
             continue

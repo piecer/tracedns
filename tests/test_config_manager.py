@@ -8,6 +8,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 import config_manager as cm
+from models import coerce_domains
 
 
 class TestConfigManager(unittest.TestCase):
@@ -93,6 +94,24 @@ class TestConfigManager(unittest.TestCase):
         ]
         out = cm.normalize_domains(value)
         self.assertEqual(len(out), 2)
+
+    def test_ens_identity_distinguishes_resolvers_and_storage_uses_full_target(self):
+        node_a = "0x" + "01" * 32
+        node_b = "0x" + "01" * 31 + "02"
+        resolver_a = "0x" + "aa" * 20
+        resolver_b = "0x" + "bb" * 20
+        targets = [
+            {"name": "example.eth", "type": "ENS", "ens_text_key": "node", "ens_node": node_a, "ens_resolver": resolver_a},
+            {"name": "example.eth", "type": "ENS", "ens_text_key": "node", "ens_node": node_a, "ens_resolver": resolver_b},
+            {"name": "example.eth", "type": "ENS", "ens_text_key": "node", "ens_node": node_b, "ens_resolver": resolver_a},
+        ]
+
+        self.assertEqual(len(cm.normalize_domains(targets)), 3)
+        self.assertEqual(len(coerce_domains(targets)), 3)
+        storage_names = {cm.domain_storage_name(target) for target in targets}
+        self.assertEqual(len(storage_names), 3)
+        self.assertTrue(all(target["ens_node"] in cm.domain_storage_name(target) for target in targets))
+        self.assertTrue(all(target["ens_resolver"] in cm.domain_storage_name(target) for target in targets))
 
     def test_normalize_domains_allows_same_ens_name_with_different_records(self):
         value = [
