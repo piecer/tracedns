@@ -107,6 +107,12 @@ def test_misp_event_id_is_visible_beside_the_load_action():
     assert _attr(event_input, "min") == "1"
     assert _attr(event_input, "step") == "1"
     assert HTML.count('id="ipIntelMispEventId"') == 1
+    lookback_input = _tag_with_id("ipRelLookbackDays")
+    assert _attr(lookback_input, "type") == "number"
+    assert _attr(lookback_input, "min") == "0"
+    assert _attr(lookback_input, "max") == "365"
+    assert _attr(lookback_input, "value") == "30"
+    assert "lookback_days: lookbackDays" in JS
 
     enrichment = re.search(
         r'<details[^>]+class="[^"]*ipintel-enrichment-settings[^"]*"[^>]*>(?P<body>.*?)</details>',

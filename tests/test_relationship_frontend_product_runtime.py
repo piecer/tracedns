@@ -139,12 +139,18 @@ assert.deepStrictEqual(model.metrics, {ips: 4, pairs: 2, clusters: 1, coverage: 
 assert.strictEqual(model.quality.state, 'complete');
 assert(model.quality.detail.includes('1 invalid input'));
 model = buildIpRelationshipResultModel({valid_count: 2, candidate_count: 10, pairs: [], clusters: [], quality: {
-  analysis_complete: false, candidate_analysis_complete: false, evaluated_candidate_count: 4,
-  warning_codes: ['candidate_limit_reached']
+  analysis_complete: false, candidate_analysis_complete: false,
+  cluster_topology_complete: false, pair_detail_complete: true, enrichment_complete: true,
+  evaluated_candidate_count: 4,
+  warning_codes: ['candidate_limit_reached', 'local_context_truncated']
 }});
 assert.strictEqual(model.metrics.coverage, '40%');
 assert.strictEqual(model.quality.state, 'incomplete');
 assert(model.quality.detail.includes('Candidate'));
+assert(model.quality.detail.includes('Local DNS context'));
+assert(model.quality.detail.includes('Candidate discovery: partial'));
+assert(model.quality.detail.includes('Cluster topology: partial'));
+assert(model.quality.detail.includes('Pair details: complete'));
 model = buildIpRelationshipResultModel({valid_count: 2, pair_count: 1, candidate_count: 10, clusters: [], quality: {
   analysis_complete: false, candidate_analysis_complete: true, enrichment_complete: false,
   evaluated_candidate_count: 10,
@@ -210,10 +216,14 @@ def test_result_model_consumes_actual_backend_quality_schema(monkeypatch):
     )
     both = _backend_relationship_response(candidate_request)
 
-    assert candidate_only["quality"]["warning_codes"] == ["candidate_limit_reached"]
+    assert candidate_only["quality"]["warning_codes"] == [
+        "candidate_limit_reached",
+        "pair_display_truncated",
+    ]
     assert vt_only["quality"]["warning_codes"] == ["vt_partial_coverage"]
     assert set(both["quality"]["warning_codes"]) == {
         "candidate_limit_reached",
+        "pair_display_truncated",
         "vt_partial_coverage",
     }
 
@@ -583,8 +593,65 @@ assert.strictEqual(document.activeElement, button);
 """)
 
 
+def test_misp_context_formatter_exposes_provenance_and_distribution():
+    _run_node(["formatMispInputContext"], r"""
+const assert = require('assert');
+const text = formatMispInputContext({input_context:{misp:{
+  event:{id:'42', producer:{name:'Producer'}},
+  access:{tlp_tags:['tlp:amber+strict'], contains_restricted_attributes:true}
+}}});
+assert(text.includes('MISP event 42'));
+assert(text.includes('producer Producer'));
+assert(text.includes('tlp:amber+strict'));
+assert(text.includes('restricted distribution'));
+assert.strictEqual(formatMispInputContext({}), '');
+""")
+
+
+def test_pair_assessment_formatter_separates_relationship_strength_and_verdict():
+    _run_node(["formatPairAssessment"], r"""
+const assert = require('assert');
+const current = formatPairAssessment({
+  score: 84,
+  relationship_strength: 84,
+  assessment: {
+    verdict: 'same_botnet_likely', evidence_score: 80, botnet_evidence_score: 75,
+    confidence: {level: 'high'}
+  }
+});
+assert.deepStrictEqual(current, {
+  strength: 84,
+  verdict: 'Likely same botnet',
+  evidenceScore: 75,
+  confidence: 'high'
+});
+const legacy = formatPairAssessment({score: 40});
+assert.deepStrictEqual(legacy, {
+  strength: 40,
+  verdict: 'Relationship only',
+  evidenceScore: null,
+  confidence: 'unknown'
+});
+""")
+
+
+def test_new_local_and_misp_evidence_have_human_readable_labels():
+    _run_node(["summarizeEvidence", "evidenceTypeLabel"], r"""
+const assert = require('assert');
+const evidence = [
+  {type:'coincident_dns_change', value:'240s'},
+  {type:'shared_misp_event', value:'event-uuid'},
+  {type:'shared_misp_campaign', value:'ExampleBot'}
+];
+assert.strictEqual(summarizeEvidence(evidence), 'DNS:CHANGE + MISP:EVENT + MISP:CAMPAIGN');
+assert.strictEqual(evidenceTypeLabel('coincident_dns_change'), 'Coincident DNS Change');
+assert.strictEqual(evidenceTypeLabel('shared_misp_event'), 'Shared MISP Event');
+assert.strictEqual(evidenceTypeLabel('shared_misp_campaign'), 'Shared MISP Campaign');
+""")
+
+
 def test_pair_table_uses_keyboard_accessible_ip_drilldown_buttons():
-    _run_node(["renderIpRelationshipPairsTable"], r"""
+    _run_node(["formatPairAssessment", "renderIpRelationshipPairsTable"], r"""
 const assert = require('assert');
 class Element {
   constructor(tag){ this.tagName=tag.toUpperCase(); this.children=[]; this.style={}; this.attrs={}; this.textContent=''; }

@@ -2285,6 +2285,11 @@ async function loadIpIntelFromMisp(autoAnalyze){
     }
 
     const ips = Array.isArray(j.ips) ? j.ips : [];
+    if(typeof window !== 'undefined'){
+      window.IP_REL_MISP_CONTEXT = (j.misp_context && typeof j.misp_context === 'object')
+        ? j.misp_context
+        : null;
+    }
     setIpIntelInputValue(ips.join('\n'));
     if(!eventId){
       const eidEl = document.getElementById('ipIntelMispEventId');
@@ -3911,7 +3916,10 @@ function buildIpRelationshipResultModel(rawResult){
       bucket_truncated: 'Oversized candidate buckets were truncated.',
       bucket_skipped: 'Oversized candidate buckets were skipped.',
       candidate_limit_reached: 'Candidate evaluation reached its configured limit.',
+      candidate_work_limit_reached: 'Candidate enumeration reached its work limit.',
       pair_heap_truncated: 'Pair results were truncated.',
+      pair_display_truncated: 'Some admitted pairs were omitted by display or neighbor limits.',
+      local_context_truncated: 'Local DNS context was bounded before analysis.',
       vt_partial_coverage: 'VirusTotal enrichment is partial.'
     };
     detail = warningCodes.map(code=>warningLabels[code] || String(code).replace(/_/g, ' ')).join(' ') || 'Resource limits produced partial results.';
@@ -3927,6 +3935,16 @@ function buildIpRelationshipResultModel(rawResult){
     state = 'complete';
     label = '✓ Complete analysis';
     detail = 'All available relationship candidates were evaluated.';
+  }
+  if(hasQualityContract){
+    const dimensions = [
+      ['Candidate discovery', 'candidate_analysis_complete'],
+      ['Cluster topology', 'cluster_topology_complete'],
+      ['Pair details', 'pair_detail_complete'],
+      ['Enrichment', 'enrichment_complete']
+    ].filter(item=>Object.prototype.hasOwnProperty.call(quality, item[1]))
+      .map(item=>`${item[0]}: ${quality[item[1]] === true ? 'complete' : 'partial'}`);
+    if(dimensions.length) detail += ` ${dimensions.join(' · ')}.`;
   }
   if(invalidCount > 0){
     detail += ` ${invalidCount} invalid input${invalidCount === 1 ? '' : 's'} ${invalidCount === 1 ? 'was' : 'were'} excluded.`;
@@ -4193,6 +4211,11 @@ function summarizeEvidence(evList){
     else if(t === 'vt_time_proximity') parts.push('VT:TIME');
     else if(t === 'vt_malicious_both') parts.push('VT:M');
     else if(t === 'vt_suspicious_both') parts.push('VT:S');
+    else if(t === 'shared_observed_domain') parts.push('DNS:DOMAIN');
+    else if(t === 'shared_decoder_provenance') parts.push('DNS:DECODER');
+    else if(t === 'coincident_dns_change') parts.push('DNS:CHANGE');
+    else if(t === 'shared_misp_event') parts.push('MISP:EVENT');
+    else if(t === 'shared_misp_campaign') parts.push('MISP:CAMPAIGN');
   });
   return parts.length ? parts.join(' + ') : '-';
 }
@@ -4215,6 +4238,11 @@ function evidenceTypeLabel(t){
   if(k === 'vt_time_proximity') return 'VT Time Proximity';
   if(k === 'vt_malicious_both') return 'VT Malicious Both';
   if(k === 'vt_suspicious_both') return 'VT Suspicious Both';
+  if(k === 'shared_observed_domain') return 'Observed Domain Reuse';
+  if(k === 'shared_decoder_provenance') return 'Decoder Provenance Reuse';
+  if(k === 'coincident_dns_change') return 'Coincident DNS Change';
+  if(k === 'shared_misp_event') return 'Shared MISP Event';
+  if(k === 'shared_misp_campaign') return 'Shared MISP Campaign';
   return k || 'Evidence';
 }
 
@@ -5148,6 +5176,51 @@ function updateIpRelGateUi(){
   });
 }
 
+function formatMispInputContext(result){
+  const inputContext = (result && result.input_context && typeof result.input_context === 'object')
+    ? result.input_context
+    : {};
+  const misp = (inputContext.misp && typeof inputContext.misp === 'object') ? inputContext.misp : null;
+  if(!misp) return '';
+  const event = (misp.event && typeof misp.event === 'object') ? misp.event : {};
+  const access = (misp.access && typeof misp.access === 'object') ? misp.access : {};
+  const parts = [`MISP event ${String(event.id || '?')}`];
+  const producer = (event.producer && typeof event.producer === 'object') ? event.producer : {};
+  if(producer.name) parts.push(`producer ${String(producer.name)}`);
+  const tlpTags = Array.isArray(access.tlp_tags) ? access.tlp_tags.map(String).filter(Boolean) : [];
+  if(tlpTags.length) parts.push(tlpTags.join(','));
+  if(access.contains_restricted_attributes) parts.push('restricted distribution');
+  return parts.join(' · ');
+}
+
+function formatPairAssessment(pair){
+  const item = (pair && typeof pair === 'object') ? pair : {};
+  const assessment = (item.assessment && typeof item.assessment === 'object') ? item.assessment : null;
+  const strengthRaw = (item.relationship_strength != null) ? item.relationship_strength : item.score;
+  const strength = Number.isFinite(Number(strengthRaw)) ? Number(strengthRaw) : 0;
+  if(!assessment){
+    return {strength, verdict:'Relationship only', evidenceScore:null, confidence:'unknown'};
+  }
+  const verdictLabels = {
+    same_botnet_likely: 'Likely same botnet',
+    related_infrastructure: 'Related infrastructure',
+    insufficient_evidence: 'Insufficient botnet evidence'
+  };
+  const evidenceRaw = (assessment.botnet_evidence_score != null)
+    ? assessment.botnet_evidence_score
+    : assessment.evidence_score;
+  const evidenceScore = Number.isFinite(Number(evidenceRaw)) ? Number(evidenceRaw) : null;
+  const confidenceObj = (assessment.confidence && typeof assessment.confidence === 'object')
+    ? assessment.confidence
+    : {};
+  return {
+    strength,
+    verdict: verdictLabels[String(assessment.verdict || '')] || 'Insufficient botnet evidence',
+    evidenceScore,
+    confidence: String(confidenceObj.level || 'unknown')
+  };
+}
+
 function renderIpRelationshipPairsTable(tbody, pairs){
   if(!tbody) return;
   tbody.innerHTML = '';
@@ -5162,7 +5235,7 @@ function renderIpRelationshipPairsTable(tbody, pairs){
     const tr = document.createElement('tr');
     const a = String((it && it.a) || '');
     const b = String((it && it.b) || '');
-    const score = Number((it && it.score) || 0);
+    const pairAssessment = formatPairAssessment(it);
     const ev = it && it.evidence;
 
     const ipCell = ip=>{
@@ -5184,7 +5257,18 @@ function renderIpRelationshipPairsTable(tbody, pairs){
     const tdA = ipCell(a);
     const tdB = ipCell(b);
 
-    const tdS = document.createElement('td'); tdS.textContent = String(score);
+    const tdS = document.createElement('td');
+    const strengthMain = document.createElement('div');
+    strengthMain.className = 'evidence-main';
+    strengthMain.textContent = `Relationship ${pairAssessment.strength}`;
+    const verdictSub = document.createElement('div');
+    verdictSub.className = 'evidence-sub';
+    const evidenceText = pairAssessment.evidenceScore == null
+      ? ''
+      : ` · botnet evidence ${pairAssessment.evidenceScore}`;
+    verdictSub.textContent = `${pairAssessment.verdict}${evidenceText} · confidence ${pairAssessment.confidence}`;
+    tdS.appendChild(strengthMain);
+    tdS.appendChild(verdictSub);
     const tdE = document.createElement('td');
     tdE.className = 'evidence-cell';
     const evMain = document.createElement('div');
@@ -5331,7 +5415,10 @@ function formatIpRelationshipQuality(j){
     bucket_truncated: 'oversized buckets truncated',
     bucket_skipped: 'oversized buckets skipped',
     candidate_limit_reached: 'candidate limit reached',
+    candidate_work_limit_reached: 'candidate work limit reached',
     pair_heap_truncated: 'pair results truncated',
+    pair_display_truncated: 'pair display or neighbor limit reached',
+    local_context_truncated: 'local DNS context bounded',
     vt_partial_coverage: 'partial VT coverage'
   };
   const warnings = (Array.isArray(quality.warning_codes) ? quality.warning_codes : [])
@@ -5505,8 +5592,11 @@ async function analyzeIpRelationships(){
   try{
     const pairPanel = document.getElementById('ipRelPairsPanel');
     const pairPanelWasOpen = !!(pairPanel && pairPanel.style.display !== 'none');
+    const lookbackRaw = parseInt(String((document.getElementById('ipRelLookbackDays') || {}).value || '30'), 10);
+    const lookbackDays = Math.min(365, Math.max(0, Number.isFinite(lookbackRaw) ? lookbackRaw : 30));
     const requestBody = {
       ips: raw,
+      lookback_days: lookbackDays,
       min_score: minScore,
       top_pairs: topPairs,
       max_neighbors_per_ip: maxNeighbors,
@@ -5520,6 +5610,8 @@ async function analyzeIpRelationships(){
       pair_gate_mid_min: pairGateMidMin,
       pair_gate_fallback_score: pairGateFallbackScore
     };
+    const mispEventId = String((document.getElementById('ipIntelMispEventId') || {}).value || '').trim();
+    if(mispEventId) requestBody.misp_event_id = mispEventId;
     const jobResult = await fetchIpRelationshipJobResult(requestBody, controller, (jobId, state)=>{
       if(isStale()) return;
       if(state === 'active'){
@@ -5580,6 +5672,8 @@ async function analyzeIpRelationships(){
       }
       if(j.geoip_enabled) txt += ' / GeoIP ok';
       txt += formatIpRelationshipQuality(j);
+      const mispContextText = formatMispInputContext(j);
+      if(mispContextText) txt += ` / ${mispContextText}`;
       meta.textContent = txt;
     }
 

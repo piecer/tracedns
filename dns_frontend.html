@@ -344,7 +344,7 @@
 
 <div id="ipintel" class="section" aria-labelledby="ipIntelHeading">
   <h3 id="ipIntelHeading">🛰️ Botnet IP Analysis</h3>
-  <p class="section-intro">Find infrastructure relationships in an infected-host IP list, then inspect or export the evidence.</p>
+  <p class="section-intro">Find infrastructure relationships in an IP list with initially unknown roles, then inspect or export the evidence.</p>
 
   <section class="ipintel-input-panel" aria-labelledby="ipIntelInputHeading">
     <h4 id="ipIntelInputHeading">1. Prepare IPs</h4>
@@ -359,6 +359,10 @@
       <label class="misp-event-control" for="ipIntelMispEventId">
         <span>MISP Event ID</span>
         <input id="ipIntelMispEventId" type="number" min="1" step="1" inputmode="numeric" placeholder="e.g. 12345" />
+      </label>
+      <label class="misp-event-control" for="ipRelLookbackDays">
+        <span>Lookback days (0 = all)</span>
+        <input id="ipRelLookbackDays" type="number" min="0" max="365" step="1" value="30" inputmode="numeric" />
       </label>
       <button id="loadIpIntelMispBtn" class="button-secondary" type="button">📥 Load from MISP</button>
       <button id="runIpIntelBtn" class="button-secondary" type="button">🔍 Enrich Per-IP Details</button>
@@ -381,7 +385,7 @@
     <div class="workbench-heading-row">
       <div>
         <h4 id="ipRelWorkbenchHeading">2. Relationship Workbench</h4>
-        <p>Relationships use VT and GeoIP infrastructure similarity, not shared DNS domains.</p>
+        <p>Relationships combine VT/GeoIP infrastructure similarity with bounded, server-observed DNS provenance. Relationship strength is not by itself a same-botnet verdict.</p>
       </div>
       <div class="iprel-result-actions">
         <label for="ipRelFilterInput">Filter results</label>
@@ -439,7 +443,7 @@
       </div>
       <div id="ipRelPairsPanel" style="display:none;">
         <div id="ipRelPairsTableScroll" class="table-scroll" role="region" aria-label="Top similar IP pairs table" tabindex="0">
-          <table id="ipRelPairsTable"><thead><tr><th>IP A</th><th>IP B</th><th>Score</th><th>Evidence</th></tr></thead><tbody><tr><td colspan="4">Run an analysis to populate similar IP pairs.</td></tr></tbody></table>
+          <table id="ipRelPairsTable"><thead><tr><th>IP A</th><th>IP B</th><th>Relationship / Verdict</th><th>Evidence</th></tr></thead><tbody><tr><td colspan="4">Run an analysis to populate similar IP pairs.</td></tr></tbody></table>
         </div>
       </div>
       <h4>Clusters</h4>
@@ -458,7 +462,7 @@
     <div id="ipRelMapView" role="tabpanel" aria-labelledby="ipRelViewMapBtn" tabindex="0" style="display:none;">
       <div class="visual-result-layout">
         <div id="ipRelMap" class="iprel-visual" aria-label="Relationship country map"></div>
-        <aside class="summary-card visual-sidebar" aria-label="Map legend"><h4>Country Bubble Legend</h4><p>Bubble size shows infected IP count. Bubble color shows malicious ratio from VT.</p><p>Activate a bubble to filter the input IPs to that country and rerun analysis.</p><ul id="ipRelMapSummary" class="iprel-map-summary" aria-label="Country risk values"><li>Run Relationships to populate country risk values.</li></ul></aside>
+        <aside class="summary-card visual-sidebar" aria-label="Map legend"><h4>Country Bubble Legend</h4><p>Bubble size shows analyzed IP count. Bubble color shows malicious ratio from VT.</p><p>Activate a bubble to filter the input IPs to that country and rerun analysis.</p><ul id="ipRelMapSummary" class="iprel-map-summary" aria-label="Country risk values"><li>Run Relationships to populate country risk values.</li></ul></aside>
       </div>
     </div>
   </section>
