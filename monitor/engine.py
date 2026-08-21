@@ -74,6 +74,42 @@ def _snapshot_dict(snap: Snapshot) -> Dict[str, Any]:
     return snap.to_dict() if isinstance(snap, Snapshot) else {}
 
 
+_HISTORY_DECODER_KEYS = (
+    'txt_decode', 'a_decode', 'a_xor_key',
+    'ens_text_key', 'ens_decode', 'ens_xor_byte',
+    'ens_node', 'ens_resolver', 'ens_options',
+    'sns_decode', 'sns_options',
+)
+
+
+def _history_snapshot(value: Any) -> Dict[str, Any]:
+    snapshot = _snapshot_dict(value) if isinstance(value, Snapshot) else value
+    item = snapshot if isinstance(snapshot, dict) else {}
+    out = {
+        'values': item.get('values', []),
+        'decoded_ips': item.get('decoded_ips', []),
+        'ts': item.get('ts', 0),
+    }
+    for key in _HISTORY_DECODER_KEYS:
+        if item.get(key) not in (None, ''):
+            out[key] = item[key]
+    return out
+
+
+def _snapshot_changed(previous: Any, current: Snapshot) -> bool:
+    """Compare observable DNS values and the provenance used to decode them."""
+    prev = _snapshot_dict(previous) if isinstance(previous, Snapshot) else previous
+    prev = prev if isinstance(prev, dict) else {}
+    current_dict = _snapshot_dict(current)
+    if (prev.get('values') or []) != (current_dict.get('values') or []):
+        return True
+    if (prev.get('decoded_ips') or []) != (current_dict.get('decoded_ips') or []):
+        return True
+    if str(prev.get('type') or '').upper() != str(current_dict.get('type') or '').upper():
+        return True
+    return any(prev.get(key) != current_dict.get(key) for key in _HISTORY_DECODER_KEYS)
+
+
 def _dedupe_alert(action: str, entries: List[Tuple[str, str, str]]) -> List[Tuple[str, str, str]]:
     """Drop recently-sent duplicate alerts (best effort).
 
@@ -251,15 +287,7 @@ def run_domain_cycle(
                 continue
 
             # changed?
-            prev_values = (prev_obj or {}).get('values', []) if isinstance(prev_obj, dict) else (prev.values if prev else [])
-            prev_decoded = (prev_obj or {}).get('decoded_ips', []) if isinstance(prev_obj, dict) else (prev.decoded_ips if prev else [])
-            prev_type = (prev_obj or {}).get('type') if isinstance(prev_obj, dict) else (prev.type if prev else None)
-
-            changed = (
-                (prev_values or []) != (snap.values or [])
-                or (prev_decoded or []) != (snap.decoded_ips or [])
-                or str(prev_type or '').upper() != str(snap.type or '').upper()
-            )
+            changed = _snapshot_changed(prev_obj if isinstance(prev_obj, dict) else prev, snap)
 
             if changed:
                 hist_to_persist = None
@@ -267,12 +295,8 @@ def run_domain_cycle(
                     'ts': ts,
                     'server': srv,
                     'type': rtype,
-                    'old': {
-                        'values': (prev_obj or {}).get('values', []) if isinstance(prev_obj, dict) else (prev.values if prev else []),
-                        'decoded_ips': (prev_obj or {}).get('decoded_ips', []) if isinstance(prev_obj, dict) else (prev.decoded_ips if prev else []),
-                        'ts': (prev_obj or {}).get('ts') if isinstance(prev_obj, dict) else (prev.ts if prev else 0),
-                    },
-                    'new': {'values': snap.values, 'decoded_ips': snap.decoded_ips, 'ts': ts},
+                    'old': _history_snapshot(prev_obj if isinstance(prev_obj, dict) else prev),
+                    'new': _history_snapshot(snap),
                 }
                 with _STATE_LOCK:
                     if name not in current_results or name not in history:
