@@ -1,6 +1,7 @@
-PYTHON := python3
+PYTHON ?= python3
+PYTHON := $(if $(VIRTUAL_ENV),$(VIRTUAL_ENV)/bin/python3,$(PYTHON))
 PIP := pip3
-RUFF := $(shell command -v ruff 2>/dev/null || echo /tmp/ruff_venv/bin/ruff)
+RUFF ?= $(shell command -v ruff 2>/dev/null || true)
 
 .PHONY: install test botnet-coverage run lint
 
@@ -22,4 +23,6 @@ run:
 	$(PYTHON) dns_monitor.py
 
 lint:
-	"$(RUFF)" check .
+	@if [ -x "$(RUFF)" ]; then exec "$(RUFF)" check .; fi
+	@echo "ruff not found; install with: pip3 install ruff" >&2
+	@exit 127
