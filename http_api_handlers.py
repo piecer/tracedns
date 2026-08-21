@@ -4,6 +4,7 @@
 This module contains the web API handler methods extracted from http_server.py.
 """
 
+import ipaddress
 import json
 import mimetypes
 import os
@@ -29,15 +30,18 @@ from http_api.request_limits import (
     get_request_body,
     resolve_max_body_length,
 )
+from http_api.misp_context import normalize_misp_event, redact_misp_context_for_export
 from http_api.settings_handlers import handle_settings_get as _handle_settings_get_basic
 from http_api.settings_handlers import handle_settings_post as _handle_settings_post_basic
 from http_api.relationship_handlers import (
     RelationshipJobCapacityError,
     RelationshipRequestError,
     cancel_ip_relationship_job as _cancel_ip_relationship_job,
+    ensure_ip_relationship_job_capacity as _ensure_ip_relationship_job_capacity,
     get_ip_relationship_job as _get_ip_relationship_job,
     handle_ip_relationship_analysis as _handle_ip_relationship_analysis,
     start_ip_relationship_job as _start_ip_relationship_job,
+    _validate_relationship_request,
 )
 from monitor.runtime_state import (
     get_state_version,
@@ -46,6 +50,14 @@ from monitor.runtime_state import (
     snapshot_history_domain,
     snapshot_history_meta_only,
 )
+
+
+def _is_global_external_lookup_ip(value):
+    """Return whether an address is safe to send to third-party enrichment."""
+    try:
+        return bool(ipaddress.ip_address(str(value or '').strip()).is_global)
+    except ValueError:
+        return False
 
 
 try:
@@ -159,49 +171,87 @@ def attach_api_handlers(
         snap_version, current_snapshot, history_snapshot = snapshot_current_and_history_events(current_results, history)
         ip_map = {}
 
+        def _ip_entry(ip):
+            return ip_map.setdefault(ip, {
+                'domains': set(),
+                'record_types': set(),
+                'decoders': set(),
+                'change_timestamps': set(),
+                'count': 0,
+                'last_ts': 0,
+            })
+
+        def _add_dns_provenance(entry, source, record_type=None):
+            if not isinstance(source, dict):
+                source = {}
+            rtype = str(record_type or source.get('type') or '').strip().upper()
+            if rtype:
+                entry['record_types'].add(rtype)
+            decoder_field = {
+                'TXT': 'txt_decode',
+                'A': 'a_decode',
+                'ENS': 'ens_decode',
+                'SNS': 'sns_decode',
+            }.get(rtype)
+            decoder = str(source.get(decoder_field) or '').strip() if decoder_field else ''
+            if decoder and decoder.lower() != 'none':
+                entry['decoders'].add(f'{rtype}:{decoder}')
+
         for d, m in current_snapshot.items():
             for _srv, info in m.items():
                 for ip in info.get('values', []) if info.get('type') == 'A' else []:
-                    ent = ip_map.setdefault(ip, {'domains': set(), 'count': 0, 'last_ts': 0})
+                    ent = _ip_entry(ip)
                     ent['domains'].add(d)
                     ent['count'] += 1
                     ent['last_ts'] = max(ent['last_ts'], info.get('ts', 0))
+                    _add_dns_provenance(ent, {}, 'A')
                 for ip in info.get('decoded_ips', []):
-                    ent = ip_map.setdefault(ip, {'domains': set(), 'count': 0, 'last_ts': 0})
+                    ent = _ip_entry(ip)
                     ent['domains'].add(d)
                     ent['count'] += 1
                     ent['last_ts'] = max(ent['last_ts'], info.get('ts', 0))
+                    _add_dns_provenance(ent, info)
 
         for d, hist_obj in history_snapshot.items():
             events = hist_obj.get('events', []) if isinstance(hist_obj, dict) else []
             for ev in events:
                 ts = ev.get('ts', 0)
                 if 'new' in ev or 'old' in ev:
+                    changed_ips = set()
                     for side in ('new', 'old'):
                         side_obj = ev.get(side, {})
                         for ip in side_obj.get('values', []) if ev.get('type', 'A') == 'A' else []:
-                            ent = ip_map.setdefault(ip, {'domains': set(), 'count': 0, 'last_ts': 0})
+                            changed_ips.add(ip)
+                            ent = _ip_entry(ip)
                             ent['domains'].add(d)
                             ent['count'] += 1
                             ent['last_ts'] = max(ent['last_ts'], ts)
+                            _add_dns_provenance(ent, {}, ev.get('type', 'A'))
                         for ip in side_obj.get('decoded_ips', []) if ev.get('type', 'A') in ('TXT', 'A', 'ENS', 'SNS') else []:
-                            ent = ip_map.setdefault(ip, {'domains': set(), 'count': 0, 'last_ts': 0})
+                            changed_ips.add(ip)
+                            ent = _ip_entry(ip)
                             ent['domains'].add(d)
                             ent['count'] += 1
                             ent['last_ts'] = max(ent['last_ts'], ts)
+                            _add_dns_provenance(ent, side_obj, ev.get('type', 'A'))
+                    if int(ts or 0) > 0:
+                        for ip in changed_ips:
+                            _ip_entry(ip)['change_timestamps'].add(int(ts))
                 elif 'values' in ev:
                     if ev.get('type', 'A') == 'A':
                         for ip in ev.get('values', []):
-                            ent = ip_map.setdefault(ip, {'domains': set(), 'count': 0, 'last_ts': 0})
+                            ent = _ip_entry(ip)
                             ent['domains'].add(d)
                             ent['count'] += 1
                             ent['last_ts'] = max(ent['last_ts'], ts)
+                            _add_dns_provenance(ent, {}, ev.get('type', 'A'))
                     if ev.get('type', 'A') in ('TXT', 'A', 'ENS', 'SNS'):
                         for ip in ev.get('decoded_ips', []):
-                            ent = ip_map.setdefault(ip, {'domains': set(), 'count': 0, 'last_ts': 0})
+                            ent = _ip_entry(ip)
                             ent['domains'].add(d)
                             ent['count'] += 1
                             ent['last_ts'] = max(ent['last_ts'], ts)
+                            _add_dns_provenance(ent, ev, ev.get('type', 'A'))
 
         rows = []
         for ip, v in ip_map.items():
@@ -215,6 +265,9 @@ def attach_api_handlers(
             rows.append({
                 'ip': ip,
                 'domains': sorted(list(v['domains'])),
+                'record_types': sorted(list(v['record_types'])),
+                'decoders': sorted(list(v['decoders'])),
+                'change_timestamps': sorted(v['change_timestamps'], reverse=True)[:16],
                 'count': v['count'],
                 'last_ts': v['last_ts'],
                 'valid': valid,
@@ -233,7 +286,10 @@ def attach_api_handlers(
             if not ip:
                 continue
             ip_map[ip] = {
-                'domains': set(row.get('domains') or []),
+                'domains': list(row.get('domains') or []),
+                'record_types': list(row.get('record_types') or []),
+                'decoders': list(row.get('decoders') or []),
+                'change_timestamps': list(row.get('change_timestamps') or []),
                 'count': int(row.get('count') or 0),
                 'last_ts': int(row.get('last_ts') or 0),
             }
@@ -419,7 +475,7 @@ def attach_api_handlers(
             vt_cache = {}
     
             def _vt_brief(ip):
-                if not include_vt or not get_ip_report:
+                if not include_vt or not get_ip_report or not _is_global_external_lookup_ip(ip):
                     return None
                 if ip in vt_cache:
                     return vt_cache[ip]
@@ -772,7 +828,7 @@ def attach_api_handlers(
         try:
             for ip in sorted(role_map.keys()):
                 vt = None
-                if vt_enabled:
+                if vt_enabled and _is_global_external_lookup_ip(ip):
                     try:
                         rep = get_ip_report(ip)
                     except Exception:
@@ -906,7 +962,9 @@ def attach_api_handlers(
                             vt_reports = {}
                             vt_attempted = 0
                             if vt_enabled and vt_lookup_budget > 0 and uniq_ips:
-                                lookup_ips = uniq_ips[:vt_lookup_budget]
+                                lookup_ips = [
+                                    ip for ip in uniq_ips if _is_global_external_lookup_ip(ip)
+                                ][:vt_lookup_budget]
                                 vt_attempted = len(lookup_ips)
                                 try:
                                     # best effort parallelization (IO-bound)
@@ -1267,6 +1325,31 @@ def attach_api_handlers(
     
         if len(valid_ips) > max_valid_ips:
             return self._send_json({'error': f'too many valid IPs (max {max_valid_ips})'}, 400)
+
+        def _ip_scope(addr):
+            if addr.is_unspecified:
+                return 'unspecified'
+            if addr.is_loopback:
+                return 'loopback'
+            if addr.is_link_local:
+                return 'link_local'
+            if addr.is_multicast:
+                return 'multicast'
+            if addr.is_reserved:
+                return 'reserved'
+            if addr.is_private:
+                return 'private'
+            if addr.is_global:
+                return 'global'
+            return 'non_global'
+
+        ip_scope_metadata = {
+            ip: (_ip_scope(_ip.ip_address(ip)), _ip.ip_address(ip).is_global)
+            for ip in valid_ips
+        }
+        vt_eligible_ips = [ip for ip in valid_ips if ip_scope_metadata[ip][1]]
+        vt_eligible_count = len(vt_eligible_ips)
+        vt_skipped_non_global = len(valid_ips) - vt_eligible_count
     
         vt_enabled = bool(include_vt and get_ip_report)
         vt_unavailable_reason = None
@@ -1297,15 +1380,19 @@ def attach_api_handlers(
             vt_batch_started = True
         try:
             vt_reports = {}
+            vt_live_lookup_ips = set()
+            vt_cache_only_ips_set = set()
             if vt_enabled:
                 vt_lookup_ips = []
                 vt_cache_only_ips = []
-                for idx, ip in enumerate(valid_ips):
+                for idx, ip in enumerate(vt_eligible_ips):
                     if idx >= vt_lookup_budget:
                         vt_budget_limited = True
                         vt_cache_only_ips.append(ip)
                     else:
                         vt_lookup_ips.append(ip)
+                vt_live_lookup_ips = set(vt_lookup_ips)
+                vt_cache_only_ips_set = set(vt_cache_only_ips)
                 vt_lookup_attempted = len(vt_lookup_ips)
 
                 # Use cache-only path for budget-exceeded tail first.
@@ -1352,7 +1439,7 @@ def attach_api_handlers(
 
             for ip in valid_ips:
                 rep = vt_reports.get(ip) if vt_enabled else None
-                if vt_enabled and not isinstance(rep, dict):
+                if vt_enabled and ip_scope_metadata[ip][1] and not isinstance(rep, dict):
                     vt_missing_count += 1
     
                 asn = rep.get('asn') if isinstance(rep, dict) else None
@@ -1364,6 +1451,17 @@ def attach_api_handlers(
 
                 row = {
                     'ip': ip,
+                    'scope': ip_scope_metadata[ip][0],
+                    'vt_eligible': ip_scope_metadata[ip][1],
+                    'vt_source': (
+                        'disabled' if not vt_enabled
+                        else 'skipped_non_global' if not ip_scope_metadata[ip][1]
+                        else 'report' if isinstance(rep, dict) and ip in vt_live_lookup_ips
+                        else 'cached_report' if isinstance(rep, dict)
+                        else 'unavailable' if ip in vt_live_lookup_ips
+                        else 'cache_miss' if ip in vt_cache_only_ips_set
+                        else 'budget_exhausted'
+                    ),
                     'asn': str(asn) if asn is not None else '-',
                     'as_owner': str(as_owner) if as_owner else '-',
                     'csp': csp_info.get('csp', 'other'),
@@ -1723,6 +1821,8 @@ def attach_api_handlers(
             'vt_missing_count': vt_missing_count,
             'vt_lookup_budget': vt_lookup_budget,
             'vt_lookup_attempted': vt_lookup_attempted,
+            'vt_eligible_count': vt_eligible_count,
+            'vt_skipped_non_global': vt_skipped_non_global,
             'vt_workers': vt_workers,
             'ips_total_count': rows_total,
             'ips_displayed_count': len(shown_rows),
@@ -1807,40 +1907,21 @@ def attach_api_handlers(
         except Exception as e:
             return self._send_json({'error': f'failed to fetch event: {e}'}, 500)
     
-        event_obj = evt.get('Event', {}) if isinstance(evt, dict) else {}
-        attrs = event_obj.get('Attribute', []) if isinstance(event_obj, dict) else []
-        if not isinstance(attrs, list):
-            attrs = []
-    
-        import ipaddress as _ip
-        ips = []
-        invalid_values = []
-        seen = set()
-        for a in attrs:
-            if not isinstance(a, dict):
-                continue
-            if str(a.get('type', '')).lower() != 'ip-src':
-                continue
-            v = str(a.get('value', '')).strip()
-            if not v:
-                continue
-            try:
-                _ip.ip_address(v)
-            except Exception:
-                invalid_values.append(v)
-                continue
-            if v not in seen:
-                seen.add(v)
-                ips.append(v)
+        normalized_misp_context = normalize_misp_event(evt)
+        export_misp_context = redact_misp_context_for_export(normalized_misp_context)
+        event_context = export_misp_context.get('event', {})
+        ips = export_misp_context.get('ips', [])
+        invalid_values = export_misp_context.get('invalid_values', [])
     
         return self._send_json({
             'status': 'ok',
             'event_id': event_id_int,
-            'event_info': event_obj.get('info') if isinstance(event_obj, dict) else None,
-            'attribute_count': len(attrs),
+            'event_info': event_context.get('info'),
+            'attribute_count': export_misp_context.get('attribute_count', 0),
             'count': len(ips),
             'ips': ips,
-            'invalid_values': invalid_values[:200]
+            'invalid_values': invalid_values[:200],
+            'misp_context': export_misp_context,
         })
 
     def _handle_misp_search(self, qs=None):
@@ -1981,7 +2062,11 @@ def attach_api_handlers(
                 try:
                     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-                    budgeted = page[: min(len(page), vt_budget)]
+                    vt_eligible_rows = [
+                        row for row in page
+                        if _is_global_external_lookup_ip(row.get('ip'))
+                    ]
+                    budgeted = vt_eligible_rows[: min(len(vt_eligible_rows), vt_budget)]
                     if vt_workers <= 1 or len(budgeted) <= 1:
                         for row in budgeted:
                             try:
@@ -2013,6 +2098,12 @@ def attach_api_handlers(
                 'include_vt': bool(include_vt),
                 'vt_budget': vt_budget,
                 'vt_workers': vt_workers,
+                'vt_eligible_count': sum(
+                    1 for row in page if _is_global_external_lookup_ip(row.get('ip'))
+                ),
+                'vt_skipped_non_global': sum(
+                    1 for row in page if not _is_global_external_lookup_ip(row.get('ip'))
+                ),
             })
         except Exception as e:
             self._send_json({'error': str(e)}, 500)
@@ -2194,7 +2285,37 @@ def attach_api_handlers(
             except Exception:
                 return self._send_json({'error': 'invalid json'}, 400)
             try:
-                job = _start_ip_relationship_job(data, shared_config)
+                _validate_relationship_request(data)
+                _ensure_ip_relationship_job_capacity()
+            except RelationshipRequestError as exc:
+                return self._send_json(exc.payload, exc.status_code)
+            except RelationshipJobCapacityError as exc:
+                return self._send_json({'error': str(exc)}, 429)
+            misp_context = None
+            misp_event_id = data.get('misp_event_id') if isinstance(data, dict) else None
+            if misp_event_id not in (None, ''):
+                try:
+                    misp_event_id = int(str(misp_event_id).strip())
+                except Exception:
+                    return self._send_json({'error': 'invalid misp_event_id'}, 400)
+                misp_client = _init_misp_client(self)
+                if misp_client is None:
+                    return self._send_json({
+                        'error': 'misp client not initialized; check MISP URL/API key settings'
+                    }, 400)
+                try:
+                    # The normalized context is already resource bounded. Keep it intact for
+                    # trusted worker-side scoring; relationship responses redact it at export.
+                    misp_context = normalize_misp_event(misp_client.get_event(misp_event_id))
+                except Exception as exc:
+                    return self._send_json({'error': f'failed to fetch MISP event: {exc}'}, 502)
+            try:
+                job = _start_ip_relationship_job(
+                    data,
+                    shared_config,
+                    local_dns_context=self._gather_ip_map(),
+                    misp_context=misp_context,
+                )
             except RelationshipRequestError as exc:
                 return self._send_json(exc.payload, exc.status_code)
             except RelationshipJobCapacityError as exc:
