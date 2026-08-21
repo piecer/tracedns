@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import hashlib
 import ipaddress
 import json
 import logging
@@ -12,6 +14,8 @@ from concurrent.futures import ProcessPoolExecutor
 from io import BytesIO
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+from http_api.misp_context import redact_misp_context_for_export
 
 try:
     from vt_lookup import (
@@ -30,6 +34,18 @@ except Exception:
 
 logger = logging.getLogger(__name__)
 
+
+def _bounded_bucket_members(bucket_key: str, ips: Any, limit: int) -> Tuple[List[str], bool]:
+    """Select a deterministic, non-lexically-biased bounded bucket sample."""
+    unique = sorted({str(ip) for ip in (ips or [])})
+    if len(unique) <= limit:
+        return unique, False
+    ranked = sorted(
+        unique,
+        key=lambda ip: hashlib.sha256(f"{bucket_key}\0{ip}".encode("utf-8")).digest(),
+    )
+    return sorted(ranked[:limit]), True
+
 _IP_REL_JOB_LOCK = threading.Lock()
 _IP_REL_JOBS: Dict[str, Dict[str, Any]] = {}
 _IP_REL_JOB_EXECUTOR: Optional[ProcessPoolExecutor] = None
@@ -43,6 +59,10 @@ _IP_REL_JOB_MAX_RESULT_BYTES = max(
 )
 _IP_REL_MAX_TOKENS = 20000
 _IP_REL_MAX_UNIQUE_IPS = 10000
+_IP_REL_LOCAL_CONTEXT_MAX_BYTES = max(
+    64 * 1024,
+    int(os.environ.get("TRACEDNS_IP_REL_LOCAL_CONTEXT_MAX_BYTES", str(1024 * 1024)) or str(1024 * 1024)),
+)
 
 
 class RelationshipJobCapacityError(RuntimeError):
@@ -120,11 +140,19 @@ def _run_ip_relationship_analysis_payload(
     data: Dict[str, Any],
     shared_config: Optional[Dict[str, Any]] = None,
     vt_runtime_config: Optional[Dict[str, Any]] = None,
+    local_dns_context: Optional[Dict[str, Dict[str, Any]]] = None,
+    local_dns_context_metadata: Optional[Dict[str, Any]] = None,
+    misp_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if apply_vt_runtime_config is not None and vt_runtime_config is not None:
         apply_vt_runtime_config(vt_runtime_config)
     handler = _CapturingRelationshipHandler(data, shared_config)
-    result = handle_ip_relationship_analysis(handler)
+    result = handle_ip_relationship_analysis(
+        handler,
+        trusted_local_dns_context=local_dns_context,
+        trusted_local_dns_context_metadata=local_dns_context_metadata,
+        trusted_misp_context=misp_context,
+    )
     if isinstance(result, dict) and "payload" in result:
         return result
     return {"status_code": handler.status_code, "payload": handler.response}
@@ -142,12 +170,28 @@ def _ip_rel_job_done(job_id: str, fut):
             return
         try:
             result = fut.result()
-            job["result"] = result.get("payload") if isinstance(result, dict) else result
-            job["result_bytes"] = len(
-                json.dumps(job["result"], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            payload = result.get("payload") if isinstance(result, dict) else result
+            payload_bytes = len(
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
             )
-            job["status_code"] = int((result or {}).get("status_code") or 200) if isinstance(result, dict) else 200
-            job["status"] = "completed" if int(job.get("status_code") or 200) < 400 else "failed"
+            if payload_bytes > _IP_REL_JOB_MAX_RESULT_BYTES:
+                job["result"] = {
+                    "error": "relationship analysis result exceeded size limit",
+                    "result_too_large": True,
+                    "result_bytes": payload_bytes,
+                    "max_result_bytes": int(_IP_REL_JOB_MAX_RESULT_BYTES),
+                }
+                job["result_bytes"] = len(
+                    json.dumps(job["result"], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                )
+                job["status_code"] = 413
+                job["status"] = "failed"
+                job["error"] = "relationship analysis result exceeded size limit"
+            else:
+                job["result"] = payload
+                job["result_bytes"] = payload_bytes
+                job["status_code"] = int((result or {}).get("status_code") or 200) if isinstance(result, dict) else 200
+                job["status"] = "completed" if int(job.get("status_code") or 200) < 400 else "failed"
         except Exception:
             logger.exception("IP relationship analysis worker failed")
             job.pop("result", None)
@@ -158,8 +202,32 @@ def _ip_rel_job_done(job_id: str, fut):
         _bound_terminal_jobs_locked(keep_job_id=job_id)
 
 
-def start_ip_relationship_job(data: Any, shared_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    _validate_relationship_request(data)
+def ensure_ip_relationship_job_capacity() -> None:
+    """Fail fast before callers perform expensive request preparation.
+
+    Submission still repeats this check while inserting the job so concurrent
+    requests cannot exceed the pending-job limit.
+    """
+    _cleanup_ip_rel_jobs()
+    with _IP_REL_JOB_LOCK:
+        active_jobs = sum(
+            1 for existing in _IP_REL_JOBS.values()
+            if existing.get("status") in ("queued", "running")
+        )
+        if active_jobs >= _IP_REL_JOB_MAX_PENDING:
+            raise RelationshipJobCapacityError("relationship job queue is full")
+
+
+def start_ip_relationship_job(
+    data: Any,
+    shared_config: Optional[Dict[str, Any]] = None,
+    local_dns_context: Optional[Dict[str, Any]] = None,
+    misp_context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    valid_ips, _invalid = _validate_relationship_request(data)
+    context_snapshot, context_metadata = _sanitize_local_dns_context(
+        local_dns_context, allowed_ips=set(valid_ips), include_metadata=True
+    )
     _cleanup_ip_rel_jobs()
     job_id = uuid.uuid4().hex
     now = time.time()
@@ -185,6 +253,9 @@ def start_ip_relationship_job(data: Any, shared_config: Optional[Dict[str, Any]]
             data,
             dict(shared_config or {}),
             get_vt_runtime_config() if get_vt_runtime_config is not None else None,
+            context_snapshot,
+            context_metadata,
+            copy.deepcopy(misp_context) if isinstance(misp_context, dict) else None,
         )
     except Exception:
         with _IP_REL_JOB_LOCK:
@@ -323,6 +394,135 @@ def _parse_ip_tokens(raw: Any) -> Tuple[List[str], List[str]]:
     return (valid, invalid)
 
 
+def _sanitize_local_dns_context(
+    context: Any,
+    *,
+    allowed_ips: Optional[Set[str]] = None,
+    include_metadata: bool = False,
+) -> Any:
+    """Bound and normalize parent-process DNS context for worker transport."""
+    metadata = {
+        "truncated": False,
+        "byte_limit_reached": False,
+        "ip_limit_reached": False,
+        "ips_omitted": 0,
+        "domains_omitted": 0,
+        "record_types_omitted": 0,
+        "decoders_omitted": 0,
+        "change_timestamps_omitted": 0,
+        "serialized_bytes": 2,
+        "max_bytes": int(_IP_REL_LOCAL_CONTEXT_MAX_BYTES),
+    }
+    if not isinstance(context, dict):
+        return ({}, metadata) if include_metadata else {}
+
+    def bounded_strings(value: Any, *, limit: int, max_length: int) -> Tuple[List[str], int]:
+        if not isinstance(value, (list, tuple, set)):
+            return [], 0
+        raw_count = len(value)
+        cleaned = {
+            str(item or "").strip()
+            for item in value
+            if str(item or "").strip() and len(str(item or "").strip()) <= max_length
+        }
+        bounded = sorted(cleaned)[:limit]
+        return bounded, max(0, raw_count - len(bounded))
+
+    def bounded_timestamps(value: Any, *, limit: int) -> Tuple[List[int], int]:
+        if not isinstance(value, (list, tuple, set)):
+            return [], 0
+        raw_count = len(value)
+        cleaned = set()
+        for item in value:
+            try:
+                timestamp = int(item)
+            except (TypeError, ValueError):
+                continue
+            if timestamp > 0:
+                cleaned.add(timestamp)
+        bounded = sorted(cleaned, reverse=True)[:limit]
+        return bounded, max(0, raw_count - len(bounded))
+
+    if allowed_ips is not None:
+        context_items = [
+            (ip, context[ip])
+            for ip in sorted(allowed_ips)[:_IP_REL_MAX_UNIQUE_IPS]
+            if ip in context
+        ]
+    else:
+        context_items = list(context.items())[:_IP_REL_MAX_UNIQUE_IPS]
+        if len(context) > len(context_items):
+            metadata["ip_limit_reached"] = True
+            metadata["ips_omitted"] = len(context) - len(context_items)
+
+    out: Dict[str, Dict[str, Any]] = {}
+    serialized_bytes = 2
+    for item_index, (raw_ip, raw_entry) in enumerate(context_items):
+        try:
+            ip = str(ipaddress.ip_address(str(raw_ip or "").strip()))
+        except Exception:
+            continue
+        if allowed_ips is not None and ip not in allowed_ips:
+            continue
+        if not isinstance(raw_entry, dict):
+            continue
+        try:
+            count = max(0, min(int(raw_entry.get("count") or 0), 1_000_000))
+        except (TypeError, ValueError):
+            count = 0
+        try:
+            last_ts = max(0, int(raw_entry.get("last_ts") or 0))
+        except (TypeError, ValueError):
+            last_ts = 0
+        domains, domains_omitted = bounded_strings(
+            raw_entry.get("domains"), limit=32, max_length=253
+        )
+        record_types, record_types_omitted = bounded_strings(
+            raw_entry.get("record_types"), limit=8, max_length=16
+        )
+        decoders, decoders_omitted = bounded_strings(
+            raw_entry.get("decoders"), limit=16, max_length=160
+        )
+        sanitized_entry = {
+            "domains": domains,
+            "record_types": record_types,
+            "decoders": decoders,
+            "count": count,
+            "last_ts": last_ts,
+        }
+        change_timestamps, change_timestamps_omitted = bounded_timestamps(
+            raw_entry.get("change_timestamps"), limit=16
+        )
+        if change_timestamps:
+            sanitized_entry["change_timestamps"] = change_timestamps
+        encoded_entry = json.dumps(
+            {ip: sanitized_entry}, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")
+        entry_bytes = max(0, len(encoded_entry) - 2) + (1 if out else 0)
+        if serialized_bytes + entry_bytes > _IP_REL_LOCAL_CONTEXT_MAX_BYTES:
+            metadata["byte_limit_reached"] = True
+            metadata["ips_omitted"] += len(context_items) - item_index
+            break
+        out[ip] = sanitized_entry
+        serialized_bytes += entry_bytes
+        metadata["domains_omitted"] += domains_omitted
+        metadata["record_types_omitted"] += record_types_omitted
+        metadata["decoders_omitted"] += decoders_omitted
+        metadata["change_timestamps_omitted"] += change_timestamps_omitted
+    metadata["serialized_bytes"] = serialized_bytes
+    metadata["truncated"] = any(
+        int(metadata[key]) > 0
+        for key in (
+            "ips_omitted",
+            "domains_omitted",
+            "record_types_omitted",
+            "decoders_omitted",
+            "change_timestamps_omitted",
+        )
+    )
+    return (out, metadata) if include_metadata else out
+
+
 def _classify_ip_scope(ip: str) -> Tuple[str, bool]:
     """Return a stable scope label and whether an IP may be sent to VT."""
     addr = ipaddress.ip_address(ip)
@@ -450,11 +650,11 @@ def _is_missing_feature_value(value: Any, *, csp: bool = False) -> bool:
     return csp and normalized in ("other", "unknown", "other/unknown")
 
 
-def _normalize_hash(value: Any) -> str:
+def _normalize_hash(value: Any, *, expected_length: int) -> str:
     s = str(value or "").strip().lower()
-    if not s:
+    if len(s) != expected_length or re.fullmatch(r"[0-9a-f]+", s) is None:
         return ""
-    return re.sub(r"[^0-9a-f]", "", s)
+    return s
 
 
 def _short_token(value: Any, *, head: int = 12, tail: int = 8) -> str:
@@ -509,6 +709,32 @@ def _parse_network_cidr(network_txt: Any):
         return None
 
 
+def _network_candidate_keys(network_obj: Any) -> List[str]:
+    """Return shared ancestor keys so overlapping CIDRs enter pair scoring."""
+    if network_obj is None:
+        return []
+    try:
+        version = int(network_obj.version)
+        prefixlen = int(network_obj.prefixlen)
+        step = 4 if version == 4 else 16
+        normal_first = 8 if version == 4 else 16
+        if prefixlen >= normal_first:
+            first = normal_first
+        elif prefixlen >= step:
+            first = step
+        else:
+            first = 0
+        prefixes = list(range(first, prefixlen + 1, step))
+        if prefixlen not in prefixes:
+            prefixes.append(prefixlen)
+        return [
+            f"v{version}:{network_obj.supernet(new_prefix=prefix)}"
+            for prefix in prefixes
+        ]
+    except (AttributeError, TypeError, ValueError):
+        return []
+
+
 def _pair_gate_decision(
     score: int,
     evidence: List[Dict[str, Any]],
@@ -522,7 +748,12 @@ def _pair_gate_decision(
     if not enabled:
         return True, "gate_disabled"
 
-    strong_types = {"same_jarm", "same_cert_sha256", "same_network_exact"}
+    strong_types = {
+        "same_jarm",
+        "same_cert_sha256",
+        "same_network_exact",
+        "shared_observed_domain",
+    }
     mid_types = {
         "same_asn",
         "same_owner",
@@ -576,16 +807,74 @@ def _compare_features(
     b_network = str(fb.get("network") or "").strip()
     a_rir = str(fa.get("rir") or "").strip().upper()
     b_rir = str(fb.get("rir") or "").strip().upper()
-    a_jarm = _normalize_hash(fa.get("jarm"))
-    b_jarm = _normalize_hash(fb.get("jarm"))
-    a_cert = _normalize_hash(fa.get("cert_sha256"))
-    b_cert = _normalize_hash(fb.get("cert_sha256"))
+    a_jarm = _normalize_hash(fa.get("jarm"), expected_length=62)
+    b_jarm = _normalize_hash(fb.get("jarm"), expected_length=62)
+    a_cert = _normalize_hash(fa.get("cert_sha256"), expected_length=64)
+    b_cert = _normalize_hash(fb.get("cert_sha256"), expected_length=64)
     a_rdap_name = str(fa.get("rdap_name_norm") or "").strip()
     b_rdap_name = str(fb.get("rdap_name_norm") or "").strip()
     a_rdap_type = str(fa.get("rdap_type") or "").strip()
     b_rdap_type = str(fb.get("rdap_type") or "").strip()
     a_net_obj = ca.get("network_obj")
     b_net_obj = cb.get("network_obj")
+
+    a_local_raw = fa.get("local_dns")
+    b_local_raw = fb.get("local_dns")
+    a_local: Dict[str, Any] = a_local_raw if isinstance(a_local_raw, dict) else {}
+    b_local: Dict[str, Any] = b_local_raw if isinstance(b_local_raw, dict) else {}
+    shared_domains = sorted(
+        set(a_local.get("domains") or []).intersection(b_local.get("domains") or [])
+    )
+    if shared_domains:
+        score += 28
+        ev.append({
+            "type": "shared_observed_domain",
+            "value": ",".join(shared_domains[:3]),
+            "weight": 28,
+        })
+        shared_decoders = sorted(
+            set(a_local.get("decoders") or []).intersection(b_local.get("decoders") or [])
+        )
+        if shared_decoders:
+            score += 12
+            ev.append({
+                "type": "shared_decoder_provenance",
+                "value": ",".join(shared_decoders[:3]),
+                "weight": 12,
+            })
+        a_changes = [int(ts) for ts in a_local.get("change_timestamps") or [] if int(ts) > 0]
+        b_changes = [int(ts) for ts in b_local.get("change_timestamps") or [] if int(ts) > 0]
+        if a_changes and b_changes:
+            closest_change_delta = min(abs(a_ts - b_ts) for a_ts in a_changes for b_ts in b_changes)
+            if closest_change_delta <= 300:
+                score += 12
+                ev.append({
+                    "type": "coincident_dns_change",
+                    "value": f"{closest_change_delta}s",
+                    "weight": 12,
+                })
+
+    a_misp_raw = fa.get("misp")
+    b_misp_raw = fb.get("misp")
+    a_misp = a_misp_raw if isinstance(a_misp_raw, dict) else {}
+    b_misp = b_misp_raw if isinstance(b_misp_raw, dict) else {}
+    a_misp_event = str(a_misp.get("event_id") or "").strip()
+    b_misp_event = str(b_misp.get("event_id") or "").strip()
+    if a_misp_event and a_misp_event == b_misp_event:
+        score += 20
+        ev.append({"type": "shared_misp_event", "value": a_misp_event, "weight": 20})
+        shared_campaigns = sorted(
+            set(a_misp.get("campaigns") or []).intersection(
+                b_misp.get("campaigns") or []
+            )
+        )
+        if shared_campaigns:
+            score += 5
+            ev.append({
+                "type": "shared_misp_campaign",
+                "value": ",".join(shared_campaigns[:3]),
+                "weight": 5,
+            })
 
     # Infra similarity signals
     if not _is_missing_feature_value(a_asn) and not _is_missing_feature_value(b_asn) and a_asn == b_asn:
@@ -705,6 +994,112 @@ def _compare_features(
 
     return (score, ev)
 
+
+_EVIDENCE_SEMANTICS: Dict[str, Tuple[str, str, str]] = {
+    "same_asn": ("infrastructure", "virustotal", "medium"),
+    "same_owner": ("infrastructure", "virustotal", "medium"),
+    "same_csp": ("infrastructure", "virustotal", "low"),
+    "same_country": ("infrastructure", "virustotal", "low"),
+    "same_network_exact": ("infrastructure", "virustotal", "high"),
+    "same_network_overlap": ("infrastructure", "virustotal", "medium"),
+    "same_rdap_name": ("infrastructure", "virustotal", "medium"),
+    "same_rdap_type": ("infrastructure", "virustotal", "low"),
+    "same_rir": ("infrastructure", "virustotal", "low"),
+    "same_prefix24": ("infrastructure", "derived_ip", "low"),
+    "same_jarm": ("tls", "virustotal", "high"),
+    "same_cert_sha256": ("tls", "virustotal", "high"),
+    "vt_malicious_both": ("threat_intel", "virustotal", "low"),
+    "vt_suspicious_both": ("threat_intel", "virustotal", "low"),
+    "vt_detector_overlap": ("threat_intel", "virustotal", "medium"),
+    "vt_time_proximity": ("threat_intel", "virustotal", "low"),
+    "shared_observed_domain": ("local_dns", "tracedns", "high"),
+    "shared_decoder_provenance": ("local_dns", "tracedns", "medium"),
+    "coincident_dns_change": ("local_dns", "tracedns", "medium"),
+    "shared_misp_event": ("misp_context", "misp", "medium"),
+    "shared_misp_campaign": ("misp_context", "misp", "high"),
+}
+
+_EVIDENCE_FAMILY_CAPS = {
+    "infrastructure": 35,
+    "tls": 45,
+    "threat_intel": 20,
+    "local_dns": 40,
+    "misp_context": 25,
+    "other": 15,
+}
+
+_INDEPENDENT_EVIDENCE_SOURCES = {"virustotal", "tracedns", "misp"}
+_DIRECT_BOTNET_EVIDENCE_SCORES = {
+    "shared_misp_campaign": 70,
+}
+
+
+def _build_pair_assessment(evidence: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Build a conservative botnet verdict without changing legacy pair score."""
+    raw_family_scores: Dict[str, int] = defaultdict(int)
+    sources: Set[str] = set()
+    normalized_evidence: List[Dict[str, Any]] = []
+    has_high_specificity = False
+    direct_botnet_scores: Dict[str, int] = {}
+
+    for raw_item in evidence or []:
+        if not isinstance(raw_item, dict):
+            continue
+        evidence_type = str(raw_item.get("type") or "").strip()
+        family, source, specificity = _EVIDENCE_SEMANTICS.get(
+            evidence_type, ("other", "unknown", "low")
+        )
+        try:
+            weight = max(0, int(raw_item.get("weight") or 0))
+        except (TypeError, ValueError):
+            weight = 0
+        raw_family_scores[family] += weight
+        if source in _INDEPENDENT_EVIDENCE_SOURCES:
+            sources.add(source)
+        has_high_specificity = has_high_specificity or specificity == "high"
+        direct_score = _DIRECT_BOTNET_EVIDENCE_SCORES.get(evidence_type, 0)
+        if direct_score > 0:
+            direct_botnet_scores[evidence_type] = max(
+                direct_botnet_scores.get(evidence_type, 0), direct_score
+            )
+        normalized_evidence.append({
+            **raw_item,
+            "family": family,
+            "source": source,
+            "specificity": specificity,
+        })
+
+    family_scores = {
+        family: min(score, _EVIDENCE_FAMILY_CAPS.get(family, 15))
+        for family, score in sorted(raw_family_scores.items())
+        if score > 0
+    }
+    evidence_score = min(100, sum(family_scores.values()))
+    botnet_evidence_score = min(100, sum(direct_botnet_scores.values()))
+    independent_source_count = len(sources)
+    if (
+        evidence_score >= 35
+        and botnet_evidence_score >= 70
+        and independent_source_count >= 2
+        and has_high_specificity
+    ):
+        verdict = "same_botnet_likely"
+    elif evidence_score >= 35:
+        verdict = "related_infrastructure"
+    else:
+        verdict = "insufficient_evidence"
+
+    return {
+        "verdict": verdict,
+        "evidence_score": evidence_score,
+        "botnet_evidence_score": botnet_evidence_score,
+        "botnet_evidence_signals": sorted(direct_botnet_scores),
+        "raw_evidence_score": sum(raw_family_scores.values()),
+        "family_scores": family_scores,
+        "independent_sources": sorted(sources),
+        "independent_source_count": independent_source_count,
+        "evidence": normalized_evidence,
+    }
 
 
 def _top_counter(counter: Dict[str, int]) -> Dict[str, Any]:
@@ -894,7 +1289,9 @@ def _build_relationship_graph(
             "id": f"e{idx}",
             "source": a,
             "target": b,
-            "score": int(p.get("score") or 0),
+            "score": int(p.get("relationship_strength") or p.get("score") or 0),
+            "relationship_strength": int(p.get("relationship_strength") or p.get("score") or 0),
+            "legacy_score": int(p.get("score") or 0),
             "evidence": p.get("evidence") or [],
             "same_cluster": bool(ca > 0 and cb > 0 and ca == cb),
         })
@@ -909,7 +1306,15 @@ def _build_relationship_graph(
         "edge_limit": int(edge_limit),
     }
 
-def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None, body: Optional[bytes] = None):
+def handle_ip_relationship_analysis(
+    handler,
+    *,
+    gather_ip_map_fn=None,
+    trusted_local_dns_context: Optional[Dict[str, Dict[str, Any]]] = None,
+    trusted_local_dns_context_metadata: Optional[Dict[str, Any]] = None,
+    trusted_misp_context: Optional[Dict[str, Any]] = None,
+    body: Optional[bytes] = None,
+):
     """Similarity analysis among a user-supplied infected-host IP list.
 
     IMPORTANT: This endpoint used to be "shared domain" relationships.
@@ -949,6 +1354,102 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None, body: Opt
         valid_ips, invalid = _validate_relationship_request(data)
     except RelationshipRequestError as exc:
         return handler._send_json(exc.payload, exc.status_code)
+
+    try:
+        lookback_days = int(data.get("lookback_days", 30))
+    except Exception:
+        lookback_days = 30
+    lookback_days = min(max(lookback_days, 0), 365)
+    analysis_as_of = int(time.time())
+    analysis_cutoff = analysis_as_of - (lookback_days * 86400) if lookback_days else 0
+
+    local_context_raw = trusted_local_dns_context
+    if gather_ip_map_fn is not None:
+        try:
+            local_context_raw = gather_ip_map_fn()
+        except Exception:
+            logger.exception("Failed to snapshot local DNS context")
+            local_context_raw = {}
+    local_dns_context, local_context_truncation = _sanitize_local_dns_context(
+        local_context_raw, allowed_ips=set(valid_ips), include_metadata=True
+    )
+    if isinstance(trusted_local_dns_context_metadata, dict):
+        for key in (
+            "ips_omitted",
+            "domains_omitted",
+            "record_types_omitted",
+            "decoders_omitted",
+            "change_timestamps_omitted",
+        ):
+            local_context_truncation[key] = max(
+                int(local_context_truncation.get(key) or 0),
+                int(trusted_local_dns_context_metadata.get(key) or 0),
+            )
+        for key in ("byte_limit_reached", "ip_limit_reached", "truncated"):
+            local_context_truncation[key] = bool(
+                local_context_truncation.get(key)
+                or trusted_local_dns_context_metadata.get(key)
+            )
+    for local_entry in local_dns_context.values():
+        change_timestamps = [
+            ts for ts in (local_entry.get("change_timestamps") or [])
+            if analysis_cutoff == 0 or int(ts) >= analysis_cutoff
+        ]
+        if change_timestamps:
+            local_entry["change_timestamps"] = change_timestamps
+        else:
+            local_entry.pop("change_timestamps", None)
+    misp_ip_context: Dict[str, Dict[str, Any]] = {}
+    if isinstance(trusted_misp_context, dict):
+        raw_event = trusted_misp_context.get("event")
+        event = raw_event if isinstance(raw_event, dict) else {}
+        event_key = str(event.get("uuid") or event.get("id") or "").strip()[:128]
+        campaign_labels = set()
+        for raw_tag in event.get("tags") or []:
+            tag = str(raw_tag or "").strip()[:160]
+            tag_lower = tag.lower()
+            if tag and any(
+                marker in tag_lower
+                for marker in ("botnet", "campaign", "malware", "threat-actor")
+            ):
+                campaign_labels.add(tag)
+        for raw_galaxy in event.get("galaxies") or []:
+            if not isinstance(raw_galaxy, dict):
+                continue
+            galaxy_kind = " ".join(
+                str(raw_galaxy.get(key) or "") for key in ("name", "type")
+            ).lower()
+            if not any(
+                marker in galaxy_kind
+                for marker in ("botnet", "campaign", "malware", "threat actor")
+            ):
+                continue
+            for raw_cluster in raw_galaxy.get("clusters") or []:
+                if isinstance(raw_cluster, dict):
+                    label = str(raw_cluster.get("value") or "").strip()[:160]
+                else:
+                    label = str(raw_cluster or "").strip()[:160]
+                if label:
+                    campaign_labels.add(label)
+        bounded_campaign_labels = sorted(campaign_labels)[:8]
+        attributes = trusted_misp_context.get("attributes")
+        if event_key and isinstance(attributes, list):
+            allowed_ips = set(valid_ips)
+            for attribute in attributes:
+                if not isinstance(attribute, dict) or attribute.get("eligible_for_scoring") is not True:
+                    continue
+                try:
+                    attribute_ts = int(attribute.get("timestamp") or 0)
+                except Exception:
+                    attribute_ts = 0
+                if analysis_cutoff > 0 and attribute_ts > 0 and attribute_ts < analysis_cutoff:
+                    continue
+                ip = str(attribute.get("ip") or "").strip()
+                if ip in allowed_ips:
+                    misp_ip_context[ip] = {
+                        "event_id": event_key,
+                        "campaigns": bounded_campaign_labels,
+                    }
 
     def _to_int(name, default, min_v=None, max_v=None):
         raw = data.get(name, default)
@@ -1094,11 +1595,13 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None, body: Opt
         network = str(attrs.get("network") or "").strip()
         network_obj = _parse_network_cidr(network)
         rir = str(attrs.get("regional_internet_registry") or "").strip().upper()
-        jarm = _normalize_hash(attrs.get("jarm"))
+        jarm = _normalize_hash(attrs.get("jarm"), expected_length=62)
         cert_obj = attrs.get("last_https_certificate")
         cert_sha256 = ""
         if isinstance(cert_obj, dict):
-            cert_sha256 = _normalize_hash(cert_obj.get("thumbprint_sha256"))
+            cert_sha256 = _normalize_hash(
+                cert_obj.get("thumbprint_sha256"), expected_length=64
+            )
         rdap = attrs.get("rdap")
         if not isinstance(rdap, dict):
             rdap = {}
@@ -1163,6 +1666,14 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None, body: Opt
             "last_analysis_date": last_analysis_date if last_analysis_date > 0 else None,
             "vt_engine_positive_count": len(positive_engines),
             "vt_present": bool(isinstance(rep, dict)),
+            "local_dns": local_dns_context.get(ip, {
+                "domains": [],
+                "record_types": [],
+                "decoders": [],
+                "count": 0,
+                "last_ts": 0,
+            }),
+            "misp": misp_ip_context.get(ip),
         }
         ip_features[ip] = feat
         ip_similarity_context[ip] = {
@@ -1202,6 +1713,19 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None, body: Opt
         buckets.setdefault(f"{prefix}:{key}", []).append(ip)
 
     for ip, f in ip_features.items():
+        local_dns = f.get("local_dns") if isinstance(f.get("local_dns"), dict) else {}
+        for domain in (local_dns or {}).get("domains") or []:
+            _add_bucket("local-domain", str(domain), ip)
+        misp = f.get("misp") if isinstance(f.get("misp"), dict) else {}
+        _add_bucket("misp-event", str((misp or {}).get("event_id") or ""), ip)
+        for network_key in _network_candidate_keys(ip_similarity_context[ip].get("network_obj")):
+            _add_bucket("network-overlap", network_key, ip)
+        positive_engines = sorted(
+            str(engine) for engine in (ip_similarity_context[ip].get("positive_engines") or [])
+            if str(engine).strip()
+        )
+        for engine in positive_engines:
+            _add_bucket("vt-engine", engine, ip)
         _add_bucket("asn", str(f.get("asn") or ""), ip)
         _add_bucket("owner", str(f.get("as_owner_norm") or ""), ip)
         _add_bucket("csp", str(f.get("csp") or ""), ip)
@@ -1209,8 +1733,18 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None, body: Opt
         _add_bucket("network", str(f.get("network") or ""), ip)
         _add_bucket("rir", str(f.get("rir") or ""), ip)
         _add_bucket("rdap", str(f.get("rdap_name_norm") or ""), ip)
+        _add_bucket("rdap-type", str(f.get("rdap_type") or ""), ip)
         _add_bucket("jarm", str(f.get("jarm") or ""), ip)
         _add_bucket("cert", str(f.get("cert_sha256") or ""), ip)
+        if int(f.get("malicious") or 0) > 0:
+            _add_bucket("vt-malicious", "positive", ip)
+        if int(f.get("suspicious") or 0) > 0:
+            _add_bucket("vt-suspicious", "positive", ip)
+        analysis_ts = int(f.get("last_analysis_date") or 0)
+        if analysis_ts > 0:
+            time_window = analysis_ts // (3 * 86400)
+            for window_offset in (-1, 0, 1):
+                _add_bucket("vt-time", str(time_window + window_offset), ip)
         p24 = _ipv4_prefix24(ip)
         if p24:
             _add_bucket("p24", p24, ip)
@@ -1238,6 +1772,13 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None, body: Opt
     candidate_enumeration_count = 0
     deduped_candidate_count = 0
     candidate_limit_reached = False
+    candidate_work_limit = _to_int(
+        "candidate_work_limit",
+        min(max(candidate_limit * 8, candidate_limit), 2_000_000),
+        1,
+        5_000_000,
+    )
+    candidate_work_limit_reached = False
     pair_heap_truncated = False
 
     # Keep analysis topology independent from response-display limits. Every
@@ -1270,8 +1811,11 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None, body: Opt
     def _score_and_offer_pair(a: str, b: str):
         nonlocal pair_gate_kept, pair_gate_dropped
         nonlocal candidate_count, candidate_enumeration_count, deduped_candidate_count
-        nonlocal candidate_limit_reached, pair_heap_truncated
+        nonlocal candidate_limit_reached, candidate_work_limit_reached, pair_heap_truncated
         if not a or not b or a == b:
+            return
+        if candidate_enumeration_count >= candidate_work_limit:
+            candidate_work_limit_reached = True
             return
         if a > b:
             a, b = b, a
@@ -1288,7 +1832,7 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None, body: Opt
         seen_pairs.add(pair_key)
         fa = ip_features.get(a) or {}
         fb = ip_features.get(b) or {}
-        sc, ev = _compare_features(
+        legacy_score, ev = _compare_features(
             a,
             b,
             fa,
@@ -1296,10 +1840,12 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None, body: Opt
             ca=ip_similarity_context.get(a),
             cb=ip_similarity_context.get(b),
         )
-        if sc < min_score:
+        assessment = _build_pair_assessment(ev)
+        relationship_strength = int(assessment["evidence_score"])
+        if relationship_strength < min_score:
             return
         gate_ok, gate_reason = _pair_gate_decision(
-            sc,
+            relationship_strength,
             ev,
             min_score,
             enabled=pair_gate_enabled,
@@ -1311,37 +1857,72 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None, body: Opt
             pair_gate_dropped += 1
             return
         pair_gate_kept += 1
-        union_edge(a, b, int(sc))
-        item = {"a": a, "b": b, "score": sc, "evidence": ev, "gate_reason": gate_reason}
-        heap_key = (int(sc), str(a), str(b), item)
+        union_edge(a, b, relationship_strength)
+        item = {
+            "a": a,
+            "b": b,
+            "score": legacy_score,
+            "relationship_strength": relationship_strength,
+            "evidence": ev,
+            "assessment": assessment,
+            "gate_reason": gate_reason,
+        }
+        heap_key = (relationship_strength, str(a), str(b), item)
         if len(pair_heap) < heap_limit:
             heapq.heappush(pair_heap, heap_key)
         else:
             pair_heap_truncated = True
             # Keep the highest scoring bounded working set; deterministic tie
             # breakers preserve stable output for equal scores.
-            if (int(sc), str(a), str(b)) > (pair_heap[0][0], pair_heap[0][1], pair_heap[0][2]):
+            if (relationship_strength, str(a), str(b)) > (
+                pair_heap[0][0], pair_heap[0][1], pair_heap[0][2]
+            ):
                 heapq.heapreplace(pair_heap, heap_key)
 
-    for k, ips in buckets.items():
-        if candidate_limit_reached:
+    bucket_priority = {
+        "local-domain": 0,
+        "misp-event": 1,
+        "cert": 1,
+        "jarm": 2,
+        "network": 3,
+        "network-overlap": 4,
+        "vt-engine": 5,
+        "owner": 6,
+        "asn": 7,
+        "rdap": 8,
+        "csp": 9,
+        "rdap-type": 10,
+        "vt-malicious": 11,
+        "vt-suspicious": 12,
+        "vt-time": 13,
+        "rir": 14,
+        "country": 15,
+        "p24": 16,
+    }
+
+    def _bucket_sort_key(item):
+        bucket_key = item[0]
+        prefix = bucket_key.split(":", 1)[0]
+        return (bucket_priority.get(prefix, 99), bucket_key)
+
+    for k, ips in sorted(buckets.items(), key=_bucket_sort_key):
+        if candidate_limit_reached or candidate_work_limit_reached:
             break
         if not ips or len(ips) < 2:
             continue
-        uniq = sorted(set(ips))
-        if len(uniq) > BUCKET_MAX:
+        uniq, bucket_was_truncated = _bounded_bucket_members(k, ips, BUCKET_MAX)
+        if bucket_was_truncated:
             bucket_oversized_count += 1
             if bucket_overflow_mode == "skip":
                 continue
-            uniq = uniq[:BUCKET_MAX]
             bucket_truncated_count += 1
         for i in range(len(uniq)):
-            if candidate_limit_reached:
+            if candidate_limit_reached or candidate_work_limit_reached:
                 break
             a = uniq[i]
             for j in range(i + 1, len(uniq)):
                 _score_and_offer_pair(a, uniq[j])
-                if candidate_limit_reached:
+                if candidate_limit_reached or candidate_work_limit_reached:
                     break
 
     ranked_pairs = [entry[3] for entry in sorted(pair_heap, key=lambda x: (-x[0], x[1], x[2]))]
@@ -1439,35 +2020,59 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None, body: Opt
     # No eligible addresses means the global-only VT policy covered every
     # address it was allowed to query; it is not a partial-coverage warning.
     vt_report_coverage = vt_report_count / vt_eligible_count if vt_eligible_count else 1.0
+    local_context_truncated = bool(local_context_truncation.get("truncated"))
     candidate_analysis_complete = not (
         bucket_oversized_count > 0
         or candidate_limit_reached
-        or pair_heap_truncated
+        or candidate_work_limit_reached
+        or local_context_truncated
     )
+    cluster_topology_complete = candidate_analysis_complete
+    pair_display_truncated = len(kept) < len(ranked_pairs)
+    pair_detail_complete = not pair_heap_truncated and not pair_display_truncated
     enrichment_complete = not vt_enabled or vt_eligible_count == 0 or vt_report_coverage >= 1.0
-    analysis_complete = candidate_analysis_complete and enrichment_complete
+    analysis_complete = (
+        candidate_analysis_complete
+        and cluster_topology_complete
+        and pair_detail_complete
+        and enrichment_complete
+    )
     warning_codes = []
     if bucket_oversized_count > 0:
         warning_codes.append("bucket_truncated" if bucket_truncated_count > 0 else "bucket_skipped")
     if candidate_limit_reached:
         warning_codes.append("candidate_limit_reached")
+    if candidate_work_limit_reached:
+        warning_codes.append("candidate_work_limit_reached")
     if pair_heap_truncated:
         warning_codes.append("pair_heap_truncated")
+    if pair_display_truncated and not pair_heap_truncated:
+        warning_codes.append("pair_display_truncated")
+    if local_context_truncated:
+        warning_codes.append("local_context_truncated")
     if vt_enabled and vt_eligible_count > 0 and vt_report_coverage < 1.0:
         warning_codes.append("vt_partial_coverage")
 
     quality = {
         "analysis_complete": bool(analysis_complete),
         "candidate_analysis_complete": bool(candidate_analysis_complete),
+        "candidate_generation_complete": bool(candidate_analysis_complete),
+        "cluster_topology_complete": bool(cluster_topology_complete),
+        "pair_detail_complete": bool(pair_detail_complete),
         "enrichment_complete": bool(enrichment_complete),
         "candidate_limit": int(candidate_limit),
         "candidate_limit_reached": bool(candidate_limit_reached),
+        "candidate_work_limit": int(candidate_work_limit),
+        "candidate_work_limit_reached": bool(candidate_work_limit_reached),
+        "candidate_enumeration_count": int(candidate_enumeration_count),
         "unique_candidate_count": int(unique_candidate_count),
         "evaluated_candidate_count": int(unique_candidate_count),
         "deduped_candidate_count": int(deduped_candidate_count),
         "bucket_oversized_count": int(bucket_oversized_count),
         "bucket_truncated_count": int(bucket_truncated_count),
         "pair_heap_truncated": bool(pair_heap_truncated),
+        "local_context_truncated": bool(local_context_truncated),
+        "local_context_truncation": local_context_truncation,
         "vt_enabled": bool(vt_enabled),
         "vt_attempted": int(vt_attempted),
         "vt_eligible_count": int(vt_eligible_count),
@@ -1476,6 +2081,72 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None, body: Opt
         "vt_report_coverage": float(vt_report_coverage),
         "warning_codes": warning_codes,
     }
+
+    for pair in kept:
+        assessment = pair.get("assessment") if isinstance(pair.get("assessment"), dict) else {}
+        source_count = int((assessment or {}).get("independent_source_count") or 0)
+        verdict = str((assessment or {}).get("verdict") or "insufficient_evidence")
+        if analysis_complete and source_count >= 2 and verdict == "same_botnet_likely":
+            confidence_level = "high"
+        elif candidate_analysis_complete and int((assessment or {}).get("evidence_score") or 0) >= 35:
+            confidence_level = "medium"
+        else:
+            confidence_level = "low"
+        assessment["confidence"] = {
+            "level": confidence_level,
+            "analysis_complete": bool(analysis_complete),
+            "limitations": list(warning_codes),
+        }
+        pair["assessment"] = assessment
+
+    exported_misp_context = (
+        redact_misp_context_for_export(trusted_misp_context)
+        if isinstance(trusted_misp_context, dict)
+        else None
+    )
+    restricted_misp_export = bool(
+        isinstance(exported_misp_context, dict)
+        and exported_misp_context.get("context_redacted")
+    )
+    export_pairs = kept
+    export_ip_features = ip_features
+    if restricted_misp_export:
+        export_pairs = []
+        for pair in kept:
+            sanitized_pair = dict(pair)
+            sanitized_evidence = []
+            for item in pair.get("evidence") or []:
+                sanitized_item = dict(item) if isinstance(item, dict) else item
+                if (
+                    isinstance(sanitized_item, dict)
+                    and sanitized_item.get("type")
+                    in {"shared_misp_event", "shared_misp_campaign"}
+                ):
+                    sanitized_item["value"] = "[restricted]"
+                sanitized_evidence.append(sanitized_item)
+            sanitized_pair["evidence"] = sanitized_evidence
+            raw_assessment = pair.get("assessment")
+            if isinstance(raw_assessment, dict):
+                sanitized_assessment = dict(raw_assessment)
+                assessment_evidence = []
+                for item in raw_assessment.get("evidence") or []:
+                    sanitized_item = dict(item) if isinstance(item, dict) else item
+                    if (
+                        isinstance(sanitized_item, dict)
+                        and sanitized_item.get("type")
+                        in {"shared_misp_event", "shared_misp_campaign"}
+                    ):
+                        sanitized_item["value"] = "[restricted]"
+                    assessment_evidence.append(sanitized_item)
+                sanitized_assessment["evidence"] = assessment_evidence
+                sanitized_pair["assessment"] = sanitized_assessment
+            export_pairs.append(sanitized_pair)
+
+        export_ip_features = {}
+        for ip, feature in ip_features.items():
+            sanitized_feature = dict(feature)
+            sanitized_feature.pop("misp", None)
+            export_ip_features[ip] = sanitized_feature
 
     response = {
         "status": "ok",
@@ -1490,13 +2161,15 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None, body: Opt
         "bucket_overflow_mode": bucket_overflow_mode,
         "bucket_oversized_count": int(bucket_oversized_count),
         "bucket_truncated_count": int(bucket_truncated_count),
-        "pairs": kept,
+        "pairs": export_pairs,
         "pair_count": len(kept),
         "candidate_count": int(candidate_count),
         "candidate_enumeration_count": int(candidate_enumeration_count),
         "candidate_limit": int(candidate_limit),
         "unique_candidate_count": int(unique_candidate_count),
         "candidate_limit_reached": bool(candidate_limit_reached),
+        "candidate_work_limit": int(candidate_work_limit),
+        "candidate_work_limit_reached": bool(candidate_work_limit_reached),
         "analysis_complete": bool(analysis_complete),
         "deduped_candidate_count": int(deduped_candidate_count),
         "pair_heap_limit": int(heap_limit),
@@ -1519,13 +2192,40 @@ def handle_ip_relationship_analysis(handler, *, gather_ip_map_fn=None, body: Opt
         "vt_workers": vt_workers,
         "geoip_enabled": geoip_enabled,
         "geoip_source": geoip_source,
+        "analysis_window": {
+            "lookback_days": int(lookback_days),
+            "as_of": int(analysis_as_of),
+            "cutoff": int(analysis_cutoff) if analysis_cutoff else None,
+        },
         "quality": quality,
-        "ip_features": ip_features,
+        "score_semantics": {
+            "score": "legacy_capped_similarity",
+            "relationship_strength": "capped_relationship_strength",
+            "assessment": "conservative_botnet_verdict",
+            "botnet_evidence_score": "direct_campaign_or_family_evidence",
+            "same_botnet_likely_requires_independent_sources": True,
+            "model_version": 2,
+        },
+        "input_context": {
+            "misp": exported_misp_context,
+            "misp_evidence_export_policy": (
+                "restricted_values_redacted_scores_preserved"
+                if restricted_misp_export
+                else "values_exported"
+            ),
+            "local_dns_ip_count": len(local_dns_context),
+        },
+        "ip_features": export_ip_features,
         "country_summary": country_summary,
-        "note": "Similarity is inferred from VT/GeoIP infrastructure features (for infected-host IP lists).",
+        "note": (
+            "Relationship strength combines VT/GeoIP infrastructure features with bounded, "
+            "server-observed DNS provenance; it is not by itself a same-botnet verdict."
+        ),
     }
     insight_payload = _build_relationship_insights(response)
     response["insights"] = insight_payload.get("hints", [])
     response["characteristics"] = insight_payload.get("characteristics", {})
-    response["graph"] = _build_relationship_graph(kept, cluster_list, ip_features)
+    response["graph"] = _build_relationship_graph(
+        export_pairs, cluster_list, export_ip_features
+    )
     return handler._send_json(response)

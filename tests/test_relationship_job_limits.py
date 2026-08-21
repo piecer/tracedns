@@ -1,3 +1,4 @@
+import json
 import unittest
 from concurrent.futures import Future
 from typing import cast
@@ -58,6 +59,19 @@ class TestRelationshipJobLimit(unittest.TestCase):
         executor = cast(PendingExecutor, rh._IP_REL_JOB_EXECUTOR)
         self.assertEqual(len(executor.futures), 2)
 
+    def test_capacity_preflight_rejects_before_expensive_request_preparation(self):
+        rh._IP_REL_JOBS = {
+            "first": {"status": "running"},
+            "second": {"status": "queued"},
+        }
+
+        with mock.patch.object(rh, "_IP_REL_JOB_MAX_PENDING", 2):
+            with self.assertRaisesRegex(
+                rh.RelationshipJobCapacityError,
+                "queue is full",
+            ):
+                rh.ensure_ip_relationship_job_capacity()
+
     def test_submission_snapshots_current_vt_runtime_config_for_worker(self):
         config = {"api_key": "rotated-key", "cache_ttl": 12345}
 
@@ -68,6 +82,71 @@ class TestRelationshipJobLimit(unittest.TestCase):
         args, kwargs = executor.submissions[0]
         self.assertEqual(kwargs, {})
         self.assertEqual(args[3], config)
+
+    def test_submission_snapshots_bounded_json_local_dns_context_for_worker(self):
+        context = {
+            "8.8.8.8": {
+                "domains": {"b.example", "a.example"},
+                "record_types": {"TXT"},
+                "decoders": {"TXT:cafebabe_xor_base64"},
+                "count": 2,
+                "last_ts": 123,
+            }
+        }
+
+        misp_context = {
+            "event": {"id": "42"},
+            "access": {"tlp_tags": ["tlp:amber"]},
+        }
+        rh.start_ip_relationship_job(
+            {"ips": ["8.8.8.8"]},
+            local_dns_context=context,
+            misp_context=misp_context,
+        )
+        misp_context["event"]["id"] = "mutated"
+
+        executor = cast(PendingExecutor, rh._IP_REL_JOB_EXECUTOR)
+        args, kwargs = executor.submissions[0]
+        self.assertEqual(kwargs, {})
+        self.assertEqual(args[4], {
+            "8.8.8.8": {
+                "domains": ["a.example", "b.example"],
+                "record_types": ["TXT"],
+                "decoders": ["TXT:cafebabe_xor_base64"],
+                "count": 2,
+                "last_ts": 123,
+            }
+        })
+        self.assertFalse(args[5]["truncated"])
+        self.assertEqual(args[6]["event"]["id"], "42")
+
+    def test_local_context_byte_cap_and_truncation_metadata_reach_worker(self):
+        context = {
+            f"2001:db8::{index}": {
+                "domains": [f"{label}.example" for label in range(33)],
+                "record_types": ["A"],
+            }
+            for index in range(8)
+        }
+
+        with mock.patch.object(rh, "_IP_REL_LOCAL_CONTEXT_MAX_BYTES", 600):
+            rh.start_ip_relationship_job(
+                {"ips": list(context), "include_vt": False},
+                local_dns_context=context,
+            )
+
+        executor = cast(PendingExecutor, rh._IP_REL_JOB_EXECUTOR)
+        args, kwargs = executor.submissions[0]
+        snapshot = args[4]
+        metadata = args[5]
+        self.assertEqual(kwargs, {})
+        self.assertLessEqual(
+            len(json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")).encode("utf-8")),
+            600,
+        )
+        self.assertTrue(metadata["truncated"])
+        self.assertTrue(metadata["byte_limit_reached"])
+        self.assertGreater(metadata["ips_omitted"], 0)
 
     def assert_request_rejected_before_submit(self, data):
         with self.assertRaises(rh.RelationshipRequestError) as caught:
@@ -156,6 +235,26 @@ class TestRelationshipJobLimit(unittest.TestCase):
             rh._cleanup_ip_rel_jobs(now=10)
 
         self.assertEqual(set(rh._IP_REL_JOBS), {"active", "done-3"})
+
+    def test_completion_replaces_oversized_result_with_explicit_failure(self):
+        future = Future()
+        future.set_result({"status_code": 200, "payload": {"status": "ok", "data": "x" * 1000}})
+        rh._IP_REL_JOBS["oversized"] = {
+            "job_id": "oversized",
+            "status": "running",
+            "done_at": None,
+        }
+
+        with mock.patch.object(rh, "_IP_REL_JOB_MAX_RESULT_BYTES", 256):
+            rh._ip_rel_job_done("oversized", future)
+
+        job = rh._IP_REL_JOBS["oversized"]
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["status_code"], 413)
+        self.assertTrue(job["result"]["result_too_large"])
+        self.assertEqual(job["result"]["max_result_bytes"], 256)
+        self.assertGreater(job["result"]["result_bytes"], 256)
+        self.assertNotIn("data", job["result"])
 
     def test_cancel_calls_future_outside_job_lock(self):
         future = LockAwareCancelableFuture()
