@@ -89,6 +89,34 @@ def test_relationship_actions_and_operations_have_product_controls():
     assert _attr(result_filter, "aria-label")
 
 
+def test_misp_event_id_is_visible_beside_the_load_action():
+    action_row = re.search(
+        r'<div[^>]+class="[^"]*iprel-action-row[^"]*"[^>]*>(?P<body>.*?)</div>',
+        HTML,
+        re.DOTALL,
+    )
+    assert action_row, "missing Botnet IP action row"
+    body = action_row.group("body")
+    event_input = _tag_with_id("ipIntelMispEventId")
+
+    assert 'for="ipIntelMispEventId"' in body
+    assert 'id="ipIntelMispEventId"' in body
+    assert 'id="loadIpIntelMispBtn"' in body
+    assert body.index('id="ipIntelMispEventId"') < body.index('id="loadIpIntelMispBtn"')
+    assert _attr(event_input, "type") == "number"
+    assert _attr(event_input, "min") == "1"
+    assert _attr(event_input, "step") == "1"
+    assert HTML.count('id="ipIntelMispEventId"') == 1
+
+    enrichment = re.search(
+        r'<details[^>]+class="[^"]*ipintel-enrichment-settings[^"]*"[^>]*>(?P<body>.*?)</details>',
+        HTML,
+        re.DOTALL,
+    )
+    assert enrichment
+    assert 'id="ipIntelMispEventId"' not in enrichment.group("body")
+
+
 def test_relationship_summary_exposes_metrics_and_quality_status():
     expected_labels = {
         "ipRelMetricIps": "Analyzed IPs",

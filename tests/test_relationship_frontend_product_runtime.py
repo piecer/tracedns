@@ -32,12 +32,14 @@ def _backend_relationship_response(data):
 
 
 def _function_source(name: str) -> str:
-    for prefix in (f"function {name}(", f"async function {name}("):
-        start = SOURCE.find(prefix)
-        if start >= 0:
-            break
-    else:
+    starts = [
+        start
+        for prefix in (f"function {name}(", f"async function {name}(")
+        if (start := SOURCE.find(prefix)) >= 0
+    ]
+    if not starts:
         raise AssertionError(f"missing function {name}")
+    start = min(starts)
     brace = SOURCE.find("{", start)
     depth = 0
     quote = None
@@ -83,6 +85,35 @@ assert.deepStrictEqual(summarizeIpIntelInput(''), {
 assert.deepStrictEqual(summarizeIpIntelInput('1.1.1.1, 2.2.2.2\n1.1.1.1 | BAD bad'), {
   tokenCount: 5, uniqueCount: 4, duplicateCount: 1, isEmpty: false
 });
+""")
+
+
+def test_misp_loader_posts_the_visible_event_id():
+    _run_node(["loadIpIntelFromMisp"], r"""
+const assert = require('assert');
+const elements = {
+  ipIntelMispEventId: {value: '7342'},
+  ipIntelMeta: {textContent: ''},
+  ipIntelInvalidBox: {textContent: ''}
+};
+global.document = {getElementById: id => elements[id] || null};
+let request = null;
+global.fetch = async (url, options) => {
+  request = {url, options};
+  return {
+    ok: true,
+    json: async () => ({status: 'ok', event_id: 7342, ips: [], invalid_values: []})
+  };
+};
+global.setIpIntelInputValue = () => true;
+
+(async () => {
+  await loadIpIntelFromMisp(false);
+  assert.strictEqual(request.url, '/misp/event-ips');
+  assert.strictEqual(request.options.method, 'POST');
+  assert.deepStrictEqual(JSON.parse(request.options.body), {event_id: '7342'});
+  assert(elements.ipIntelMeta.textContent.includes('event 7342'));
+})().catch(error => { console.error(error); process.exitCode = 1; });
 """)
 
 

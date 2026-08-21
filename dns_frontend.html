@@ -356,6 +356,10 @@
     <div class="iprel-action-row">
       <button id="runIpRelationshipBtn" class="button-primary" type="button">🧬 Analyze Relationships</button>
       <button id="cancelIpRelationshipBtn" class="button-danger" type="button" disabled="disabled" hidden="hidden">Cancel analysis</button>
+      <label class="misp-event-control" for="ipIntelMispEventId">
+        <span>MISP Event ID</span>
+        <input id="ipIntelMispEventId" type="number" min="1" step="1" inputmode="numeric" placeholder="e.g. 12345" />
+      </label>
       <button id="loadIpIntelMispBtn" class="button-secondary" type="button">📥 Load from MISP</button>
       <button id="runIpIntelBtn" class="button-secondary" type="button">🔍 Enrich Per-IP Details</button>
     </div>
@@ -369,7 +373,6 @@
         <label for="ipIntelRowLimit">Row limit<input id="ipIntelRowLimit" type="number" min="100" max="5000" value="1500" /></label>
         <label for="ipIntelVtBudget">VT lookup budget<input id="ipIntelVtBudget" type="number" min="0" max="5000" value="1200" /></label>
         <label for="ipIntelVtWorkers">VT workers<input id="ipIntelVtWorkers" type="number" min="1" max="32" value="8" /></label>
-        <label for="ipIntelMispEventId">MISP Event ID<input id="ipIntelMispEventId" type="text" placeholder="push_event_id" /></label>
       </div>
     </details>
   </section>

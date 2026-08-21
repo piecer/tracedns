@@ -817,6 +817,19 @@ tbody tr:hover{background:#f0f8fb;}
   margin-top:12px;
 }
 .iprel-action-row button{margin:0;min-height:44px;}
+.misp-event-control{
+  align-items:center;
+  display:flex;
+  gap:8px;
+  margin:0;
+  white-space:nowrap;
+}
+.misp-event-control span{font-size:.82rem;}
+.misp-event-control input{
+  margin:0;
+  min-height:44px;
+  width:9rem;
+}
 .button-primary{font-size:.92rem;padding-inline:18px;}
 .button-secondary{
   color:#16566c;
@@ -1021,6 +1034,8 @@ details > summary{
   .domain-verify-grid{grid-template-columns:1fr;}
   .ipintel-input-panel,.iprel-workbench,.ipintel-secondary-results{padding:12px;}
   .iprel-action-row{display:grid;grid-template-columns:1fr;}
+  .misp-event-control{align-items:stretch;display:grid;grid-template-columns:1fr;}
+  .misp-event-control input{width:100%;}
   .iprel-action-row button{width:100%;margin:0;}
   .iprel-result-actions{grid-template-columns:1fr;}
   .iprel-result-actions label{grid-column:auto;}
