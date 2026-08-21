@@ -1909,8 +1909,11 @@ def attach_api_handlers(
     
         normalized_misp_context = normalize_misp_event(evt)
         export_misp_context = redact_misp_context_for_export(normalized_misp_context)
+        # This endpoint explicitly loads the event's normalized source IOCs into
+        # the analyst input. Keep the remaining MISP context behind export
+        # redaction so restricted metadata is not exposed to the browser.
         event_context = export_misp_context.get('event', {})
-        ips = export_misp_context.get('ips', [])
+        ips = normalized_misp_context.get('ips', [])
         invalid_values = export_misp_context.get('invalid_values', [])
     
         return self._send_json({
