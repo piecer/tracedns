@@ -295,7 +295,7 @@ def normalize_misp_event(payload: Any) -> Dict[str, Any]:
     scan_limit_reached = False
     attribute_limit_reached = False
     byte_limit_reached = False
-    attribute_context_bytes = 0
+    attribute_context_bytes = 2  # JSON array brackets: []
     attribute_tlp_tag_scans_truncated = 0
     for attribute, object_context in _iter_attributes(event):
         if scanned_attributes >= _MAX_SCANNED_ATTRIBUTES:
@@ -330,10 +330,11 @@ def normalize_misp_event(payload: Any) -> Dict[str, Any]:
             attribute_limit_reached = True
             continue
         normalized_bytes = len(json.dumps(normalized, separators=(",", ":")).encode("utf-8"))
-        if attribute_context_bytes + normalized_bytes > _MAX_ATTRIBUTE_CONTEXT_BYTES:
+        additional_bytes = normalized_bytes + (1 if attributes else 0)
+        if attribute_context_bytes + additional_bytes > _MAX_ATTRIBUTE_CONTEXT_BYTES:
             byte_limit_reached = True
             continue
-        attribute_context_bytes += normalized_bytes
+        attribute_context_bytes += additional_bytes
         attributes.append(normalized)
 
     objects = event.get("Object")
