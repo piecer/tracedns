@@ -23,6 +23,9 @@ run:
 	$(PYTHON) dns_monitor.py
 
 lint:
-	@if [ -x "$(RUFF)" ]; then exec "$(RUFF)" check .; fi
-	@echo "ruff not found; install with: pip3 install ruff" >&2
-	@exit 127
+	@if [ -x "$(RUFF)" ]; then \
+		exec "$(RUFF)" check .; \
+	else \
+		echo "ruff not found; install with: pip3 install ruff" >&2; \
+		exit 127; \
+	fi

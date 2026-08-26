@@ -7,7 +7,7 @@ import json
 from typing import Any, Dict, Iterable, List, Optional
 
 
-_MAX_ATTRIBUTES = 10_000
+_MAX_ATTRIBUTES = 20_000
 _MAX_SCANNED_ATTRIBUTES = 50_000
 _MAX_OBJECTS = 2_000
 _MAX_TAGS = 20
@@ -18,8 +18,8 @@ _MAX_GALAXY_CLUSTERS = 20
 _MAX_WARNINGLISTS = 20
 _MAX_SIGHTINGS_SCANNED = 1_000
 _MAX_TEXT = 1_000
-_MAX_CONTEXT_BYTES = 1 * 1024 * 1024
-_MAX_ATTRIBUTE_CONTEXT_BYTES = 768 * 1024
+_MAX_CONTEXT_BYTES = 10 * 1024 * 1024
+_MAX_ATTRIBUTE_CONTEXT_BYTES = 7_680 * 1024
 
 
 def _text(value: Any, limit: int = _MAX_TEXT) -> str:
@@ -281,6 +281,8 @@ def normalize_misp_event(payload: Any) -> Dict[str, Any]:
     }
 
     attributes: List[Dict[str, Any]] = []
+    ips: List[str] = []
+    seen_ips = set()
     invalid_values: List[str] = []
     tlp_tags = list(event_tlp_tags)
     contains_restricted = (
@@ -298,6 +300,7 @@ def normalize_misp_event(payload: Any) -> Dict[str, Any]:
     for attribute, object_context in _iter_attributes(event):
         if scanned_attributes >= _MAX_SCANNED_ATTRIBUTES:
             scan_limit_reached = True
+            contains_restricted = True
             break
         scanned_attributes += 1
         normalized, invalid = _attribute_context(attribute, event_context, object_context)
@@ -306,6 +309,9 @@ def normalize_misp_event(payload: Any) -> Dict[str, Any]:
         if normalized is None:
             continue
         matched_attributes += 1
+        if matched_attributes <= _MAX_ATTRIBUTES and normalized["ip"] not in seen_ips:
+            seen_ips.add(normalized["ip"])
+            ips.append(normalized["ip"])
         if normalized["tlp_tag_scan_truncated"]:
             attribute_tlp_tag_scans_truncated += 1
             contains_restricted = True
@@ -320,7 +326,7 @@ def normalize_misp_event(payload: Any) -> Dict[str, Any]:
             _is_restricted_tlp_tag(tag) for tag in normalized["tlp_tags"]
         ):
             contains_restricted = True
-        if len(attributes) >= _MAX_ATTRIBUTES:
+        if matched_attributes > _MAX_ATTRIBUTES:
             attribute_limit_reached = True
             continue
         normalized_bytes = len(json.dumps(normalized, separators=(",", ":")).encode("utf-8"))
@@ -332,9 +338,11 @@ def normalize_misp_event(payload: Any) -> Dict[str, Any]:
 
     objects = event.get("Object")
     objects_omitted = max(0, len(objects) - _MAX_OBJECTS) if isinstance(objects, list) else 0
+    if objects_omitted:
+        contains_restricted = True
     result = {
         "event": event_context,
-        "ips": [],
+        "ips": ips,
         "attributes": attributes,
         "invalid_values": invalid_values,
         "access": {
@@ -353,7 +361,11 @@ def normalize_misp_event(payload: Any) -> Dict[str, Any]:
         ),
         "truncation": {
             "scanned_attributes": scanned_attributes,
-            "attributes_omitted": max(0, matched_attributes - len(attributes)),
+            "attributes_omitted": (
+                max(0, matched_attributes - len(attributes))
+                + (1 if scan_limit_reached else 0)
+            ),
+            "attributes_omitted_is_lower_bound": scan_limit_reached,
             "objects_omitted": objects_omitted,
             "scan_limit_reached": scan_limit_reached,
             "attribute_limit_reached": attribute_limit_reached,
@@ -363,16 +375,6 @@ def normalize_misp_event(payload: Any) -> Dict[str, Any]:
         },
     }
 
-    def refresh_ips() -> None:
-        result["ips"] = []
-        seen_ips = set()
-        for item in attributes:
-            ip = item["ip"]
-            if ip not in seen_ips:
-                seen_ips.add(ip)
-                result["ips"].append(ip)
-
-    refresh_ips()
     if byte_limit_reached:
         result["context_truncated"] = True
     while len(json.dumps(result, separators=(",", ":")).encode("utf-8")) > _MAX_CONTEXT_BYTES:
@@ -383,8 +385,10 @@ def normalize_misp_event(payload: Any) -> Dict[str, Any]:
         result["attribute_count"] = len(attributes)
         result["context_truncated"] = True
         result["truncation"]["byte_limit_reached"] = True
-        result["truncation"]["attributes_omitted"] = matched_attributes - len(attributes)
-        refresh_ips()
+        result["truncation"]["attributes_omitted"] = (
+            matched_attributes - len(attributes)
+            + (1 if scan_limit_reached else 0)
+        )
 
     return result
 
