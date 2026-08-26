@@ -208,6 +208,10 @@ def test_context_byte_limit_does_not_truncate_loadable_source_ips():
     assert result["attribute_count"] < len(attributes)
     assert len(result["ips"]) == misp_context._MAX_ATTRIBUTES
     assert result["ips"][-1] == "10.0.78.31"
+    assert (
+        len(json.dumps(result["attributes"], separators=(",", ":")).encode("utf-8"))
+        <= misp_context._MAX_ATTRIBUTE_CONTEXT_BYTES
+    )
     assert len(json.dumps(result, separators=(",", ":")).encode("utf-8")) <= misp_context._MAX_CONTEXT_BYTES
 
 
