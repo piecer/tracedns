@@ -177,6 +177,88 @@ def test_context_is_byte_bounded_and_uses_explicit_tracedns_provenance():
     assert result["truncation"]["byte_limit_reached"] is True
 
 
+def test_context_byte_limit_does_not_truncate_loadable_source_ips():
+    assert misp_context._MAX_ATTRIBUTES == 20_000
+    assert misp_context._MAX_CONTEXT_BYTES == 10 * 1024 * 1024
+    assert misp_context._MAX_ATTRIBUTE_CONTEXT_BYTES == 7_680 * 1024
+
+    attributes = [
+        {
+            "id": str(index),
+            "uuid": f"attribute-{index}",
+            "type": "ip-src",
+            "value": f"10.{index // 65536}.{(index // 256) % 256}.{index % 256}",
+            "category": "Network activity",
+            "to_ids": True,
+            "distribution": "3",
+            "comment": "external report",
+            "Tag": [{"name": "source:osint"}],
+            "first_seen": "2026-08-20T00:00:00Z",
+            "last_seen": "2026-08-21T00:00:00Z",
+        }
+        for index in range(misp_context._MAX_ATTRIBUTES + 1)
+    ]
+    attributes[-1]["Tag"].append({"name": "tlp:red"})
+
+    result = normalize_misp_event({"Event": {"distribution": "3", "Attribute": attributes}})
+
+    assert result["truncation"]["byte_limit_reached"] is True
+    assert result["truncation"]["attribute_limit_reached"] is True
+    assert result["access"]["contains_restricted_attributes"] is True
+    assert result["attribute_count"] < len(attributes)
+    assert len(result["ips"]) == misp_context._MAX_ATTRIBUTES
+    assert result["ips"][-1] == "10.0.78.31"
+    assert len(json.dumps(result, separators=(",", ":")).encode("utf-8")) <= misp_context._MAX_CONTEXT_BYTES
+
+
+def test_scan_limit_fails_closed_and_marks_omission_count_as_lower_bound():
+    benign = {
+        "type": "ip-src",
+        "value": "8.8.8.8",
+        "to_ids": True,
+        "distribution": "3",
+    }
+    restricted = {
+        "type": "ip-src",
+        "value": "1.1.1.1",
+        "to_ids": True,
+        "distribution": "3",
+        "Tag": [{"name": "tlp:red"}],
+    }
+    attributes = [benign] * misp_context._MAX_SCANNED_ATTRIBUTES + [restricted]
+
+    normalized = normalize_misp_event({"Event": {"distribution": "3", "Attribute": attributes}})
+    exported = redact_misp_context_for_export(normalized)
+
+    assert normalized["truncation"]["scan_limit_reached"] is True
+    assert normalized["truncation"]["attributes_omitted_is_lower_bound"] is True
+    assert normalized["truncation"]["attributes_omitted"] >= 1
+    assert normalized["access"]["contains_restricted_attributes"] is True
+    assert exported["context_redacted"] is True
+
+
+def test_object_limit_fails_closed_when_later_objects_are_unscanned():
+    benign_object = {"name": "benign", "Attribute": []}
+    restricted_object = {
+        "name": "restricted",
+        "Attribute": [{
+            "type": "ip-src",
+            "value": "1.1.1.1",
+            "to_ids": True,
+            "distribution": "3",
+            "Tag": [{"name": "tlp:red"}],
+        }],
+    }
+    objects = [benign_object] * misp_context._MAX_OBJECTS + [restricted_object]
+
+    normalized = normalize_misp_event({"Event": {"distribution": "3", "Object": objects}})
+    exported = redact_misp_context_for_export(normalized)
+
+    assert normalized["truncation"]["objects_omitted"] == 1
+    assert normalized["access"]["contains_restricted_attributes"] is True
+    assert exported["context_redacted"] is True
+
+
 def test_unique_attribute_tlp_tags_cannot_escape_global_byte_cap():
     attributes = [
         {
@@ -188,7 +270,7 @@ def test_unique_attribute_tlp_tags_cannot_escape_global_byte_cap():
                 for tag in range(misp_context._MAX_TAGS)
             ],
         }
-        for index in range(300)
+        for index in range(2_000)
     ]
 
     result = normalize_misp_event({"Event": {"distribution": "3", "Attribute": attributes}})
