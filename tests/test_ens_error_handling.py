@@ -123,5 +123,29 @@ class TestEnsErrorHandling(unittest.TestCase):
         self.assertEqual(out.snapshot.ens_node, "0x" + "07" * 32)
         self.assertEqual(out.snapshot.ens_resolver, "0xF29100983E058B709F3D539b0c765937B804AC15")
 
+    def test_collect_snapshot_tracks_plain_ipv4_host_record(self):
+        with mock.patch.object(collect_mod, "fetch_ens_text_record", return_value="94.154.43.176") as fetch_mock:
+            domain = DomainSpec(
+                name="xorisgayilovekidsandihatemilfs.eth",
+                type="ENS",
+                ens_text_key="Host",
+                ens_decode="ipv4_literals",
+            )
+            out = collect_mod.collect_snapshot(domain, "https://rpc.example")
+
+        self.assertEqual(out.query.status, "ok")
+        snapshot = out.snapshot
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot.decoded_ips, ["94.154.43.176"])
+        self.assertEqual(snapshot.managed_ips(), {"94.154.43.176"})
+        fetch_mock.assert_called_once_with(
+            "https://rpc.example",
+            "xorisgayilovekidsandihatemilfs.eth",
+            "Host",
+            ens_node=None,
+            resolver_address=None,
+        )
+
 if __name__ == "__main__":
     unittest.main()
