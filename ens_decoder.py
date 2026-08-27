@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, List
 
 ENS_DECODE_METHODS: Dict[str, Callable[..., List[str]]] = {}
 _IPV6_CANDIDATE_RE = re.compile(r"[0-9A-Fa-f:]{2,}")
+_IPV4_CANDIDATE_RE = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
 
 
 def ens_decode_register(name: str):
@@ -188,6 +189,18 @@ def _parse_u32(value: Any, default: int = 0x00400454) -> int:
 @ens_decode_register('none')
 def decode_ens_none(record: str, **kwargs) -> List[str]:
     return []
+
+
+@ens_decode_register('ipv4_literals')
+def decode_ens_ipv4_literals(record: str, **kwargs) -> List[str]:
+    """Extract valid plain IPv4 literals from an ENS text record."""
+    out = set()
+    for match in _IPV4_CANDIDATE_RE.finditer(str(record or '')):
+        try:
+            out.add(str(ipaddress.IPv4Address(match.group(0))))
+        except Exception:
+            continue
+    return sorted(out)
 
 
 @ens_decode_register('ipv6_5to8_xor')

@@ -49,6 +49,13 @@ class TestEnsDecoder(unittest.TestCase):
         out = ens_decoder.decode_ens_hidden_ips(rec, method="betavpn_network_full")
         self.assertEqual(out, ["43.157.149.8"])
 
+    def test_ipv4_literals_decodes_plain_host_record(self):
+        out = ens_decoder.decode_ens_hidden_ips(
+            "Host=94.154.43.176|http://95.135.208.173:9000/path",
+            method="ipv4_literals",
+        )
+        self.assertEqual(out, ["94.154.43.176", "95.135.208.173"])
+
     def test_ROL3210_decode_matches_preserved_corpus(self):
         artifact_path = Path(ROOT) / "docs" / "ens" / "betavpn-network-full-decoder.json"
         self.assertTrue(artifact_path.exists(), "decoder corpus artifact must be tracked")

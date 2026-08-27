@@ -72,6 +72,24 @@ Per-domain decoder fields:
 
 - TXT domains: `txt_decode`
 - A domains: `a_decode` (e.g. `xor32_ipv4`) and optional `a_xor_key` (hex/int/dotted-byte format)
+- ENS domains: `ens_text_key` and `ens_decode`. Use `ipv4_literals` when a
+  case-sensitive text record such as `Host` contains plain IPv4 infrastructure.
+
+Example for monitoring a plain IPv4 ENS record:
+
+```json
+{
+  "ens_rpc_url": "https://<mainnet-rpc>",
+  "domains": [
+    {
+      "name": "xorisgayilovekidsandihatemilfs.eth",
+      "type": "ENS",
+      "ens_text_key": "Host",
+      "ens_decode": "ipv4_literals"
+    }
+  ]
+}
+```
 
 Do not rename config keys unless you know the code depends on them.
 
@@ -114,6 +132,7 @@ Optional flags:
 
 Notable ENS methods:
 
+- `ipv4_literals`: extract valid plain IPv4 literals from an ENS text record, including values embedded in URLs.
 - `ipv6_5to8_xor`: take IPv6 bytes 5:8 and XOR each byte into an IPv4.
 - `ROL3210_decode`: take IPv6 bytes 5:8 and apply the board-supplied `rol8`/bitmask transform used by the current betavpn `network` cluster.
 - `betavpn_network_full`: compatibility alias for the same transform, kept for cluster-specific traceability and older configs.
