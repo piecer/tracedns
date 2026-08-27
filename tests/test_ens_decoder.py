@@ -56,6 +56,20 @@ class TestEnsDecoder(unittest.TestCase):
         )
         self.assertEqual(out, ["94.154.43.176", "95.135.208.173"])
 
+    def test_ipv4_literals_accepts_sentence_and_root_dot_boundaries(self):
+        out = ens_decoder.decode_ens_hidden_ips(
+            "Current host is 94.154.43.176. Mirror: https://95.135.208.173./path",
+            method="ipv4_literals",
+        )
+        self.assertEqual(out, ["94.154.43.176", "95.135.208.173"])
+
+    def test_ipv4_literals_rejects_versions_and_malformed_addresses(self):
+        out = ens_decoder.decode_ens_hidden_ips(
+            "agent-v1.2.3.4beta|999.1.1.1|1.2.3.4.5|valid=162.141.92.3",
+            method="ipv4_literals",
+        )
+        self.assertEqual(out, ["162.141.92.3"])
+
     def test_ROL3210_decode_matches_preserved_corpus(self):
         artifact_path = Path(ROOT) / "docs" / "ens" / "betavpn-network-full-decoder.json"
         self.assertTrue(artifact_path.exists(), "decoder corpus artifact must be tracked")

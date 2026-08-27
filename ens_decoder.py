@@ -15,7 +15,9 @@ from typing import Any, Callable, Dict, List
 
 ENS_DECODE_METHODS: Dict[str, Callable[..., List[str]]] = {}
 _IPV6_CANDIDATE_RE = re.compile(r"[0-9A-Fa-f:]{2,}")
-_IPV4_CANDIDATE_RE = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
+_IPV4_CANDIDATE_RE = re.compile(
+    r"(?<![A-Za-z0-9_.])(?:\d{1,3}\.){3}\d{1,3}(?![A-Za-z0-9_]|\.(?=\d))"
+)
 
 
 def ens_decode_register(name: str):

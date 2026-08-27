@@ -122,14 +122,14 @@ class TestConfigManager(unittest.TestCase):
         self.assertEqual(len(out), 2)
         self.assertEqual([x.get("ens_text_key") for x in out], ["ipv6", "network"])
 
-    def test_normalize_domains_dedupes_same_ens_record_identity(self):
+    def test_normalize_domains_keeps_case_distinct_ens_text_keys(self):
         value = [
-            {"name": "example.eth", "type": "ENS", "ens_text_key": "ipv6", "ens_decode": "ipv6_5to8_xor"},
-            {"name": "example.eth.", "type": "ENS", "ens_text_key": "IPv6", "ens_decode": "ROL3210_decode"},
+            {"name": "example.eth", "type": "ENS", "ens_text_key": "Host", "ens_decode": "ipv4_literals"},
+            {"name": "example.eth.", "type": "ENS", "ens_text_key": "host", "ens_decode": "ipv4_literals"},
         ]
         out = cm.normalize_domains(value)
-        self.assertEqual(len(out), 1)
-        self.assertEqual(out[0].get("ens_decode"), "ipv6_5to8_xor")
+        self.assertEqual(len(out), 2)
+        self.assertEqual([x.get("ens_text_key") for x in out], ["Host", "host"])
 
     def test_ens_and_sns_with_same_name_and_key_remain_distinct(self):
         value = [

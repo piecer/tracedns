@@ -238,7 +238,7 @@ function domainConfigIdentity(domainObj){
   const name = normalizeDomainName(domainObj.name);
   const type = String(domainObj.type || 'A').trim().toUpperCase() || 'A';
   if(type === 'ENS'){
-    const textKey = String(domainObj.ens_text_key || 'ipv6').trim().toLowerCase() || 'ipv6';
+    const textKey = String(domainObj.ens_text_key || 'ipv6').trim() || 'ipv6';
     return `${name}|ENS|${textKey}`;
   }
   return name;
