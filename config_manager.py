@@ -38,7 +38,7 @@ def domain_identity(value):
         typ = str(value.get('type') or 'A').strip().upper() or 'A'
         if typ in ('ENS', 'SNS'):
             default_key = 'TXT' if typ == 'SNS' else 'ipv6'
-            text_key = str(value.get('ens_text_key') or default_key).strip().lower() or default_key.lower()
+            text_key = str(value.get('ens_text_key') or default_key).strip() or default_key
             if typ == 'ENS':
                 ens_node = str(value.get('ens_node') or '').strip().lower()
                 ens_resolver = str(value.get('ens_resolver') or '').strip().lower()
