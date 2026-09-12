@@ -1,9 +1,8 @@
-PYTHON ?= python3
-PYTHON := $(if $(VIRTUAL_ENV),$(VIRTUAL_ENV)/bin/python3,$(PYTHON))
-PIP := pip3
+PYTHON ?= $(if $(VIRTUAL_ENV),$(VIRTUAL_ENV)/bin/python3,$(if $(wildcard .venv/bin/python),.venv/bin/python,python3))
+PIP := $(PYTHON) -m pip
 RUFF ?= $(shell command -v ruff 2>/dev/null || true)
 
-.PHONY: install test botnet-coverage run lint
+.PHONY: install test botnet-coverage run lint e2e
 
 install:
 	$(PIP) install -r requirements.txt
@@ -21,6 +20,11 @@ botnet-coverage:
 
 run:
 	$(PYTHON) dns_monitor.py
+
+e2e:
+	npm ci
+	npx playwright install chromium
+	npm run test:e2e
 
 lint:
 	@if [ -x "$(RUFF)" ]; then \

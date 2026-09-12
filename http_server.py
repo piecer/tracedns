@@ -89,7 +89,9 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
             self._request_slots.release()
 
 
-def make_handler(shared_config, config_lock, config_path, history_dir, current_results, history, max_body_bytes=None):
+def make_handler(shared_config, config_lock, config_path, history_dir, current_results, history, max_body_bytes=None,
+                 *, security_store=None, public_origin='', insecure_http=False,
+                 allow_insecure_remote_http=False, trusted_proxies=()):
     """Create configured HTTP request handler class bound to runtime state.
 
     ``max_body_bytes`` defaults to ``resolve_max_body_length()`` when omitted.
@@ -99,7 +101,7 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
     class ConfigHandler(BaseHTTPRequestHandler):
         pass
 
-    return attach_api_handlers(
+    handler = attach_api_handlers(
         ConfigHandler,
         frontend_html=frontend_html,
         shared_config=shared_config,
@@ -111,3 +113,7 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
         purge_removed_domains_state=purge_removed_domains_state,
         max_body_bytes=max_body_bytes,
     )
+    from security.http import HttpSecurity, secure_handler
+    service = HttpSecurity(security_store, public_origin, insecure_http, trusted_proxies,
+                           allow_insecure_remote_http)
+    return secure_handler(handler, service)

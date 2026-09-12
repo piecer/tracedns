@@ -158,15 +158,46 @@ def _run_ip_relationship_analysis_payload(
     return {"status_code": handler.status_code, "payload": handler.response}
 
 
+def _audit_job_started(job):
+    store = job.get('security_store')
+    if store is None:
+        return
+    store.audit(job.get('actor'), 'analysis.lifecycle', target=job['job_id'],
+                outcome='started', request_id=job.get('request_id', ''),
+                source_ip=job.get('source_ip', ''), status='queued', job_id=job['job_id'])
+    job['audit_status'] = 'pending'
+
+
+def _audit_job_terminal(job):
+    if job.get('_completion_audited'):
+        return
+    store = job.get('security_store')
+    if store is None:
+        return
+    status = job['status']
+    try:
+        store.audit(job.get('actor'), 'analysis.lifecycle', target=job['job_id'],
+                    outcome='success' if status == 'completed' else status,
+                    request_id=job.get('request_id', ''), source_ip=job.get('source_ip', ''),
+                    status=status, job_id=job['job_id'])
+        job['_completion_audited'] = True
+        job['audit_status'] = 'recorded'
+    except Exception:
+        job['audit_status'] = 'failed'
+        logger.exception('Failed to audit analysis completion')
+
+
 def _ip_rel_job_done(job_id: str, fut):
     now = time.time()
     with _IP_REL_JOB_LOCK:
         job = _IP_REL_JOBS.get(job_id)
-        if not job or job.get("status") == "cancelled":
+        if not job or job.get("status") in ("completed", "failed", "cancelled"):
             return
         job["done_at"] = now
         if fut.cancelled():
             job["status"] = "cancelled"
+            _audit_job_terminal(job)
+            _bound_terminal_jobs_locked(keep_job_id=job_id)
             return
         try:
             result = fut.result()
@@ -199,10 +230,25 @@ def _ip_rel_job_done(job_id: str, fut):
             job["status"] = "failed"
             job["status_code"] = 500
             job["error"] = "relationship analysis failed"
+        _audit_job_terminal(job)
         _bound_terminal_jobs_locked(keep_job_id=job_id)
 
 
-def ensure_ip_relationship_job_capacity() -> None:
+def _job_visible(job, principal):
+    return principal is None or principal.get('role') == 'admin' or (
+        principal.get('id') is not None and job.get('owner_id') == principal['id']
+    )
+
+
+def _check_user_capacity_locked(principal):
+    if principal is not None and sum(
+        1 for job in _IP_REL_JOBS.values()
+        if job.get('status') in ('queued', 'running') and job.get('owner_id') == principal.get('id')
+    ) >= 4:
+        raise RelationshipJobCapacityError('per-user relationship job queue is full')
+
+
+def ensure_ip_relationship_job_capacity(*, principal=None) -> None:
     """Fail fast before callers perform expensive request preparation.
 
     Submission still repeats this check while inserting the job so concurrent
@@ -210,6 +256,7 @@ def ensure_ip_relationship_job_capacity() -> None:
     """
     _cleanup_ip_rel_jobs()
     with _IP_REL_JOB_LOCK:
+        _check_user_capacity_locked(principal)
         active_jobs = sum(
             1 for existing in _IP_REL_JOBS.values()
             if existing.get("status") in ("queued", "running")
@@ -223,6 +270,7 @@ def start_ip_relationship_job(
     shared_config: Optional[Dict[str, Any]] = None,
     local_dns_context: Optional[Dict[str, Any]] = None,
     misp_context: Optional[Dict[str, Any]] = None,
+    *, principal=None, security_store=None, request_id="", source_ip="",
 ) -> Dict[str, Any]:
     valid_ips, _invalid = _validate_relationship_request(data)
     context_snapshot, context_metadata = _sanitize_local_dns_context(
@@ -233,6 +281,11 @@ def start_ip_relationship_job(
     now = time.time()
     job = {
         "job_id": job_id,
+        "owner_id": (principal or {}).get("id"),
+        "actor": dict(principal) if principal is not None else None,
+        "security_store": security_store,
+        "request_id": request_id,
+        "source_ip": source_ip,
         "status": "queued",
         "created_at": now,
         "done_at": None,
@@ -240,24 +293,29 @@ def start_ip_relationship_job(
         "error": None,
     }
     with _IP_REL_JOB_LOCK:
+        _check_user_capacity_locked(principal)
         active_jobs = sum(
             1 for existing in _IP_REL_JOBS.values()
             if existing.get("status") in ("queued", "running")
         )
         if active_jobs >= _IP_REL_JOB_MAX_PENDING:
             raise RelationshipJobCapacityError("relationship job queue is full")
+        _audit_job_started(job)
         _IP_REL_JOBS[job_id] = job
     try:
         fut = _get_ip_rel_job_executor().submit(
             _run_ip_relationship_analysis_payload,
             data,
-            dict(shared_config or {}),
+            {k: v for k, v in (shared_config or {}).items() if not k.startswith("_")},
             get_vt_runtime_config() if get_vt_runtime_config is not None else None,
             context_snapshot,
             context_metadata,
             copy.deepcopy(misp_context) if isinstance(misp_context, dict) else None,
         )
     except Exception:
+        job['status'] = 'failed'
+        job['error'] = 'relationship analysis enqueue failed'
+        _audit_job_terminal(job)
         with _IP_REL_JOB_LOCK:
             _IP_REL_JOBS.pop(job_id, None)
         raise
@@ -269,11 +327,11 @@ def start_ip_relationship_job(
     return {"status": "queued", "job_id": job_id}
 
 
-def get_ip_relationship_job(job_id: str, *, include_result: bool = False) -> Tuple[Dict[str, Any], int]:
+def get_ip_relationship_job(job_id: str, *, include_result: bool = False, principal=None) -> Tuple[Dict[str, Any], int]:
     _cleanup_ip_rel_jobs()
     with _IP_REL_JOB_LOCK:
         job = _IP_REL_JOBS.get(str(job_id or ""))
-        if not job:
+        if not job or not _job_visible(job, principal):
             return ({"error": "job not found"}, 404)
         out = {
             "job_id": job.get("job_id"),
@@ -282,17 +340,18 @@ def get_ip_relationship_job(job_id: str, *, include_result: bool = False) -> Tup
             "done_at": job.get("done_at"),
             "status_code": job.get("status_code"),
             "error": job.get("error"),
+            "audit_status": job.get("audit_status", "not_configured"),
         }
         if include_result and job.get("status") in ("completed", "failed"):
             out["result"] = job.get("result")
         return (out, 200)
 
 
-def cancel_ip_relationship_job(job_id: str) -> Tuple[Dict[str, Any], int]:
+def cancel_ip_relationship_job(job_id: str, *, principal=None) -> Tuple[Dict[str, Any], int]:
     job_key = str(job_id or "")
     with _IP_REL_JOB_LOCK:
         job = _IP_REL_JOBS.get(job_key)
-        if not job:
+        if not job or not _job_visible(job, principal):
             return ({"error": "job not found"}, 404)
         if job.get("status") == "cancelled":
             return ({"status": "cancelled", "job_id": job_id, "cancelled": True}, 200)
@@ -312,7 +371,7 @@ def cancel_ip_relationship_job(job_id: str) -> Tuple[Dict[str, Any], int]:
 
     with _IP_REL_JOB_LOCK:
         job = _IP_REL_JOBS.get(job_key)
-        if not job:
+        if not job or not _job_visible(job, principal):
             return ({"error": "job not found"}, 404)
         if cancelled:
             job["status"] = "cancelled"

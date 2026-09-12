@@ -8,6 +8,10 @@ __pycache__/
 .codex
 .codex/
 venv/
+.venv/
+node_modules/
+test-results/
+playwright-report/
 
 # Runtime/cache artifacts
 .coverage*

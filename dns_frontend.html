@@ -1,6 +1,8 @@
 <!doctype html>
 <html lang="en">
 <head>
+<script src="/auth_frontend.js"></script>
+<script defer src="/security_ui.js"></script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>DNS Monitor</title>
@@ -24,8 +26,8 @@
   </div>
 </header>
 <nav>
-  <button id="menuSettings">Settings</button>
-  <button id="menuDomainVerify">Domain Verify</button>
+  <button id="menuSettings" data-access="operator">Settings</button>
+  <button id="menuDomainVerify" data-access="operator">Domain Verify</button>
   <button id="menuStatus" class="active">Status</button>
   <button id="menuQuery">Query</button>
   <button id="menuDomainAnalysis">Domain Analysis</button>
@@ -56,45 +58,45 @@
   </div>
 </div>
 
-<div id="settings" class="section">
+<div id="settings" data-access="operator" class="section">
   <h3>⚙️ Settings</h3>
   <div class="tab-buttons">
     <button id="settingsTabDomains" class="active">Domain settings</button>
-    <button id="settingsTabCustom">Custom decoders</button>
-    <button id="settingsTabAlerts">Alert integrations</button>
+    <button id="settingsTabCustom" data-access="admin">Custom decoders</button>
+    <button id="settingsTabAlerts" data-access="admin">Alert integrations</button>
   </div>
   <div id="domainSettingsSection">
     <table class="domain-table" id="domainTable">
       <thead><tr><th>Domain</th><th>Type</th><th>TXT Decode</th><th>A Decode</th><th>A XOR Key</th><th>ENS Key</th><th>ENS Decode</th><th>ENS Options (JSON)</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
-    <button id="addDomain">+ Add Domain</button>
+    <button id="addDomain" data-access="operator">+ Add Domain</button>
     
     <label>Servers (comma separated)
-      <input id="servers" type="text" placeholder="8.8.8.8, 1.1.1.1" />
+      <input id="servers" data-access="admin" type="text" placeholder="8.8.8.8, 1.1.1.1" />
     </label>
     <label>ENS RPC URL
-      <input id="ensRpcUrl" type="text" placeholder="https://mainnet.infura.io/v3/&lt;key&gt;" />
+      <input id="ensRpcUrl" data-access="admin" type="text" placeholder="https://mainnet.infura.io/v3/&lt;key&gt;" />
     </label>
     <label>DEFAULT_SNS_PROXY_HOSTS (comma separated)
-      <input id="snsProxyHosts" type="text" placeholder="https://sdk-proxy.sns.id,https://sns-sdk-proxy.bonfida.workers.dev" />
+      <input id="snsProxyHosts" data-access="admin" type="text" placeholder="https://sdk-proxy.sns.id,https://sns-sdk-proxy.bonfida.workers.dev" />
     </label>
     <label>Interval (seconds)
-      <input id="interval" type="number" min="1" value="60" />
+      <input id="interval" data-access="admin" type="number" min="1" value="60" />
     </label>
     
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin:20px 0;">
       <button id="load">📥 Load</button>
-      <button id="save">💾 Save</button>
-      <button id="force">⚡ Force Resolve</button>
-      <button id="verifyBtn">🔬 Verify</button>
+      <button id="save" data-access="operator">💾 Save</button>
+      <button id="force" data-access="operator">⚡ Force Resolve</button>
+      <button id="verifyBtn" data-access="operator">🔬 Verify</button>
     </div>
     
     <div id="verifyResult" style="background:#f8f9fa;padding:15px;max-height:240px;overflow:auto;margin-top:15px;font-family:monospace;border-radius:8px;border:2px solid #e9ecef;"></div>
   </div>
 
-  <h4 id="customSectionTitle">Custom Decoders</h4>
-  <div id="customSection" style="display:none">
+  <h4 id="customSectionTitle" data-access="admin">Custom Decoders</h4>
+  <div id="customSection" data-access="admin" style="display:none">
     <div class="info-box">
       <strong>📚 Usage Guide:</strong> New custom decoders are defined as a safe array of steps.
       <ul style="margin:10px 0 0 20px;">
@@ -130,7 +132,7 @@
     <h5 style="margin-top:15px;color:#1b5970;">Registered Custom Decoders</h5>
     <div id="customList" style="border:2px solid #e9ecef;padding:15px;max-height:220px;overflow:auto;background:#f8f9fa;border-radius:8px;"></div>
   </div>
-  <div id="alertsSection" style="display:none">
+  <div id="alertsSection" data-access="admin" style="display:none">
     <p style="color:#5b6a77;margin-bottom:12px;">Configure Teams/MISP/VirusTotal integration directly from the main console.</p>
     <label for="teams_webhook_front">Teams Webhook URL
       <input id="teams_webhook_front" type="text" placeholder="https://outlook.webhook.office.com/webhookb2/..." />
@@ -252,7 +254,7 @@
   <h3>📊 Current Status</h3>
   <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:15px;">
     <button id="pauseRefreshBtn">⏸️ Pause Auto-Refresh</button>
-    <button id="statusVerifyBtn">🔬 Verify Domains</button>
+    <button id="statusVerifyBtn" data-access="operator">🔬 Verify Domains</button>
     <span id="refreshState">Auto-refresh active</span>
   </div>
   <div id="statusVerifyResult" style="background:#f8f9fa;padding:15px;max-height:240px;overflow:auto;margin-bottom:15px;font-family:monospace;border-radius:8px;border:2px solid #e9ecef;display:none;"></div>
@@ -275,7 +277,7 @@
   <label>Search value (IP or TXT fragment)
     <input id="queryValue" type="text" placeholder="1.2.3.4 or example-txt" />
   </label>
-  <button id="doQuery">🔍 Search</button>
+  <button id="doQuery" data-access="operator">🔍 Search</button>
   <h4 style="margin-top:12px;">Local Results</h4>
   <div id="queryResult"></div>
   <h4 style="margin-top:12px;">MISP Results</h4>
@@ -306,7 +308,7 @@
     <button id="clearDomainAnalysisFilterBtn">Show All</button>
     <button id="selectNonResolvingDomainsBtn">Select Non-resolving</button>
     <button id="clearSelectedDomainsBtn">Clear Selection</button>
-    <button id="removeSelectedDomainsBtn">🗑️ Remove Selected</button>
+    <button id="removeSelectedDomainsBtn" data-access="operator">🗑️ Remove Selected</button>
     <span id="domainRemoveStatus" class="settings-status"></span>
   </div>
   <table id="domainDomainStatsTable">
@@ -354,8 +356,8 @@
     <p id="ipIntelInputStats" class="input-stats" role="status" aria-live="polite" aria-atomic="true">No IPs entered.</p>
 
     <div class="iprel-action-row">
-      <button id="runIpRelationshipBtn" class="button-primary" type="button">🧬 Analyze Relationships</button>
-      <button id="cancelIpRelationshipBtn" class="button-danger" type="button" disabled="disabled" hidden="hidden">Cancel analysis</button>
+      <button id="runIpRelationshipBtn" data-access="operator" class="button-primary" type="button">🧬 Analyze Relationships</button>
+      <button id="cancelIpRelationshipBtn" data-access="operator" class="button-danger" type="button" disabled="disabled" hidden="hidden">Cancel analysis</button>
       <label class="misp-event-control" for="ipIntelMispEventId">
         <span>MISP Event ID</span>
         <input id="ipIntelMispEventId" type="number" min="1" step="1" inputmode="numeric" placeholder="e.g. 12345" />
@@ -364,8 +366,8 @@
         <span>Lookback days (0 = all)</span>
         <input id="ipRelLookbackDays" type="number" min="0" max="365" step="1" value="30" inputmode="numeric" />
       </label>
-      <button id="loadIpIntelMispBtn" class="button-secondary" type="button">📥 Load from MISP</button>
-      <button id="runIpIntelBtn" class="button-secondary" type="button">🔍 Enrich Per-IP Details</button>
+      <button id="loadIpIntelMispBtn" data-access="operator" class="button-secondary" type="button">📥 Load from MISP</button>
+      <button id="runIpIntelBtn" data-access="operator" class="button-secondary" type="button">🔍 Enrich Per-IP Details</button>
     </div>
     <p id="ipRelRunStatus" class="run-status" role="status" aria-live="polite" aria-atomic="true">Ready to analyze relationships.</p>
     <span id="ipIntelMeta" class="supporting-status"></span>

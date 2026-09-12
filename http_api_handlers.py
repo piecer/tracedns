@@ -2230,7 +2230,8 @@ def attach_api_handlers(
             parts = [p for p in parsed.path.split('/') if p]
             if len(parts) >= 2:
                 include_result = bool(qs.get('result', ['0'])[0] in ('1', 'true', 'yes', 'on'))
-                payload, status = _get_ip_relationship_job(parts[1], include_result=include_result)
+                payload, status = _get_ip_relationship_job(parts[1], include_result=include_result,
+                                                          principal=getattr(self, 'principal', None))
                 return self._send_json(payload, status)
         if parsed.path == '/misp/search':
             return self._handle_misp_search(qs)
@@ -2289,7 +2290,7 @@ def attach_api_handlers(
                 return self._send_json({'error': 'invalid json'}, 400)
             try:
                 _validate_relationship_request(data)
-                _ensure_ip_relationship_job_capacity()
+                _ensure_ip_relationship_job_capacity(principal=getattr(self, 'principal', None))
             except RelationshipRequestError as exc:
                 return self._send_json(exc.payload, exc.status_code)
             except RelationshipJobCapacityError as exc:
@@ -2318,6 +2319,10 @@ def attach_api_handlers(
                     shared_config,
                     local_dns_context=self._gather_ip_map(),
                     misp_context=misp_context,
+                    principal=getattr(self, 'principal', None),
+                    security_store=getattr(self, 'security_store', None),
+                    request_id=getattr(self, 'request_id', ''),
+                    source_ip=getattr(self, 'source_ip', ''),
                 )
             except RelationshipRequestError as exc:
                 return self._send_json(exc.payload, exc.status_code)
@@ -2327,7 +2332,7 @@ def attach_api_handlers(
         if parsed.path.startswith('/ip-relationship-jobs/'):
             parts = [p for p in parsed.path.split('/') if p]
             if len(parts) >= 3 and parts[2] == 'cancel':
-                payload, status = _cancel_ip_relationship_job(parts[1])
+                payload, status = _cancel_ip_relationship_job(parts[1], principal=getattr(self, 'principal', None))
                 return self._send_json(payload, status)
         if parsed.path == '/ip-relationship-analysis':
             body, body_error = get_request_body(self, max_length=self.max_body_bytes)

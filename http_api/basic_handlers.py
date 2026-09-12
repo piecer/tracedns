@@ -14,6 +14,7 @@ from .utils import send_json, qs_bool
 def handle_config(ctx: HttpContext, handler) -> None:
     with ctx.config_lock:
         cfg = {
+            'revision': ctx.shared_config.get('_config_revision', 0),
             'domains': list(ctx.shared_config.get('domains', [])),
             'servers': list(ctx.shared_config.get('servers', [])),
             'interval': ctx.shared_config.get('interval'),
@@ -29,7 +30,8 @@ def handle_config(ctx: HttpContext, handler) -> None:
         }
         if 'alerts' in ctx.shared_config:
             cfg['alerts'] = ctx.shared_config.get('alerts')
-    send_json(handler, cfg)
+    from .settings_handlers import redacted_config
+    send_json(handler, redacted_config(cfg))
 
 
 def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Dict[str, Any], include_raw: bool) -> Dict[str, Any]:

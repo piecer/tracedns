@@ -1,4 +1,5 @@
 requests==2.31.0
+argon2-cffi>=23.1,<26
 dnspython==2.3.0
 PyMISP==2.4.140
 

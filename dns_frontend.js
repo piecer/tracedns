@@ -755,8 +755,7 @@ async function addVerifiedDomainToConfig(){
     }
     const payload = {
       domains: normalizedDomains,
-      servers: Array.isArray(cfgJson.servers) ? cfgJson.servers : [],
-      interval: Number(cfgJson.interval || 60)
+      revision: cfgJson.revision
     };
     const saveResp = await fetch('/config', {
       method: 'POST',
@@ -1502,7 +1501,7 @@ async function removeDomainsFromConfig(domainNames, successMessage){
     const saveResp = await fetch('/config', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({domains: nextDomains})
+      body: JSON.stringify({domains: nextDomains, revision: cfg.revision})
     });
     const saveJson = await saveResp.json();
     if(!(saveResp.ok && saveJson && saveJson.status === 'ok')){
@@ -2395,15 +2394,19 @@ function setAlertSettingsStatus(message, kind){
 
 async function loadAlertSettings(){
   try{
+    if(window.TraceAuth && (await window.TraceAuth.ready).role !== 'admin') return;
     const r = await fetch('/settings');
     if(!r.ok) throw new Error('HTTP '+r.status);
     const j = await r.json();
     const alerts = (j.settings && j.settings.alerts) ? j.settings.alerts : (j.settings || {}).alerts || {};
+    alertRevision = j.revision;
     document.getElementById('teams_webhook_front').value = alerts.teams_webhook || '';
     document.getElementById('misp_url_front').value = alerts.misp_url || '';
     document.getElementById('misp_key_front').value = alerts.api_key || '';
     document.getElementById('push_event_id_front').value = alerts.push_event_id || '';
     document.getElementById('vt_api_key_front').value = alerts.vt_api_key || '';
+    const secretIds = {teams_webhook:'teams_webhook_front', api_key:'misp_key_front', vt_api_key:'vt_api_key_front', misp_url:'misp_url_front'};
+    for(const [key, id] of Object.entries(secretIds)) secretInput(id, key, !!(alerts.configured || {})[key], 'alerts');
     const removeOnAbsentEl = document.getElementById('misp_remove_on_absent_front');
     if(removeOnAbsentEl){
       removeOnAbsentEl.checked = !!alerts.misp_remove_on_absent;
@@ -2441,7 +2444,7 @@ async function saveAlertSettings(){
     const r = await fetch('/settings', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({alerts})
+      body: JSON.stringify({alerts, revision: alertRevision, clear_fields: selectedSecretClears('alerts')})
     });
     const j = await r.json();
     if(!(r.ok && j && j.status === 'ok')){
@@ -2451,6 +2454,8 @@ async function saveAlertSettings(){
       vtTtlEl.value = String(vtTtlDays);
       vtTtlEl.dataset.current = String(vtTtlDays);
     }
+    alertRevision = j.revision;
+    await loadAlertSettings();
     setAlertSettingsStatus('Saved', 'ok');
   }catch(e){
     setAlertSettingsStatus('Save failed', 'err');
@@ -2639,13 +2644,15 @@ function addDomainRow(obj){
       // 자동으로 저장
       const payload = {
         domains: collectDomainsFromUI(),
+        revision: configRevision,
         servers: document.getElementById('servers').value.split(',').map(s=>s.trim()).filter(Boolean),
         interval: parseInt(document.getElementById('interval').value) || 60,
         ens_rpc_url: ((document.getElementById('ensRpcUrl') || {}).value || '').trim()
         ,DEFAULT_SNS_PROXY_HOSTS: ((document.getElementById('snsProxyHosts') || {}).value || '').split(',').map(s=>s.trim()).filter(Boolean)
       };
-      const r = await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      const r = await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(domainWritePayload(payload))});
       const j = await r.json();
+      configRevision = j.revision;
       log('Removed domain and saved');
     }catch(e){ 
       log('Remove error:'+e); 
@@ -2764,12 +2771,47 @@ function collectDomainsFromUI(){
   return out;
 }
 
+// Build only the fields this user's form is allowed to change.
+function domainWritePayload(payload){
+  if(window.TraceAuth && window.TraceAuth.user.role !== 'admin'){
+    return {domains:payload.domains, revision:payload.revision};
+  }
+  return {...payload, clear_fields:selectedSecretClears('config')};
+}
+
+function selectedSecretClears(scope){
+  return [...document.querySelectorAll(`[data-clear-scope="${scope}"]:checked`)].map(el=>el.dataset.clearField);
+}
+
+function secretInput(id, field, configured, scope){
+  const input = document.getElementById(id);
+  if(!input) return;
+  input.value = '';
+  input.placeholder = configured ? 'Configured — leave blank to keep' : 'Not configured';
+  let clear = document.getElementById('clear-'+id);
+  if(!clear){
+    const label = document.createElement('label');
+    clear = document.createElement('input');
+    clear.id = 'clear-'+id; clear.type = 'checkbox';
+    clear.dataset.clearScope = scope; clear.dataset.clearField = field;
+    label.append(clear, document.createTextNode(' Clear saved value'));
+    input.after(label);
+  }
+  clear.checked = false;
+  clear.disabled = !configured;
+}
+
+// Revision belongs to the displayed form, not an unrelated background read.
+let configRevision = null;
+let alertRevision = null;
+
 async function loadCfg(){
   try{
     const r = await fetch('/config');
     if(!r.ok){ log('Failed to load config'); return; }
     const j = await r.json();
     if(!j) { log('Invalid config response'); return; }
+    configRevision = j.revision;
     document.querySelector('#domainTable tbody').innerHTML = '';
     const domains = j.domains || [];
     if(Array.isArray(domains)) {
@@ -2783,9 +2825,9 @@ async function loadCfg(){
     const servers = j.servers || [];
     document.getElementById('servers').value = (Array.isArray(servers) ? servers : []).join(',');
     const ensRpcEl = document.getElementById('ensRpcUrl');
-    if(ensRpcEl) ensRpcEl.value = String(j.ens_rpc_url || '');
+    if(ensRpcEl) secretInput('ensRpcUrl', 'ens_rpc_url', !!(j.configured || {}).ens_rpc_url, 'config');
     const snsHostsEl = document.getElementById('snsProxyHosts');
-    if(snsHostsEl) snsHostsEl.value = (Array.isArray(j.DEFAULT_SNS_PROXY_HOSTS) ? j.DEFAULT_SNS_PROXY_HOSTS : []).join(',');
+    if(snsHostsEl) secretInput('snsProxyHosts', 'DEFAULT_SNS_PROXY_HOSTS', !!(j.configured || {}).DEFAULT_SNS_PROXY_HOSTS, 'config');
     document.getElementById('interval').value = j.interval || 60;
     log('Loaded config');
     touchOverviewTs();
@@ -2796,6 +2838,7 @@ document.getElementById('load').onclick = loadCfg;
 document.getElementById('save').onclick = async ()=>{
   try{
     const payload = {
+      revision: configRevision,
       domains: collectDomainsFromUI(),
       servers: document.getElementById('servers').value.split(',').map(s=>s.trim()).filter(Boolean),
       interval: parseInt(document.getElementById('interval').value) || 60,
@@ -2804,9 +2847,10 @@ document.getElementById('save').onclick = async ()=>{
     };
     uiOverview.configured = payload.domains.length;
     updateOverviewPanel();
-    const r = await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const r = await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(domainWritePayload(payload))});
     const j = await r.json();
-    log('Saved: ' + JSON.stringify(j));
+    configRevision = j.revision;
+    log('Settings saved');
   }catch(e){ log('Save error:'+e); }
 };
 

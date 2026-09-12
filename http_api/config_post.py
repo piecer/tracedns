@@ -44,22 +44,14 @@ def handle_config_post(ctx: HttpContext, handler) -> None:
     if data is None:
         send_json(handler, {"error": "invalid json"}, 400)
         return
-    if "domains" not in data:
-        update_keys = {
-            "interval", "servers", "ens_rpc_url", "DEFAULT_SNS_PROXY_HOSTS",
-            "custom_decoders", "custom_a_decoders", "max_workers",
-        }
-        if not update_keys.intersection(data):
-            if ctx.config_lock is not None:
-                with ctx.config_lock:
-                    snapshot_domains = list(ctx.shared_config.get("domains", []))
-            else:
-                snapshot_domains = list(ctx.shared_config.get("domains", []))
-            payload = {"status": "ok", "config": {"domains": snapshot_domains}}
-            send_json(handler, payload)
-            return
     removed = []
     with ctx.config_lock if ctx.config_lock else _NullCtx():
+        from .settings_handlers import check_revision, validate_clear_fields
+        if not check_revision(ctx, handler, data):
+            return
+        clear_fields = validate_clear_fields(handler, data, {'ens_rpc_url', 'DEFAULT_SNS_PROXY_HOSTS'})
+        if clear_fields is None:
+            return
         candidate = dict(ctx.shared_config)
         if "domains" in data:
             import config_manager as _CM
@@ -111,32 +103,38 @@ def handle_config_post(ctx: HttpContext, handler) -> None:
                 send_json(handler, {"error": "max_workers must be an integer between 1 and 64"}, 400)
                 return
             candidate["max_workers"] = max_workers
-        if "ens_rpc_url" in data:
+        if "ens_rpc_url" in data and str(data["ens_rpc_url"] or "").strip():
             candidate["ens_rpc_url"] = str(data["ens_rpc_url"] or "").strip()
+        if "ens_rpc_url" in clear_fields:
+            candidate.pop("ens_rpc_url", None)
         if "DEFAULT_SNS_PROXY_HOSTS" in data:
             hosts = data["DEFAULT_SNS_PROXY_HOSTS"]
             if not isinstance(hosts, list):
                 send_json(handler, {"error": "DEFAULT_SNS_PROXY_HOSTS must be a list"}, 400)
                 return
-            candidate["DEFAULT_SNS_PROXY_HOSTS"] = [
-                str(host).strip() for host in hosts if str(host or "").strip()
-            ]
+            if hosts:
+                candidate["DEFAULT_SNS_PROXY_HOSTS"] = [str(host).strip() for host in hosts if str(host or "").strip()]
+        if 'DEFAULT_SNS_PROXY_HOSTS' in clear_fields:
+            candidate['DEFAULT_SNS_PROXY_HOSTS'] = []
         for key in ("custom_decoders", "custom_a_decoders"):
             if key in data:
                 if not isinstance(data[key], list):
                     send_json(handler, {"error": f"{key} must be a list"}, 400)
                     return
                 candidate[key] = list(data[key])
+        candidate['config_revision'] = ctx.shared_config.get('_config_revision', 0) + 1
         if ctx.config_path:
             import config_manager as _CM
             try:
-                _CM.write_config(ctx.config_path, candidate)
+                _CM.write_config(ctx.config_path, {k: v for k, v in candidate.items() if not k.startswith("_")})
             except Exception as exc:  # noqa: BLE001
                 send_json(handler, {
                     "error": f"config save failed: {exc}",
                     "status": "error",
                 }, 500)
                 return
+        candidate["_config_revision"] = ctx.shared_config.get("_config_revision", 0) + 1
+        revision = candidate["_config_revision"]
         ctx.shared_config.clear()
         ctx.shared_config.update(candidate)
     if removed and callable(getattr(ctx, "purge_removed_domains_state", None)):
@@ -146,7 +144,7 @@ def handle_config_post(ctx: HttpContext, handler) -> None:
             ctx.history_dir,
             removed,
         )
-    payload = {"status": "ok"}
+    payload = {"status": "ok", "revision": revision}
     cfg = {}
     if "domains" in ctx.shared_config:
         cfg["domains"] = list(ctx.shared_config.get("domains", []))
@@ -164,7 +162,8 @@ def handle_config_post(ctx: HttpContext, handler) -> None:
         )
     if cfg:
         payload["config"] = cfg
-    send_json(handler, payload)
+    from .settings_handlers import redacted_config
+    send_json(handler, redacted_config(payload))
 
 def handle_resolve(ctx: HttpContext, handler) -> None:
     body = _read_body(handler, ctx)
@@ -224,8 +223,12 @@ def handle_resolve(ctx: HttpContext, handler) -> None:
         if len(queue) >= 64:
             send_json(handler, {"error": "resolve request queue is full"}, 429)
             return
-        queue.append({"domains": domains, "servers": servers})
-    send_json(handler, {"status": "ok", "requested": True})
+        job = {"domains": domains, "servers": servers}
+        from security.jobs import prepare_force
+        if not prepare_force(handler, job, queue):
+            return
+        queue.append(job)
+    send_json(handler, {"status": "ok", "requested": True, "job_id": job.get('job_id')})
 
 
 def _find_ip_in_results(ctx: HttpContext, ip: str):

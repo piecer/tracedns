@@ -131,6 +131,15 @@ def build_arg_parser():
     parser.add_argument("--http-host", default="127.0.0.1", help="HTTP UI bind host")
     parser.add_argument("--http-port", type=int, default=8000, help="HTTP UI port")
     parser.add_argument("--max-workers", type=int, default=8, help="Max worker threads for per-domain parallel DNS queries")
+    parser.add_argument('--security-db', default=os.path.expanduser('~/.local/share/tracedns/security/auth.sqlite'))
+    parser.add_argument('--public-origin', default='', help='HTTPS public origin behind trusted proxy')
+    parser.add_argument('--insecure-http', action='store_true', help='Explicit insecure HTTP mode')
+    parser.add_argument('--allow-insecure-remote-http', action='store_true',
+                        help='DANGEROUS: allow plaintext HTTP beyond loopback; use only on a trusted LAN')
+    parser.add_argument('--trusted-proxy', action='append', default=[], help='Trusted proxy IP; repeatable')
+    parser.add_argument('--audit-retention-days', type=int, default=180)
+    parser.add_argument('--session-idle-minutes', type=int, default=30)
+    parser.add_argument('--session-hours', type=int, default=12)
     return parser
 
 
@@ -138,6 +147,13 @@ def main():
     _setup_logging()
 
     args = build_arg_parser().parse_args()
+    from security.startup import open_security
+    try:
+        security_store = open_security(args)
+    except (ValueError, OSError) as exc:
+        logger.error('Security startup failed: %s', exc)
+        raise SystemExit(2) from None
+
 
     cli_specified = {
         'domains': any(o in sys.argv for o in ('-d', '--domains')),
@@ -185,6 +201,7 @@ def main():
     # shared config state (mutated by HTTP API)
     config_lock = threading.Lock()
     shared_config = {
+        '_config_revision': int(file_cfg.get('config_revision') or 0),
         'domains': domains0,
         'servers': servers0,
         'interval': bounded_int(interval0, 60, 1, 86400),
@@ -281,7 +298,15 @@ def main():
     active_ip_map_prev = collect_active_ip_map(current_results, configured_names)
 
     # start HTTP server
-    handler_class = make_handler(shared_config, config_lock, config_path, history_dir, current_results, history)
+    handler_class = make_handler(shared_config, config_lock, config_path, history_dir, current_results, history,
+                                 security_store=security_store, public_origin=args.public_origin,
+                                 insecure_http=args.insecure_http,
+                                 allow_insecure_remote_http=args.allow_insecure_remote_http,
+                                 trusted_proxies=args.trusted_proxy)
+    from security.startup import start_housekeeping
+    stop_housekeeping = start_housekeeping(security_store)
+    if args.allow_insecure_remote_http:
+        logger.warning('DANGEROUS: plaintext HTTP is exposed beyond loopback; credentials and sessions are not TLS-protected')
     httpd = ThreadingHTTPServer((http_host, http_port), handler_class)
     http_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     http_thread.start()
@@ -334,6 +359,7 @@ def main():
             time.sleep(1)
 
     logger.info("Exiting DNS monitor.")
+    stop_housekeeping.set()
     httpd.shutdown()
     httpd.server_close()
     from http_api.relationship_handlers import shutdown_ip_relationship_jobs

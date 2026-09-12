@@ -14,7 +14,7 @@ A lightweight DNS monitoring toolkit for extracting indicators from TXT records 
 
 ## Requirements
 
-- Python 3.8+ (tested on Linux)
+- Python 3.10+ (tested with Python 3.12 on Linux)
 
 Install Python dependencies:
 
@@ -47,7 +47,21 @@ python3 dns_monitor.py --http-port 8000 --max-workers 16
 
 - `--max-workers` controls per-domain parallel DNS queries across configured DNS servers (performance tuning).
 
-## Web UI
+## Multi-user access and audit
+
+TraceDNS now requires a local account database at startup. Create the first administrator from the server console, then run the monitor behind HTTPS:
+
+```bash
+# Create the initial local administrator; password is prompted, never an argument.
+.venv/bin/python -m security.cli --db /var/lib/tracedns/security/auth.sqlite bootstrap admin
+# Start behind an HTTPS reverse proxy.
+.venv/bin/python dns_monitor.py --security-db /var/lib/tracedns/security/auth.sqlite --http-host 127.0.0.1 --public-origin https://tracedns.example --trusted-proxy 127.0.0.1
+```
+
+Roles are `admin`, `operator`, and `viewer`; every API is checked on the server. Admins manage accounts and audit exports, operators manage monitored domains and run analyses, and viewers can only read stored observations. Login, account/configuration changes, denied requests, and analysis/force-resolve outcomes are recorded per user. Passwords, session tokens, API keys, webhooks, and credential-bearing URLs are not returned or written to audit events.
+
+For a strictly trusted wired LAN only, `--insecure-http --allow-insecure-remote-http --http-host 10.0.0.2 --public-origin http://10.0.0.2:8000` explicitly permits plaintext remote HTTP. Do not use it over Wi-Fi, VPN/shared networks, or the Internet: credentials and sessions are not TLS-protected.
+
 
 - Open the dashboard in a browser (served by the built-in HTTP server). The UI provides:
   - **Status**: current per-domain A/TXT snapshots (managed/decoded IPs)

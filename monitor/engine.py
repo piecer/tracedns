@@ -364,6 +364,10 @@ def run_domain_cycle(
     return added_alert_tuples
 
 
+from security.jobs import audited_force
+
+
+@audited_force
 def run_full_cycle(
     *,
     domains_raw: List[Any],
