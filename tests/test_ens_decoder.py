@@ -89,6 +89,24 @@ class TestEnsDecoder(unittest.TestCase):
         out = ens_decoder.decode_ens_hidden_ips(rec, method="ROL3210_decode", ens_options={"key_u32": "0x00000000"})
         self.assertEqual(out, ["144.208.172.120"])
 
+    def test_ROL3210_decode_uses_last_four_bytes_for_dysphoria_woah(self):
+        rec = "[536b:a4ac:5a3f:abd4::2676:155a]:15850"
+        out = ens_decoder.decode_ens_hidden_ips(
+            rec,
+            method="ROL3210_decode",
+            ens_options={"segment": "last4", "key_u32": "0x80408454"},
+        )
+        self.assertEqual(out, ["49.217.50.98"])
+
+    def test_decode_ens_endpoints_preserves_common_woah_port(self):
+        rec = "[536b:a4ac:5a3f:abd4::2676:155a|f00d::2676:155a]:15850"
+        endpoints = ens_decoder.decode_ens_endpoints(rec, ["49.217.50.98"])
+        self.assertEqual(endpoints, ["49.217.50.98:15850"])
+
+    def test_decode_ens_endpoints_rejects_missing_or_invalid_port(self):
+        self.assertEqual(ens_decoder.decode_ens_endpoints("536b:a4ac::2676:155a", ["49.217.50.98"]), [])
+        self.assertEqual(ens_decoder.decode_ens_endpoints("[536b:a4ac::2676:155a]:70000", ["49.217.50.98"]), [])
+
     def test_unknown_method_returns_empty(self):
         out = ens_decoder.decode_ens_hidden_ips("2001:db8:1234:5678::1", method="unknown")
         self.assertEqual(out, [])

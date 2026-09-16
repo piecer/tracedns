@@ -31,6 +31,7 @@ def clone_snapshot(snapshot_obj: Any) -> Dict[str, Any]:
         'type': snapshot_obj.get('type'),
         'values': list(snapshot_obj.get('values') or []),
         'decoded_ips': list(snapshot_obj.get('decoded_ips') or []),
+        'decoded_endpoints': list(snapshot_obj.get('decoded_endpoints') or []),
         'ts': int(snapshot_obj.get('ts') or 0),
     }
     for key in (

@@ -86,8 +86,12 @@ Per-domain decoder fields:
 
 - TXT domains: `txt_decode`
 - A domains: `a_decode` (e.g. `xor32_ipv4`) and optional `a_xor_key` (hex/int/dotted-byte format)
-- ENS domains: `ens_text_key` and `ens_decode`. Use `ipv4_literals` when a
-  case-sensitive text record such as `Host` contains plain IPv4 infrastructure.
+- ENS domains: `ens_text_key`, `ens_decode`, and optional `ens_options`. Use
+  `ipv4_literals` when a case-sensitive text record such as `Host` contains
+  plain IPv4 infrastructure. `ROL3210_decode` accepts `segment` (`5to8`, the
+  backward-compatible default, or `last4`) and `key_u32` options. Bracketed
+  records with a shared `]:port` suffix expose `decoded_endpoints` alongside
+  `decoded_ips` in current results and history.
 
 Example for monitoring a plain IPv4 ENS record:
 
@@ -148,7 +152,7 @@ Notable ENS methods:
 
 - `ipv4_literals`: extract valid plain IPv4 literals from an ENS text record, including values embedded in URLs.
 - `ipv6_5to8_xor`: take IPv6 bytes 5:8 and XOR each byte into an IPv4.
-- `ROL3210_decode`: take IPv6 bytes 5:8 and apply the board-supplied `rol8`/bitmask transform used by the current betavpn `network` cluster.
+- `ROL3210_decode`: apply the board-supplied nibble-swap/rotate/key transform. It uses IPv6 bytes 5:8 by default for the existing betavpn `network` cluster; set `ens_options` to `{"segment":"last4","key_u32":"0x80408454"}` for Dysphoria-style `woah` records.
 - `betavpn_network_full`: compatibility alias for the same transform, kept for cluster-specific traceability and older configs.
 
 The exact 25-entry betavpn `network` source-to-IOC corpus is still preserved under `docs/ens/` for traceability and IOC extraction. For ENS records written to an off-name nodehash, configure `ens_node` (and optionally `ens_resolver`) alongside `ens_text_key` and `ens_decode` so TraceDNS calls `text(bytes32,string)` for the transaction node rather than only `namehash(name)`. Example: `ens_text_key=node`, `ens_decode=ROL3210_decode`, `ens_node=0x07ddacfa58713a8822dfda2b6cf229f38a9bb1a6261cb92abf72a36a0010559d`, `ens_resolver=0xF29100983E058B709F3D539b0c765937B804AC15`.

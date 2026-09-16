@@ -10,11 +10,24 @@
       "type": "A",
       "a_decode": "xor32_ipv4",
       "a_xor_key": "E7708E59"
+    },
+    {
+      "name": "2busydrinkingcodeine.eth",
+      "type": "ENS",
+      "ens_text_key": "woah",
+      "ens_decode": "ROL3210_decode",
+      "ens_node": "0xd0fdb3e7840f77136252ff02bc53d577c9b6b9ecacf3ba8f7a4f9f7ba223af30",
+      "ens_resolver": "0xf29100983e058b709f3d539b0c765937b804ac15",
+      "ens_options": {
+        "segment": "last4",
+        "key_u32": "0x80408454"
+      }
     }
   ],
   "servers": [
     "8.8.8.8",
     "1.1.1.1"
   ],
+  "ens_rpc_url": "https://ethereum-rpc.publicnode.com",
   "interval": 1
 }

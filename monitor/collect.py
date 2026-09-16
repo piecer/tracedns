@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from a_decoder import decode_a_hidden_ips
-from ens_decoder import decode_ens_hidden_ips, parse_ens_options
+from ens_decoder import decode_ens_endpoints, decode_ens_hidden_ips, parse_ens_options
 from ens_query import EnsQueryError, fetch_ens_text_record, format_ens_error
 from sns_query import fetch_sns_record
 from dns_query import query_dns
@@ -47,10 +47,12 @@ def collect_snapshot(domain: DomainSpec, server: str) -> Collected:
                 domain=name,
                 text_key=ens_key,
             )
+            decoded_endpoints = decode_ens_endpoints(raw_value, decoded)
             snap = Snapshot(
                 type='ENS',
                 values=snap_values,
                 decoded_ips=decoded,
+                decoded_endpoints=decoded_endpoints,
                 ts=ts,
                 ens_text_key=ens_key,
                 ens_decode=ens_decode,

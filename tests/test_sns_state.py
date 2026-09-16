@@ -46,6 +46,25 @@ class TestSnsStateMetadata(unittest.TestCase):
         self.assertEqual(restored["name.sol [SNS:IPFS]"]["proxy"]["sns_decode"], "ROL3210_decode")
         self.assertEqual(restored["name.sol [SNS:IPFS]"]["proxy"]["sns_options"], {"xor_byte": "0xA5"})
 
+    def test_results_payload_preserves_decoded_endpoints(self):
+        snapshot = {
+            "type": "ENS",
+            "values": ["encoded"],
+            "decoded_ips": ["49.217.50.98"],
+            "decoded_endpoints": ["49.217.50.98:15850"],
+            "ts": 123,
+        }
+        payload = _build_results_payload({"sample.eth": {"rpc": snapshot}}, {}, include_raw=True)
+
+        self.assertEqual(
+            payload["results"]["sample.eth"]["rpc"]["decoded_endpoints"],
+            ["49.217.50.98:15850"],
+        )
+        self.assertEqual(
+            payload["results_agg"]["sample.eth"]["decoded_endpoints"],
+            ["49.217.50.98:15850"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
