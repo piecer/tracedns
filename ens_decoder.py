@@ -18,6 +18,7 @@ _IPV6_CANDIDATE_RE = re.compile(r"[0-9A-Fa-f:]{2,}")
 _IPV4_CANDIDATE_RE = re.compile(
     r"(?<![A-Za-z0-9_.])(?:\d{1,3}\.){3}\d{1,3}(?![A-Za-z0-9_]|\.(?=\d))"
 )
+_COMMON_PORT_RE = re.compile(r"\]\s*:\s*(\d{1,5})\s*$")
 
 
 def ens_decode_register(name: str):
@@ -125,15 +126,21 @@ def _ipv6_packed(token: str) -> bytes:
     return ipaddress.IPv6Address(str(token).strip()).packed
 
 
-def _decode_ipv6_5to8(record: str, decoder: Callable[[bytes], bytes]) -> List[str]:
+def _decode_ipv6_segment(
+    record: str,
+    decoder: Callable[[bytes], bytes],
+    segment: str = '5to8',
+) -> List[str]:
     out = []
     seen = set()
+    use_last_four = str(segment or '5to8').strip().lower() in ('last4', '13to16')
     for tok in _split_tokens(record):
         ipv6_token = _extract_ipv6_token(tok)
         if not ipv6_token:
             continue
         try:
-            src = _ipv6_packed(ipv6_token)[4:8]
+            packed = _ipv6_packed(ipv6_token)
+            src = packed[-4:] if use_last_four else packed[4:8]
             if len(src) != 4:
                 continue
             ip = str(ipaddress.IPv4Address(decoder(src)))
@@ -143,6 +150,24 @@ def _decode_ipv6_5to8(record: str, decoder: Callable[[bytes], bytes]) -> List[st
         except Exception:
             continue
     return sorted(out)
+
+
+def decode_ens_endpoints(record: str, decoded_ips: List[str]) -> List[str]:
+    """Attach a bracketed ENS record's shared TCP port to decoded IPv4s."""
+    match = _COMMON_PORT_RE.search(str(record or ''))
+    if not match:
+        return []
+    port = int(match.group(1))
+    if not 1 <= port <= 65535:
+        return []
+    endpoints = set()
+    for value in decoded_ips or []:
+        try:
+            ip = str(ipaddress.IPv4Address(str(value).strip()))
+        except Exception:
+            continue
+        endpoints.add(f'{ip}:{port}')
+    return sorted(endpoints)
 
 
 def _rol8(value: int, shift: int) -> int:
@@ -215,14 +240,14 @@ def decode_ens_ipv6_5to8_xor(record: str, xor_byte=None, **kwargs) -> List[str]:
       - output bytes: source ^ xor_byte (default 0xA5)
     """
     xb = _parse_xor_byte(xor_byte, default=0xA5)
-    return _decode_ipv6_5to8(
+    return _decode_ipv6_segment(
         record,
         lambda src: bytes([(b ^ xb) & 0xFF for b in src]),
     )
 
 
 @ens_decode_register('ROL3210_decode')
-def decode_ens_ROL3210_decode(record: str, key_u32=None, **kwargs) -> List[str]:
+def decode_ens_ROL3210_decode(record: str, key_u32=None, segment='5to8', **kwargs) -> List[str]:
     """Decode `2001:db8:XXYY:ZZWW::1` bytes via nibble-swap+rotate+key transform."""
 
     key = _parse_u32(key_u32, default=0x00400454)
@@ -235,7 +260,7 @@ def decode_ens_ROL3210_decode(record: str, key_u32=None, **kwargs) -> List[str]:
     def _decode(src: bytes) -> bytes:
         return bytes([_decode_byte(src[i], i) for i in range(4)])
 
-    return _decode_ipv6_5to8(record, _decode)
+    return _decode_ipv6_segment(record, _decode, segment=segment)
 
 
 @ens_decode_register('betavpn_network_full')

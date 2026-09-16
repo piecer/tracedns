@@ -15,7 +15,13 @@ from urllib.parse import parse_qs, urlparse
 from a_decoder import A_DECODE_METHODS, decode_a_hidden_ips
 from config_manager import domain_identity, domain_storage_name, normalize_domains, read_config, write_config  # noqa: F401
 from dns_query import query_dns
-from ens_decoder import ENS_DECODE_METHODS, decode_ens_hidden_ips, ens_options_signature, parse_ens_options
+from ens_decoder import (
+    ENS_DECODE_METHODS,
+    decode_ens_endpoints,
+    decode_ens_hidden_ips,
+    ens_options_signature,
+    parse_ens_options,
+)
 from ens_query import EnsQueryError, fetch_ens_text_record, format_ens_error
 from sns_query import DEFAULT_SOLAR_PROXY_HOSTS, fetch_sns_txt_record
 from txt_decoder import TXT_DECODE_METHODS, analyze_domain_decoding, decode_txt_hidden_ips
@@ -640,6 +646,7 @@ def attach_api_handlers(
         type_managed_counts = {t: 0 for t in probe_types}
         type_resolved_ip_sets = {t: set() for t in probe_types}
         type_managed_ip_sets = {t: set() for t in probe_types}
+        type_decoded_endpoint_sets = {t: set() for t in probe_types}
         detected_types = set()
         by_server = []
 
@@ -673,6 +680,7 @@ def attach_api_handlers(
         for srv in servers:
             for rtype in probe_types:
                 query_error = ''
+                decoded_endpoints = []
                 if rtype == 'ENS':
                     vals = []
                     qstatus = 'error'
@@ -700,6 +708,7 @@ def attach_api_handlers(
                                 domain=domain,
                                 text_key=ens_text_key,
                             )
+                            decoded_endpoints = decode_ens_endpoints(raw_value, managed_ips)
                             qstatus = 'ok'
                         except EnsQueryError as e:
                             qstatus = 'error'
@@ -780,6 +789,8 @@ def attach_api_handlers(
                             type_resolved_ip_sets[rtype].add(ip)
                 for ip in managed_ips:
                     type_managed_ip_sets[rtype].add(ip)
+                for endpoint in decoded_endpoints:
+                    type_decoded_endpoint_sets[rtype].add(endpoint)
 
                 by_server.append({
                     'server': srv,
@@ -787,6 +798,7 @@ def attach_api_handlers(
                     'status': qstatus,
                     'values': values,
                     'managed_ips': managed_ips,
+                    'decoded_endpoints': decoded_endpoints,
                     'method': method,
                     'error': query_error,
                 })
@@ -808,6 +820,7 @@ def attach_api_handlers(
 
         resolved_ips = sorted(type_resolved_ip_sets.get(selected_type, set()))
         managed_ips = sorted(type_managed_ip_sets.get(selected_type, set()))
+        decoded_endpoints = sorted(type_decoded_endpoint_sets.get(selected_type, set()))
 
         role_map = {}
         for ip in resolved_ips:
@@ -1153,6 +1166,7 @@ def attach_api_handlers(
             'ens_options': ens_options,
             'resolved_ips': resolved_ips,
             'managed_ips': managed_ips,
+            'decoded_endpoints': decoded_endpoints,
             'by_server': by_server,
             'ip_rows': ip_rows,
             'domain_object': domain_obj,

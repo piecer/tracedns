@@ -90,6 +90,8 @@ def _history_snapshot(value: Any) -> Dict[str, Any]:
         'decoded_ips': item.get('decoded_ips', []),
         'ts': item.get('ts', 0),
     }
+    if item.get('decoded_endpoints'):
+        out['decoded_endpoints'] = item['decoded_endpoints']
     for key in _HISTORY_DECODER_KEYS:
         if item.get(key) not in (None, ''):
             out[key] = item[key]
@@ -104,6 +106,8 @@ def _snapshot_changed(previous: Any, current: Snapshot) -> bool:
     if (prev.get('values') or []) != (current_dict.get('values') or []):
         return True
     if (prev.get('decoded_ips') or []) != (current_dict.get('decoded_ips') or []):
+        return True
+    if (prev.get('decoded_endpoints') or []) != (current_dict.get('decoded_endpoints') or []):
         return True
     if str(prev.get('type') or '').upper() != str(current_dict.get('type') or '').upper():
         return True

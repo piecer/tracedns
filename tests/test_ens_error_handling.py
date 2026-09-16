@@ -1,6 +1,9 @@
 import unittest
 import os
 import sys
+import io
+import json
+import threading
 from unittest import mock
 
 HERE = os.path.dirname(__file__)
@@ -9,6 +12,8 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 import ens_query as eq
+import http_api_handlers as api_handlers
+import http_server as hs
 from models import DomainSpec
 from monitor import collect as collect_mod
 
@@ -146,6 +151,51 @@ class TestEnsErrorHandling(unittest.TestCase):
             ens_node=None,
             resolver_address=None,
         )
+
+    def test_collect_snapshot_preserves_dysphoria_woah_endpoints(self):
+        raw = "[536b:a4ac:5a3f:abd4::2676:155a]:15850"
+        with mock.patch.object(collect_mod, "fetch_ens_text_record", return_value=raw):
+            domain = DomainSpec(
+                name="2busydrinkingcodeine.eth",
+                type="ENS",
+                ens_text_key="woah",
+                ens_decode="ROL3210_decode",
+                ens_options={"segment": "last4", "key_u32": "0x80408454"},
+            )
+            out = collect_mod.collect_snapshot(domain, "https://rpc.example")
+
+        self.assertEqual(out.query.status, "ok")
+        snapshot = out.snapshot
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot.decoded_ips, ["49.217.50.98"])
+        self.assertEqual(snapshot.decoded_endpoints, ["49.217.50.98:15850"])
+
+    def test_domain_precheck_preserves_dysphoria_woah_endpoints(self):
+        request = {
+            "domain": "2busydrinkingcodeine.eth",
+            "type": "ENS",
+            "ens_text_key": "woah",
+            "ens_decode": "ROL3210_decode",
+            "ens_options": {"segment": "last4", "key_u32": "0x80408454"},
+            "ens_rpc_url": "https://rpc.example",
+            "include_vt": False,
+        }
+        body = json.dumps(request).encode("utf-8")
+        handler_cls = hs.make_handler({}, threading.Lock(), None, None, {}, {})
+        handler = object.__new__(handler_cls)
+        handler.headers = {"Content-Length": str(len(body))}
+        handler.rfile = io.BytesIO(body)
+        captured = {}
+        handler._send_json = lambda obj, code=200: captured.update({"obj": obj, "code": code})
+
+        raw = "[536b:a4ac:5a3f:abd4::2676:155a]:15850"
+        with mock.patch.object(api_handlers, "fetch_ens_text_record", return_value=raw):
+            handler_cls._handle_domain_precheck(handler)
+
+        payload = captured["obj"]
+        self.assertEqual(payload["decoded_endpoints"], ["49.217.50.98:15850"])
+        self.assertEqual(payload["by_server"][0]["decoded_endpoints"], ["49.217.50.98:15850"])
 
 if __name__ == "__main__":
     unittest.main()

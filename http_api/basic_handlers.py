@@ -46,6 +46,7 @@ def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Di
             'record_types': set(),
             'values': set(),
             'decoded_ips': set(),
+            'decoded_endpoints': set(),
             'servers': set(),
             'ts': 0,
             'txt_decodes': set(),
@@ -64,10 +65,19 @@ def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Di
             rtype = str(info.get('type') or 'A').upper()
             values = [str(v) for v in (info.get('values', []) or []) if str(v or '').strip()]
             decoded_ips = [str(v) for v in (info.get('decoded_ips', []) or []) if str(v or '').strip()]
+            decoded_endpoints = [
+                str(v) for v in (info.get('decoded_endpoints', []) or []) if str(v or '').strip()
+            ]
 
             entry = None
             if include_raw:
-                entry = {'type': rtype, 'values': values, 'decoded_ips': decoded_ips, 'ts': info.get('ts')}
+                entry = {
+                    'type': rtype,
+                    'values': values,
+                    'decoded_ips': decoded_ips,
+                    'decoded_endpoints': decoded_endpoints,
+                    'ts': info.get('ts'),
+                }
 
             if rtype == 'TXT' and info.get('txt_decode'):
                 if entry is not None:
@@ -124,6 +134,7 @@ def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Di
             agg_entry['record_types'].add(rtype)
             agg_entry['values'].update(values)
             agg_entry['decoded_ips'].update(decoded_ips)
+            agg_entry['decoded_endpoints'].update(decoded_endpoints)
             agg_entry['servers'].add(str(srv))
             try:
                 agg_entry['ts'] = max(int(agg_entry['ts']), int(info.get('ts') or 0))
@@ -168,6 +179,7 @@ def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Di
             'record_types': record_types,
             'values': sorted(list(agg_entry['values'])),
             'decoded_ips': sorted(list(agg_entry['decoded_ips'])),
+            'decoded_endpoints': sorted(list(agg_entry['decoded_endpoints'])),
             'servers': sorted(list(agg_entry['servers'])),
             'server_count': len(agg_entry['servers']),
             'ts': int(agg_entry['ts'] or 0),

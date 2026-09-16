@@ -52,6 +52,7 @@ class Snapshot:
     ens_options: Optional[Dict[str, Any]] = None
     sns_decode: Optional[str] = None
     sns_options: Optional[Dict[str, Any]] = None
+    decoded_endpoints: List[str] = field(default_factory=list)
 
     def managed_ips(self) -> Set[str]:
         r = str(self.type or '').upper()
@@ -70,6 +71,7 @@ class Snapshot:
             'type': d.get('type'),
             'values': d.get('values') or [],
             'decoded_ips': d.get('decoded_ips') or [],
+            'decoded_endpoints': d.get('decoded_endpoints') or [],
             'ts': int(d.get('ts') or 0),
         }
         if self.txt_decode:
@@ -105,6 +107,7 @@ class Snapshot:
             type=str(obj.get('type') or 'A').upper(),
             values=[str(v) for v in (obj.get('values') or []) if str(v or '').strip()],
             decoded_ips=[str(v) for v in (obj.get('decoded_ips') or []) if str(v or '').strip()],
+            decoded_endpoints=[str(v) for v in (obj.get('decoded_endpoints') or []) if str(v or '').strip()],
             ts=int(obj.get('ts') or 0),
             txt_decode=obj.get('txt_decode'),
             a_decode=obj.get('a_decode'),
@@ -207,6 +210,7 @@ class SnapshotChange:
         return (
             (self.prev.values or []) != (self.new.values or [])
             or (self.prev.decoded_ips or []) != (self.new.decoded_ips or [])
+            or (self.prev.decoded_endpoints or []) != (self.new.decoded_endpoints or [])
             or str(self.prev.type).upper() != str(self.new.type).upper()
         )
 
