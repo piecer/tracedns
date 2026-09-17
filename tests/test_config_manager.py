@@ -145,7 +145,7 @@ class TestConfigManager(unittest.TestCase):
         self.assertNotEqual(cm.domain_identity(out[0]), cm.domain_identity(out[1]))
         self.assertNotEqual(cm.domain_storage_name(out[0]), cm.domain_storage_name(out[1]))
 
-    def test_example_config_tracks_dysphoria_woah_record(self):
+    def test_example_config_uses_generic_last4_xor32_decoder(self):
         config = json.loads((Path(ROOT) / "dns_config.json_example").read_text(encoding="utf-8"))
         self.assertEqual(config.get("ens_rpc_url"), "https://ethereum-rpc.publicnode.com")
         targets = [
@@ -160,10 +160,14 @@ class TestConfigManager(unittest.TestCase):
                 "name": "2busydrinkingcodeine.eth",
                 "type": "ENS",
                 "ens_text_key": "woah",
-                "ens_decode": "ROL3210_decode",
+                "ens_decode": "ipv6_last4_xor32",
                 "ens_node": "0xd0fdb3e7840f77136252ff02bc53d577c9b6b9ecacf3ba8f7a4f9f7ba223af30",
                 "ens_resolver": "0xf29100983e058b709f3d539b0c765937b804ac15",
-                "ens_options": {"segment": "last4", "key_u32": "0x80408454"},
+                "ens_options": {
+                    "key_u32": "0x6B9E3F2A",
+                    "plain_ipv4": True,
+                    "suffix_is_port": False,
+                },
             },
         )
 

@@ -708,7 +708,11 @@ def attach_api_handlers(
                                 domain=domain,
                                 text_key=ens_text_key,
                             )
-                            decoded_endpoints = decode_ens_endpoints(raw_value, managed_ips)
+                            decoded_endpoints = decode_ens_endpoints(
+                                raw_value,
+                                managed_ips,
+                                suffix_is_port=ens_options.get('suffix_is_port', True),
+                            )
                             qstatus = 'ok'
                         except EnsQueryError as e:
                             qstatus = 'error'

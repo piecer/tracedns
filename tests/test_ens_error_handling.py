@@ -152,15 +152,19 @@ class TestEnsErrorHandling(unittest.TestCase):
             resolver_address=None,
         )
 
-    def test_collect_snapshot_preserves_dysphoria_woah_endpoints(self):
-        raw = "[536b:a4ac:5a3f:abd4::2676:155a]:15850"
+    def test_collect_snapshot_tracks_last4_xor32_ips_without_suffix_port(self):
+        raw = "[536b:a4ac:5a3f:abd4::2676:155a]:20391"
         with mock.patch.object(collect_mod, "fetch_ens_text_record", return_value=raw):
             domain = DomainSpec(
                 name="2busydrinkingcodeine.eth",
                 type="ENS",
                 ens_text_key="woah",
-                ens_decode="ROL3210_decode",
-                ens_options={"segment": "last4", "key_u32": "0x80408454"},
+                ens_decode="ipv6_last4_xor32",
+                ens_options={
+                    "key_u32": "0x6B9E3F2A",
+                    "plain_ipv4": True,
+                    "suffix_is_port": False,
+                },
             )
             out = collect_mod.collect_snapshot(domain, "https://rpc.example")
 
@@ -168,16 +172,22 @@ class TestEnsErrorHandling(unittest.TestCase):
         snapshot = out.snapshot
         self.assertIsNotNone(snapshot)
         assert snapshot is not None
-        self.assertEqual(snapshot.decoded_ips, ["49.217.50.98"])
-        self.assertEqual(snapshot.decoded_endpoints, ["49.217.50.98:15850"])
+        self.assertEqual(snapshot.values, [raw])
+        self.assertEqual(snapshot.decoded_ips, ["77.232.42.112"])
+        self.assertEqual(snapshot.managed_ips(), {"77.232.42.112"})
+        self.assertEqual(snapshot.decoded_endpoints, [])
 
-    def test_domain_precheck_preserves_dysphoria_woah_endpoints(self):
+    def test_domain_precheck_tracks_last4_xor32_ips_without_suffix_port(self):
         request = {
             "domain": "2busydrinkingcodeine.eth",
             "type": "ENS",
             "ens_text_key": "woah",
-            "ens_decode": "ROL3210_decode",
-            "ens_options": {"segment": "last4", "key_u32": "0x80408454"},
+            "ens_decode": "ipv6_last4_xor32",
+            "ens_options": {
+                "key_u32": "0x6B9E3F2A",
+                "plain_ipv4": True,
+                "suffix_is_port": False,
+            },
             "ens_rpc_url": "https://rpc.example",
             "include_vt": False,
         }
@@ -189,13 +199,14 @@ class TestEnsErrorHandling(unittest.TestCase):
         captured = {}
         handler._send_json = lambda obj, code=200: captured.update({"obj": obj, "code": code})
 
-        raw = "[536b:a4ac:5a3f:abd4::2676:155a]:15850"
+        raw = "[536b:a4ac:5a3f:abd4::2676:155a]:20391"
         with mock.patch.object(api_handlers, "fetch_ens_text_record", return_value=raw):
             handler_cls._handle_domain_precheck(handler)
 
         payload = captured["obj"]
-        self.assertEqual(payload["decoded_endpoints"], ["49.217.50.98:15850"])
-        self.assertEqual(payload["by_server"][0]["decoded_endpoints"], ["49.217.50.98:15850"])
+        self.assertEqual(payload["managed_ips"], ["77.232.42.112"])
+        self.assertEqual(payload["decoded_endpoints"], [])
+        self.assertEqual(payload["by_server"][0]["decoded_endpoints"], [])
 
 if __name__ == "__main__":
     unittest.main()

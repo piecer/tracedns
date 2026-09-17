@@ -15,12 +15,13 @@
       "name": "2busydrinkingcodeine.eth",
       "type": "ENS",
       "ens_text_key": "woah",
-      "ens_decode": "ROL3210_decode",
+      "ens_decode": "ipv6_last4_xor32",
       "ens_node": "0xd0fdb3e7840f77136252ff02bc53d577c9b6b9ecacf3ba8f7a4f9f7ba223af30",
       "ens_resolver": "0xf29100983e058b709f3d539b0c765937b804ac15",
       "ens_options": {
-        "segment": "last4",
-        "key_u32": "0x80408454"
+        "key_u32": "0x6B9E3F2A",
+        "plain_ipv4": true,
+        "suffix_is_port": false
       }
     }
   ],

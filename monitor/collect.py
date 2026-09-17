@@ -47,7 +47,11 @@ def collect_snapshot(domain: DomainSpec, server: str) -> Collected:
                 domain=name,
                 text_key=ens_key,
             )
-            decoded_endpoints = decode_ens_endpoints(raw_value, decoded)
+            decoded_endpoints = decode_ens_endpoints(
+                raw_value,
+                decoded,
+                suffix_is_port=ens_options.get('suffix_is_port', True),
+            )
             snap = Snapshot(
                 type='ENS',
                 values=snap_values,

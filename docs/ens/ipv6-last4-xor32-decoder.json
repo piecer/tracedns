@@ -1,0 +1,53 @@
+{
+  "ens_name": "2busydrinkingcodeine.eth",
+  "text_key": "woah",
+  "ens_node": "0xd0fdb3e7840f77136252ff02bc53d577c9b6b9ecacf3ba8f7a4f9f7ba223af30",
+  "resolver": "0xf29100983e058b709f3d539b0c765937b804ac15",
+  "runtime_method_name": "ipv6_last4_xor32",
+  "analysis_csv_sha256": "b417c0688cbb610a3c3f9e2a8e57f50dcaa2993dba9b442fb7d124642902ee01",
+  "transform": {
+    "source_byte_positions_zero_based": [12, 13, 14, 15],
+    "operation": "XOR",
+    "key_hex": "6b9e3f2a",
+    "plain_ipv4_passthrough": true
+  },
+  "decoder_options": {
+    "key_u32": "0x6B9E3F2A",
+    "plain_ipv4": true,
+    "suffix_is_port": false
+  },
+  "suffix_semantics": {
+    "is_endpoint_port": false,
+    "status": "unknown",
+    "note": "Retain the suffix in the raw ENS value; do not promote it to decoded_endpoints."
+  },
+  "known_plaintext_evidence": {
+    "plain_record_sequence": 84,
+    "obfuscated_record_sequence": 85,
+    "block_distance": 7,
+    "elapsed_seconds": 84,
+    "set_match_count": 19,
+    "set_size": 19
+  },
+  "mappings": [
+    {"encoded_tail_hex": "d2331927", "decoded_ipv4": "185.173.38.13"},
+    {"encoded_tail_hex": "26761a94", "decoded_ipv4": "77.232.37.190"},
+    {"encoded_tail_hex": "301071d8", "decoded_ipv4": "91.142.78.242"},
+    {"encoded_tail_hex": "d2331989", "decoded_ipv4": "185.173.38.163"},
+    {"encoded_tail_hex": "bf5f20f1", "decoded_ipv4": "212.193.31.219"},
+    {"encoded_tail_hex": "4da81466", "decoded_ipv4": "38.54.43.76"},
+    {"encoded_tail_hex": "ea7ca982", "decoded_ipv4": "129.226.150.168"},
+    {"encoded_tail_hex": "4003f016", "decoded_ipv4": "43.157.207.60"},
+    {"encoded_tail_hex": "40335c92", "decoded_ipv4": "43.173.99.184"},
+    {"encoded_tail_hex": "4038df3e", "decoded_ipv4": "43.166.224.20"},
+    {"encoded_tail_hex": "4da8573e", "decoded_ipv4": "38.54.104.20"},
+    {"encoded_tail_hex": "301070cc", "decoded_ipv4": "91.142.79.230"},
+    {"encoded_tail_hex": "3010714a", "decoded_ipv4": "91.142.78.96"},
+    {"encoded_tail_hex": "d2331a7a", "decoded_ipv4": "185.173.37.80"},
+    {"encoded_tail_hex": "d26a8af3", "decoded_ipv4": "185.244.181.217"},
+    {"encoded_tail_hex": "2676155a", "decoded_ipv4": "77.232.42.112"},
+    {"encoded_tail_hex": "26761400", "decoded_ipv4": "77.232.43.42"},
+    {"encoded_tail_hex": "fef6745f", "decoded_ipv4": "149.104.75.117"},
+    {"encoded_tail_hex": "400384ed", "decoded_ipv4": "43.157.187.199"}
+  ]
+}
