@@ -173,10 +173,11 @@ Notable ENS methods:
 
 - `ipv4_literals`: extract valid plain IPv4 literals from an ENS text record, including values embedded in URLs.
 - `ipv6_5to8_xor`: take IPv6 bytes 5:8 and XOR each byte into an IPv4.
-- `ROL3210_decode`: apply the board-supplied nibble-swap/rotate/key transform. It uses IPv6 bytes 5:8 by default for the existing betavpn `network` cluster; set `ens_options` to `{"segment":"last4","key_u32":"0x80408454"}` for Dysphoria-style `woah` records.
+- `ROL3210_decode`: apply the board-supplied nibble-swap/rotate/key transform. It uses IPv6 bytes 5:8 by default for the existing betavpn `network` cluster.
+- `ipv6_last4_xor32`: decode the final four IPv6 bytes with a configurable 32-bit XOR key. Set `plain_ipv4=true` to include plain IPv4 literals and `suffix_is_port=false` when trailing metadata must not be promoted to endpoints.
 - `betavpn_network_full`: compatibility alias for the same transform, kept for cluster-specific traceability and older configs.
 
-The exact 25-entry betavpn `network` source-to-IOC corpus is still preserved under `docs/ens/` for traceability and IOC extraction. For ENS records written to an off-name nodehash, configure `ens_node` (and optionally `ens_resolver`) alongside `ens_text_key` and `ens_decode` so TraceDNS calls `text(bytes32,string)` for the transaction node rather than only `namehash(name)`. Example: `ens_text_key=node`, `ens_decode=ROL3210_decode`, `ens_node=0x07ddacfa58713a8822dfda2b6cf229f38a9bb1a6261cb92abf72a36a0010559d`, `ens_resolver=0xF29100983E058B709F3D539b0c765937B804AC15`.
+Exact decoder corpora are preserved under `docs/ens/` for traceability and regression testing. For ENS records written to an off-name nodehash, configure `ens_node` (and optionally `ens_resolver`) alongside `ens_text_key` and `ens_decode` so TraceDNS calls `text(bytes32,string)` for the transaction node rather than only `namehash(name)`. Example: `ens_text_key=node`, `ens_decode=ROL3210_decode`, `ens_node=0x07ddacfa58713a8822dfda2b6cf229f38a9bb1a6261cb92abf72a36a0010559d`, `ens_resolver=0xF29100983E058B709F3D539b0c765937B804AC15`.
 
 ## Contributing
 

@@ -329,7 +329,7 @@ function formatJsonObjectCompact(value){
 function syncDomainVerifyDecoderOptions(){
   const txtFallback = ['cafebabe_xor_base64','plain_base64','btea_variant','xor_ipstring_base64_fixedkey','ROT13_XOR0x30'];
   const aFallback = ['none','xor32_ipv4','2byte_swap'];
-  const ensFallback = ['ipv6_5to8_xor', 'ROL3210_decode'];
+  const ensFallback = ['ipv6_5to8_xor', 'ipv6_last4_xor32', 'ROL3210_decode'];
   const txtNames = buildDecoderNameList(
     (window.DECODERS && window.DECODERS.length) ? window.DECODERS : txtFallback,
     (window.CUSTOM_DECODERS || []).filter(c => String((c && c.decoder_type) || 'TXT').toUpperCase() === 'TXT'),
@@ -2598,7 +2598,7 @@ function addDomainRow(obj, metadata){
   const tdEnsDecode = document.createElement('td');
   const selEnsDecode = document.createElement('select');
   selEnsDecode.className = 'ens-decode';
-  const FALLBACK_ENS_DECODERS = ['ipv6_5to8_xor', 'ROL3210_decode', 'legacy_doc_sample', 'none'];
+  const FALLBACK_ENS_DECODERS = ['ipv6_5to8_xor', 'ipv6_last4_xor32', 'ROL3210_decode', 'legacy_doc_sample', 'none'];
   const ensDecsRaw = (window.ENS_DECODERS && window.ENS_DECODERS.length) ? window.ENS_DECODERS.slice() : FALLBACK_ENS_DECODERS.slice();
   const ensDecs = Array.from(new Set(ensDecsRaw.filter(Boolean)));
   const configuredType = String((obj && obj.type) || 'A').toUpperCase();

@@ -126,6 +126,21 @@ def _ipv6_packed(token: str) -> bytes:
     return ipaddress.IPv6Address(str(token).strip()).packed
 
 
+def _parse_bool(value: Any, default: bool = False) -> bool:
+    if value in (None, ''):
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    normalized = str(value).strip().lower()
+    if normalized in ('1', 'true', 'yes', 'on'):
+        return True
+    if normalized in ('0', 'false', 'no', 'off'):
+        return False
+    return bool(default)
+
+
 def _decode_ipv6_segment(
     record: str,
     decoder: Callable[[bytes], bytes],
@@ -152,8 +167,10 @@ def _decode_ipv6_segment(
     return sorted(out)
 
 
-def decode_ens_endpoints(record: str, decoded_ips: List[str]) -> List[str]:
+def decode_ens_endpoints(record: str, decoded_ips: List[str], suffix_is_port: Any = True) -> List[str]:
     """Attach a bracketed ENS record's shared TCP port to decoded IPv4s."""
+    if not _parse_bool(suffix_is_port, default=True):
+        return []
     match = _COMMON_PORT_RE.search(str(record or ''))
     if not match:
         return []
@@ -267,6 +284,25 @@ def decode_ens_ROL3210_decode(record: str, key_u32=None, segment='5to8', **kwarg
 def decode_ens_betavpn_network_full(record: str, **kwargs) -> List[str]:
     """Compatibility alias for the betavpn network full cluster name."""
     return decode_ens_ROL3210_decode(record, **kwargs)
+
+
+@ens_decode_register('ipv6_last4_xor32')
+def decode_ens_ipv6_last4_xor32(
+    record: str,
+    key_u32=None,
+    plain_ipv4=False,
+    **kwargs,
+) -> List[str]:
+    """XOR the final four IPv6 bytes with a configurable 32-bit key."""
+    key = _parse_u32(key_u32, default=0x00000000).to_bytes(4, 'big')
+    decoded = _decode_ipv6_segment(
+        record,
+        lambda src: bytes(a ^ b for a, b in zip(src, key)),
+        segment='last4',
+    )
+    if _parse_bool(plain_ipv4, default=False):
+        decoded = sorted(set(decoded) | set(decode_ens_ipv4_literals(record)))
+    return decoded
 
 
 @ens_decode_register('legacy_doc_sample')

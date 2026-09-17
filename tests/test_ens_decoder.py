@@ -89,7 +89,7 @@ class TestEnsDecoder(unittest.TestCase):
         out = ens_decoder.decode_ens_hidden_ips(rec, method="ROL3210_decode", ens_options={"key_u32": "0x00000000"})
         self.assertEqual(out, ["144.208.172.120"])
 
-    def test_ROL3210_decode_uses_last_four_bytes_for_dysphoria_woah(self):
+    def test_ROL3210_decode_can_use_last_four_bytes(self):
         rec = "[536b:a4ac:5a3f:abd4::2676:155a]:15850"
         out = ens_decoder.decode_ens_hidden_ips(
             rec,
@@ -98,7 +98,55 @@ class TestEnsDecoder(unittest.TestCase):
         )
         self.assertEqual(out, ["49.217.50.98"])
 
-    def test_decode_ens_endpoints_preserves_common_woah_port(self):
+    def test_ipv6_last4_xor32_decodes_last_four_bytes_with_configured_key(self):
+        rec = "[536b:a4ac:5a3f:abd4::d233:1927|f00d::2676:155a]:20391"
+        out = ens_decoder.decode_ens_hidden_ips(
+            rec,
+            method="ipv6_last4_xor32",
+            ens_options={"key_u32": "0x6B9E3F2A"},
+        )
+        self.assertEqual(out, ["185.173.38.13", "77.232.42.112"])
+
+    def test_ipv6_last4_xor32_optionally_passes_through_plain_ipv4(self):
+        rec = "[185.173.38.13|77.232.42.112|185.173.38.13]:319"
+        out = ens_decoder.decode_ens_hidden_ips(
+            rec,
+            method="ipv6_last4_xor32",
+            ens_options={"key_u32": "0x6B9E3F2A", "plain_ipv4": True},
+        )
+        self.assertEqual(out, ["185.173.38.13", "77.232.42.112"])
+
+    def test_ipv6_last4_xor32_matches_preserved_known_plaintext_corpus(self):
+        artifact_path = Path(ROOT) / "docs" / "ens" / "ipv6-last4-xor32-decoder.json"
+        artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+        self.assertEqual(artifact["runtime_method_name"], "ipv6_last4_xor32")
+        self.assertEqual(artifact["known_plaintext_evidence"]["set_match_count"], 19)
+        self.assertFalse(artifact["suffix_semantics"]["is_endpoint_port"])
+        mappings = artifact["mappings"]
+        self.assertEqual(len(mappings), 19)
+        self.assertEqual(len({entry["encoded_tail_hex"] for entry in mappings}), 19)
+        self.assertEqual(len({entry["decoded_ipv4"] for entry in mappings}), 19)
+        for entry in mappings:
+            tail = entry["encoded_tail_hex"]
+            token = f"f00d::{tail[:4]}:{tail[4:]}"
+            out = ens_decoder.decode_ens_hidden_ips(
+                token,
+                method="ipv6_last4_xor32",
+                ens_options=artifact["decoder_options"],
+            )
+            self.assertEqual(out, [entry["decoded_ipv4"]], msg=f"failed to decode {tail}")
+
+    def test_decode_ens_endpoints_can_disable_suffix_port_promotion(self):
+        rec = "[536b:a4ac:5a3f:abd4::2676:155a]:20391"
+        decoded = ens_decoder.decode_ens_hidden_ips(
+            rec,
+            method="ipv6_last4_xor32",
+            ens_options={"key_u32": "0x6B9E3F2A"},
+        )
+        endpoints = ens_decoder.decode_ens_endpoints(rec, decoded, suffix_is_port=False)
+        self.assertEqual(endpoints, [])
+
+    def test_decode_ens_endpoints_preserves_common_bracketed_record_port(self):
         rec = "[536b:a4ac:5a3f:abd4::2676:155a|f00d::2676:155a]:15850"
         endpoints = ens_decoder.decode_ens_endpoints(rec, ["49.217.50.98"])
         self.assertEqual(endpoints, ["49.217.50.98:15850"])
