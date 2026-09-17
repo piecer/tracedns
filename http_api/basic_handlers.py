@@ -16,6 +16,7 @@ def handle_config(ctx: HttpContext, handler) -> None:
         cfg = {
             'revision': ctx.shared_config.get('_config_revision', 0),
             'domains': list(ctx.shared_config.get('domains', [])),
+            'domain_metadata': dict(ctx.shared_config.get('domain_metadata') or {}),
             'servers': list(ctx.shared_config.get('servers', [])),
             'interval': ctx.shared_config.get('interval'),
             'max_workers': ctx.shared_config.get('max_workers', 8),

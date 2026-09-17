@@ -71,11 +71,32 @@ For a strictly trusted wired LAN only, `--insecure-http --allow-insecure-remote-
   - **Settings**: configure domains/servers/interval + Teams/MISP/VT settings
   - **Custom decoders**: preview and register safe DSL-based decoders
 
+Settings displays each monitoring target as a searchable card with its full,
+wrapping domain name, record type, registration time, and last configuration
+change. Expand **View / edit configuration** for type-specific decoder fields
+and ENS node/resolver values. Filtering never removes hidden targets from a
+save. Failed saves retain the draft; **Load** reloads the saved configuration.
+
+Dates describe registration/configuration changes **in TraceDNS**, not WHOIS
+registration, domain expiry, or changes to resolved DNS answers. They are stored
+as UTC ISO timestamps and displayed in the browser's local timezone. Existing
+entries without metadata show **Not recorded**; their original dates are never
+inferred from a restart, file mtime, or first observation. New registrations via
+`POST /config` record both dates; unchanged saves, list reordering, and changes
+to global server/interval settings leave per-target dates unchanged. Removing
+and re-adding a target starts a new registration. Renaming a target or changing
+its ENS/SNS identity is likewise a new registration. Direct file edits are not
+tracked and cannot be used to reconstruct historical dates.
+
 ## Configuration (`dns_config.json`)
 
 Key items in `dns_config.json`:
 
 - `domains`: list of domains to monitor
+- `domain_metadata`: server-owned map keyed by `config_manager.domain_identity`,
+  containing optional `created_at` / `updated_at` timestamps. Returned by
+  `GET /config` and successful config writes, persisted with the configuration,
+  and restored at startup. Client-supplied metadata is ignored.
 - `servers`: DNS servers to query
 - `interval`: polling interval (seconds)
 - `max_workers`: max worker threads for per-domain parallel DNS queries across servers

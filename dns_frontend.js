@@ -239,7 +239,13 @@ function domainConfigIdentity(domainObj){
   const type = String(domainObj.type || 'A').trim().toUpperCase() || 'A';
   if(type === 'ENS'){
     const textKey = String(domainObj.ens_text_key || 'ipv6').trim() || 'ipv6';
-    return `${name}|ENS|${textKey}`;
+    const node = String(domainObj.ens_node || '').trim().toLowerCase();
+    const resolver = String(domainObj.ens_resolver || '').trim().toLowerCase();
+    return `${name}|ENS|${textKey}|${node}|${resolver}`;
+  }
+  if(type === 'SNS'){
+    const textKey = String(domainObj.ens_text_key || 'TXT').trim() || 'TXT';
+    return `${name}|SNS|${textKey}`;
   }
   return name;
 }
@@ -2488,9 +2494,28 @@ async function loadDecoders(){
   }catch(e){ /* ignore */ }
 }
 
-function addDomainRow(obj){
+function filterDomainSettings(){
+  const query = document.getElementById('domainSettingsSearch').value.trim().toLowerCase();
+  const rows = [...document.querySelectorAll('#domainTable tbody tr')];
+  let visible = 0;
+  rows.forEach(row=>{
+    const text = row.querySelector('.domain-full-name').textContent + ' ' + row.querySelector('.domain-type').value;
+    row.hidden = !!query && !text.toLowerCase().includes(query);
+    if(!row.hidden) visible++;
+  });
+  document.getElementById('domainSettingsSummary').textContent = `${visible} of ${rows.length} targets shown`;
+  document.getElementById('domainSettingsEmpty').hidden = visible !== 0;
+}
+document.getElementById('domainSettingsSearch').oninput = filterDomainSettings;
+
+function domainEditorState(row){
+  return JSON.stringify([...row.querySelectorAll('input, select')].map(el=>el.value));
+}
+
+function addDomainRow(obj, metadata){
   const tbody = document.querySelector('#domainTable tbody');
   const tr = document.createElement('tr');
+  tr._original = obj ? {...obj} : null;
 
   const tdName = document.createElement('td');
   const inp = document.createElement('input');
@@ -2615,6 +2640,17 @@ function addDomainRow(obj){
   inpEnsOptions.value = ensOptionsText;
   tdEnsOptions.appendChild(inpEnsOptions);
 
+  const tdEnsNode = document.createElement('td');
+  const inpEnsNode = document.createElement('input');
+  inpEnsNode.className = 'ens-node';
+  inpEnsNode.value = (obj && obj.ens_node) || '';
+  tdEnsNode.appendChild(inpEnsNode);
+  const tdEnsResolver = document.createElement('td');
+  const inpEnsResolver = document.createElement('input');
+  inpEnsResolver.className = 'ens-resolver';
+  inpEnsResolver.value = (obj && obj.ens_resolver) || '';
+  tdEnsResolver.appendChild(inpEnsResolver);
+
   // Toggle decoder fields by record type
   const toggleDecodeInputs = function(){
     const typ = (sel.value || 'A').toUpperCase();
@@ -2628,6 +2664,11 @@ function addDomainRow(obj){
     inpEnsKey.disabled = !(isENS || isSNS);
     selEnsDecode.disabled = !(isENS || isSNS);
     inpEnsOptions.disabled = !(isENS || isSNS);
+    inpEnsNode.disabled = !isENS;
+    inpEnsResolver.disabled = !isENS;
+    [selDecode, selADecode, inpAKey, inpEnsKey, selEnsDecode, inpEnsOptions, inpEnsNode, inpEnsResolver].forEach(control=>{
+      if(control.parentElement.tagName === 'LABEL') control.parentElement.hidden = control.disabled;
+    });
   };
   sel.onchange = toggleDecodeInputs;
   toggleDecodeInputs();
@@ -2637,13 +2678,13 @@ function addDomainRow(obj){
   del.textContent='🗑️ Remove'; 
   del.title = 'Remove this domain';
   del.onclick = async ()=> { 
-    tr.remove();
-    uiOverview.configured = document.querySelectorAll('#domainTable tbody tr').length;
-    updateOverviewPanel();
+    if(!window.confirm(`Remove ${inp.value || 'this target'} and save the current settings?`)) return;
+    const status = document.getElementById('domainSettingsStatus');
+    del.disabled = true;
     try{
       // 자동으로 저장
       const payload = {
-        domains: collectDomainsFromUI(),
+        domains: collectDomainsFromUI(tr),
         revision: configRevision,
         servers: document.getElementById('servers').value.split(',').map(s=>s.trim()).filter(Boolean),
         interval: parseInt(document.getElementById('interval').value) || 60,
@@ -2652,28 +2693,80 @@ function addDomainRow(obj){
       };
       const r = await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(domainWritePayload(payload))});
       const j = await r.json();
-      configRevision = j.revision;
+      if(!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
+      applyDomainConfig({...j.config, revision: j.revision});
+      status.textContent = 'Removed domain and saved';
       log('Removed domain and saved');
     }catch(e){ 
+      status.textContent = `Remove failed: ${e.message}`;
       log('Remove error:'+e); 
+    }finally{
+      del.disabled = false;
     }
   };
   tdBtn.appendChild(del);
-  tr.appendChild(tdName);
-  tr.appendChild(tdType);
-  tr.appendChild(tdTxtDecode);
-  tr.appendChild(tdADecode);
-  tr.appendChild(tdAKey);
-  tr.appendChild(tdEnsKey);
-  tr.appendChild(tdEnsDecode);
-  tr.appendChild(tdEnsOptions);
-  tr.appendChild(tdBtn);
+  const card = document.createElement('td');
+  card.className = 'domain-card';
+  const heading = document.createElement('div');
+  heading.className = 'domain-card-heading';
+  const name = document.createElement('strong');
+  name.className = 'domain-full-name';
+  name.textContent = inp.value || 'New target';
+  const badge = document.createElement('span');
+  badge.className = 'domain-type-badge';
+  badge.textContent = sel.value;
+  heading.append(name, badge);
+  const dates = document.createElement('dl');
+  dates.className = 'domain-dates';
+  [['Registered in TraceDNS', 'created_at', 'domain-created'], ['Last configuration change', 'updated_at', 'domain-updated']].forEach(([label, key, cls])=>{
+    const group = document.createElement('div');
+    group.className = cls;
+    const dt = document.createElement('dt'); dt.textContent = label;
+    const dd = document.createElement('dd');
+    const raw = metadata && metadata[key];
+    const date = raw ? new Date(raw) : null;
+    if(date && !Number.isNaN(date.getTime())){
+      const time = document.createElement('time');
+      time.dateTime = raw;
+      time.textContent = formatLocalDateTime(date);
+      time.title = date.toISOString();
+      dd.appendChild(time);
+    }else{
+      dd.textContent = obj ? 'Not recorded' : 'Not saved yet';
+    }
+    group.append(dt, dd); dates.appendChild(group);
+  });
+  const detail = document.createElement('details');
+  detail.open = !obj;
+  const summary = document.createElement('summary');
+  summary.textContent = 'View / edit configuration';
+  const fields = document.createElement('div');
+  fields.className = 'domain-editor-grid';
+  [[tdName,'Domain name'], [tdType,'Record type'], [tdTxtDecode,'TXT decoder'], [tdADecode,'A decoder'], [tdAKey,'A XOR key'], [tdEnsKey,'ENS / SNS record key'], [tdEnsDecode,'ENS / SNS decoder'], [tdEnsOptions,'Decoder options (JSON)'], [tdEnsNode,'ENS node'], [tdEnsResolver,'ENS resolver']].forEach(([cell, title])=>{
+    const label = document.createElement('label');
+    label.textContent = title;
+    const control = cell.firstChild;
+    label.appendChild(control);
+    label.hidden = control.disabled;
+    fields.appendChild(label);
+  });
+  detail.append(summary, fields);
+  card.append(heading, dates, detail, del);
+  tr.appendChild(card);
+  inp.addEventListener('input', ()=>{ name.textContent = inp.value || 'New target'; });
+  sel.addEventListener('change', ()=>{ badge.textContent = sel.value; });
+  tr._initialState = domainEditorState(tr);
   tbody.appendChild(tr);
+  filterDomainSettings();
   uiOverview.configured = document.querySelectorAll('#domainTable tbody tr').length;
   updateOverviewPanel();
 }
 
-document.getElementById('addDomain').onclick = ()=> addDomainRow();
+document.getElementById('addDomain').onclick = ()=>{
+  document.getElementById('domainSettingsSearch').value = '';
+  addDomainRow();
+  document.querySelector('#domainTable tbody tr:last-child .domain-name').focus();
+};
 
 // Settings tab switching (domains vs custom decoders)
 function showSettingsTab(tab){
@@ -2719,10 +2812,15 @@ document.getElementById('settingsTabAlerts').onclick = ()=> showSettingsTab('ale
 document.getElementById('loadAlertSettingsBtn').onclick = ()=> loadAlertSettings();
 document.getElementById('saveAlertSettingsBtn').onclick = ()=> saveAlertSettings();
 
-function collectDomainsFromUI(){
+function collectDomainsFromUI(excludedRow){
   const rows = document.querySelectorAll('#domainTable tbody tr');
   const out = [];
   rows.forEach(r=>{
+    if(r === excludedRow) return;
+    if(r._original && domainEditorState(r) === r._initialState){
+      out.push({...r._original});
+      return;
+    }
     const name = ((r.querySelector('.domain-name') || {}).value || '').trim();
     const typ = ((r.querySelector('.domain-type') || {}).value || 'A').toUpperCase();
     const txt_decode = ((r.querySelector('.txt-decode') || {}).value || '').trim();
@@ -2743,6 +2841,10 @@ function collectDomainsFromUI(){
           obj.a_xor_key = a_xor_key;
         }
       } else if(typ === 'ENS'){
+        const node = r.querySelector('.ens-node').value.trim();
+        const resolver = r.querySelector('.ens-resolver').value.trim();
+        if(node) obj.ens_node = node;
+        if(resolver) obj.ens_resolver = resolver;
         if(ens_text_key) obj.ens_text_key = ens_text_key;
         if(ens_decode) obj.ens_decode = ens_decode;
         const parsed = parseJsonObjectInput(ens_options_raw, `ENS options (${name})`);
@@ -2805,30 +2907,35 @@ function secretInput(id, field, configured, scope){
 let configRevision = null;
 let alertRevision = null;
 
+function applyDomainConfig(j){
+  configRevision = j.revision;
+  document.querySelector('#domainTable tbody').innerHTML = '';
+  const domains = j.domains || [];
+  if(Array.isArray(domains)) {
+    domains.forEach(d=>{
+      const obj = typeof d === 'string' ? {name:d, type:'A'} : d;
+      if(obj) addDomainRow(obj, (j.domain_metadata || {})[domainConfigIdentity(obj)]);
+    });
+    uiOverview.configured = domains.length;
+    updateOverviewPanel();
+  }
+  const servers = j.servers || [];
+  filterDomainSettings();
+  document.getElementById('servers').value = (Array.isArray(servers) ? servers : []).join(',');
+  const ensRpcEl = document.getElementById('ensRpcUrl');
+  if(ensRpcEl) secretInput('ensRpcUrl', 'ens_rpc_url', !!(j.configured || {}).ens_rpc_url, 'config');
+  const snsHostsEl = document.getElementById('snsProxyHosts');
+  if(snsHostsEl) secretInput('snsProxyHosts', 'DEFAULT_SNS_PROXY_HOSTS', !!(j.configured || {}).DEFAULT_SNS_PROXY_HOSTS, 'config');
+  document.getElementById('interval').value = j.interval || 60;
+}
+
 async function loadCfg(){
   try{
     const r = await fetch('/config');
     if(!r.ok){ log('Failed to load config'); return; }
     const j = await r.json();
     if(!j) { log('Invalid config response'); return; }
-    configRevision = j.revision;
-    document.querySelector('#domainTable tbody').innerHTML = '';
-    const domains = j.domains || [];
-    if(Array.isArray(domains)) {
-      domains.forEach(d=>{
-        if(typeof d === 'string') addDomainRow({name:d, type:'A'});
-        else if(typeof d === 'object') addDomainRow(d);
-      });
-      uiOverview.configured = domains.length;
-      updateOverviewPanel();
-    }
-    const servers = j.servers || [];
-    document.getElementById('servers').value = (Array.isArray(servers) ? servers : []).join(',');
-    const ensRpcEl = document.getElementById('ensRpcUrl');
-    if(ensRpcEl) secretInput('ensRpcUrl', 'ens_rpc_url', !!(j.configured || {}).ens_rpc_url, 'config');
-    const snsHostsEl = document.getElementById('snsProxyHosts');
-    if(snsHostsEl) secretInput('snsProxyHosts', 'DEFAULT_SNS_PROXY_HOSTS', !!(j.configured || {}).DEFAULT_SNS_PROXY_HOSTS, 'config');
-    document.getElementById('interval').value = j.interval || 60;
+    applyDomainConfig(j);
     log('Loaded config');
     touchOverviewTs();
   }catch(e){ log('Config load error:'+e); }
@@ -2836,6 +2943,9 @@ async function loadCfg(){
 document.getElementById('load').onclick = loadCfg;
 
 document.getElementById('save').onclick = async ()=>{
+  const status = document.getElementById('domainSettingsStatus');
+  status.textContent = 'Saving…';
+  document.getElementById('save').disabled = true;
   try{
     const payload = {
       revision: configRevision,
@@ -2849,9 +2959,16 @@ document.getElementById('save').onclick = async ()=>{
     updateOverviewPanel();
     const r = await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(domainWritePayload(payload))});
     const j = await r.json();
-    configRevision = j.revision;
+    if(!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
+    applyDomainConfig({...j.config, revision: j.revision});
+    status.textContent = 'Settings saved';
     log('Settings saved');
-  }catch(e){ log('Save error:'+e); }
+  }catch(e){
+    status.textContent = `Save failed: ${e.message}`;
+    log('Save error:'+e);
+  }finally{
+    document.getElementById('save').disabled = false;
+  }
 };
 
 document.getElementById('force').onclick = async ()=>{

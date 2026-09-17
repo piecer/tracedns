@@ -203,6 +203,7 @@ def main():
     shared_config = {
         '_config_revision': int(file_cfg.get('config_revision') or 0),
         'domains': domains0,
+        'domain_metadata': dict(file_cfg.get('domain_metadata') or {}),
         'servers': servers0,
         'interval': bounded_int(interval0, 60, 1, 86400),
         'max_workers': bounded_int(max_workers0, 8, 1, 64),

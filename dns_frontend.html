@@ -66,11 +66,20 @@
     <button id="settingsTabAlerts" data-access="admin">Alert integrations</button>
   </div>
   <div id="domainSettingsSection">
+    <div class="domain-settings-heading">
+      <h4>Monitored domains</h4>
+      <p id="domainSettingsSummary" role="status">Loading configured targets…</p>
+      <p class="section-intro">Dates refer to registration and configuration changes in TraceDNS, not WHOIS registration or DNS answer changes. Older entries may have no recorded dates. Times use your local timezone.</p>
+      <label for="domainSettingsSearch">Find a configured target</label>
+      <input id="domainSettingsSearch" type="search" placeholder="Filter by full domain name or record type" />
+      <p id="domainSettingsEmpty" hidden>No matching targets.</p>
+    </div>
     <table class="domain-table" id="domainTable">
-      <thead><tr><th>Domain</th><th>Type</th><th>TXT Decode</th><th>A Decode</th><th>A XOR Key</th><th>ENS Key</th><th>ENS Decode</th><th>ENS Options (JSON)</th><th></th></tr></thead>
+      <caption class="sr-only">Configured monitoring targets and registration history</caption>
       <tbody></tbody>
     </table>
     <button id="addDomain" data-access="operator">+ Add Domain</button>
+    <p id="domainSettingsStatus" role="status" aria-live="polite"></p>
     
     <label>Servers (comma separated)
       <input id="servers" data-access="admin" type="text" placeholder="8.8.8.8, 1.1.1.1" />

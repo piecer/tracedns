@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Callable
 
 from .context import HttpContext
@@ -81,6 +82,20 @@ def handle_config_post(ctx: HttpContext, handler) -> None:
                 if key.rstrip('.').lower() not in new_storage_keys
             }
             removed = sorted(removed_config_keys | orphan_keys)
+            previous = {_CM.domain_identity(d): d for d in _CM.normalize_domains(prev)}
+            prior_metadata = candidate.get('domain_metadata') or {}
+            now = datetime.now(timezone.utc).isoformat()
+            metadata = {}
+            for domain in normalized:
+                identity = _CM.domain_identity(domain)
+                old = previous.get(identity)
+                dates = dict(prior_metadata.get(identity) or {}) if old is not None else {}
+                if old is None:
+                    dates = {'created_at': now, 'updated_at': now}
+                elif old != domain:
+                    dates['updated_at'] = now
+                metadata[identity] = dates
+            candidate['domain_metadata'] = metadata
             candidate["domains"] = normalized
         if "servers" in data:
             if not isinstance(data["servers"], list):
@@ -146,6 +161,7 @@ def handle_config_post(ctx: HttpContext, handler) -> None:
         )
     payload = {"status": "ok", "revision": revision}
     cfg = {}
+    cfg['domain_metadata'] = dict(ctx.shared_config.get('domain_metadata') or {})
     if "domains" in ctx.shared_config:
         cfg["domains"] = list(ctx.shared_config.get("domains", []))
     if "servers" in ctx.shared_config:
