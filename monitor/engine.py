@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from alerts import alert_new_ips, alert_removed_ips
 from config_manager import domain_storage_name
@@ -12,6 +12,7 @@ from models import DomainSpec, coerce_domains, Snapshot
 
 from .collect import collect_snapshot
 from .lifecycle import update_nxdomain_lifecycle
+from .removal_grace import IpRemovalGraceTracker
 from .runtime_state import bump_state_version, clone_history_entry, state_lock
 from .state_utils import collect_active_ip_map, collect_domain_managed_ips
 
@@ -384,6 +385,7 @@ def run_full_cycle(
     force_req: Optional[Dict[str, Any]] = None,
     ens_rpc_url: Optional[str] = None,
     sns_proxy_hosts: Optional[List[str]] = None,
+    suppressed_added_ips: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
     """Run a full scan cycle across domains.
 
@@ -443,6 +445,15 @@ def run_full_cycle(
 
     # Added-IP alerts are sent once per full cycle (not per domain/server).
     if cycle_added_tuples:
+        suppressed = {str(ip).strip() for ip in (suppressed_added_ips or set()) if str(ip or '').strip()}
+        if suppressed:
+            before_count = len(cycle_added_tuples)
+            cycle_added_tuples = [entry for entry in cycle_added_tuples if str(entry[0]) not in suppressed]
+            suppressed_count = before_count - len(cycle_added_tuples)
+            if suppressed_count:
+                logger.info("Suppressed %s reappeared-IP addition alert(s) during removal grace", suppressed_count)
+
+    if cycle_added_tuples:
         deduped_added = _dedupe_alert('Added', cycle_added_tuples)
         if deduped_added:
             try:
@@ -481,13 +492,21 @@ def run_full_cycle(
     return collect_active_ip_map(current_results, configured_names)
 
 
-def reconcile_removed_ips(active_ip_map_prev: Dict[str, Any], active_ip_map_now: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    removed_ips = sorted(set(active_ip_map_prev.keys()) - set(active_ip_map_now.keys()))
-    if removed_ips:
-        removed_tuples = []
-        for ip in removed_ips:
-            labels = sorted(active_ip_map_prev.get(ip, set()))
-            removed_tuples.append((ip, ",".join(labels) if labels else "unknown", 'A'))
+def reconcile_removed_ips(
+    active_ip_map_prev: Dict[str, Any],
+    active_ip_map_now: Dict[str, Any],
+    context: Optional[Dict[str, Any]] = None,
+    removal_tracker: Optional[IpRemovalGraceTracker] = None,
+) -> Dict[str, Any]:
+    """Reconcile removals, deferring alerts when a grace tracker is supplied.
+
+    The no-tracker path retains the historical immediate-removal behavior for
+    compatibility with direct callers. The monitor runtime supplies a
+    persistent 24-hour tracker.
+    """
+    tracker = removal_tracker or IpRemovalGraceTracker(grace_seconds=0)
+    removed_tuples = tracker.reconcile(active_ip_map_prev, active_ip_map_now)
+    if removed_tuples:
         removed_tuples = _dedupe_alert('Removed', removed_tuples)
         if removed_tuples:
             try:
