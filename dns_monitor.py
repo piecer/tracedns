@@ -29,6 +29,7 @@ from monitor.engine import (
     run_full_cycle,
 )
 from monitor.lifecycle import update_nxdomain_lifecycle as _update_nxdomain_lifecycle_impl
+from monitor.removal_grace import IpRemovalGraceTracker
 from monitor.runtime_state import clone_snapshot
 from monitor.state_utils import collect_active_ip_map
 from monitor.stores import bounded_int, ConfigStore
@@ -294,6 +295,7 @@ def main():
     # in-memory result & history
     history = load_history_files(history_dir)  # { domain: {meta, events, current} }
     current_results = restore_current_results(history)
+    removal_tracker = IpRemovalGraceTracker.from_history_dir(history_dir)
 
     configured_names = {d.get('name', '').strip() for d in normalize_domains(shared_config.get('domains', [])) if isinstance(d, dict) and d.get('name')}
     active_ip_map_prev = collect_active_ip_map(current_results, configured_names)
@@ -339,6 +341,7 @@ def main():
             force_req=snap.force_req,
             ens_rpc_url=str(shared_config.get('ens_rpc_url') or '').strip() or None,
             sns_proxy_hosts=list(shared_config.get('DEFAULT_SNS_PROXY_HOSTS') or shared_config.get('DEFAULT_SOLAR_PROXY_HOSTS') or DEFAULT_SOLAR_PROXY_HOSTS),
+            suppressed_added_ips=removal_tracker.pending_ips(),
         )
 
         # reconcile removed IPs only for full scans
@@ -351,7 +354,12 @@ def main():
                     'domain_targets': len(domains or []),
                     'server_targets': len([str(x).strip() for x in (snap.servers or []) if str(x).strip()]),
                 },
+                removal_tracker=removal_tracker,
             )
+        else:
+            # A forced subset must not start removals, but it can prove that a
+            # pending IP has returned and should no longer be considered new.
+            removal_tracker.cancel_present(active_ip_map_now)
 
         # sleep ticks
         for _ in range(max(1, snap.interval)):

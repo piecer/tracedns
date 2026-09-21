@@ -147,6 +147,10 @@ Custom decoders use a constrained, validated list of steps (no arbitrary code ex
 - MISP: existing helper functions integrate with MISP to add attributes/sightings; configure MISP-related fields in `alerts`.
 - Alert messages include local-time timestamps and cycle summaries (unique IP/domain counts, source-type breakdown).
 - New-IP alerts are batched and sent once after each full resolve cycle across configured domains.
+- Removed IPs have a 24-hour grace period. TraceDNS keeps the pending removal
+  across restarts, sends the removal alert only if the IP remains absent for
+  the full period, and suppresses a new-IP alert when it returns during that
+  window.
 
 
 
