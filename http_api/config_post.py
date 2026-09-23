@@ -150,6 +150,8 @@ def handle_config_post(ctx: HttpContext, handler) -> None:
                 return
         candidate["_config_revision"] = ctx.shared_config.get("_config_revision", 0) + 1
         revision = candidate["_config_revision"]
+        if getattr(ctx, 'read_model', None) is not None:
+            ctx.read_model.invalidate(hard=True)
         ctx.shared_config.clear()
         ctx.shared_config.update(candidate)
     if removed and callable(getattr(ctx, "purge_removed_domains_state", None)):
@@ -159,6 +161,10 @@ def handle_config_post(ctx: HttpContext, handler) -> None:
             ctx.history_dir,
             removed,
         )
+    # A builder may have captured between config publication and state purge.
+    # Fence that generation too before acknowledging the successful mutation.
+    if getattr(ctx, 'read_model', None) is not None:
+        ctx.read_model.invalidate(hard=True)
     payload = {"status": "ok", "revision": revision}
     cfg = {}
     cfg['domain_metadata'] = dict(ctx.shared_config.get('domain_metadata') or {})

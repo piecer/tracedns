@@ -3,6 +3,7 @@
 
 import os
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 
@@ -61,9 +62,40 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
     def __init__(self, *args, max_workers=64, request_timeout=15, **kwargs):
+        self._background_services = []
+        self._background_stopped = False
+        self._background_closed = False
         super().__init__(*args, **kwargs)
         self._request_slots = threading.BoundedSemaphore(max(1, int(max_workers)))
         self.request_timeout = max(1.0, float(request_timeout))
+        try:
+            for service in getattr(self.RequestHandlerClass, 'background_services', ()):
+                self._background_services.append(service)
+                service.start()
+        except Exception:
+            self.server_close()
+            raise
+
+    def _stop_background_admission(self):
+        if not self._background_stopped:
+            self._background_stopped = True
+            for service in self._background_services:
+                service.stop_admission()
+
+    def shutdown(self):
+        self._stop_background_admission()
+        super().shutdown()
+
+    def server_close(self):
+        self._stop_background_admission()
+        super().server_close()
+        if not self._background_closed:
+            self._background_closed = True
+            deadline = time.monotonic() + 1.0
+            self.background_shutdown = [
+                service.close(timeout=max(0.0, deadline - time.monotonic()))
+                for service in self._background_services
+            ]
 
     def process_request(self, request, client_address):
         request.settimeout(self.request_timeout)
@@ -97,6 +129,11 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
     ``max_body_bytes`` defaults to ``resolve_max_body_length()`` when omitted.
     """
     frontend_html = load_frontend_html()
+    from http_api.enrichment import BackgroundEnrichment
+    from http_api.read_source import create_read_model
+    from http_api_handlers import get_ip_report
+    enrichment = BackgroundEnrichment(get_ip_report)
+    read_model = create_read_model(shared_config, config_lock, current_results, history)
 
     class ConfigHandler(BaseHTTPRequestHandler):
         pass
@@ -112,7 +149,10 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
         history=history,
         purge_removed_domains_state=purge_removed_domains_state,
         max_body_bytes=max_body_bytes,
+        background_enrichment=enrichment,
+        read_model=read_model,
     )
+    handler.background_services = (enrichment, read_model)
     from security.http import HttpSecurity, secure_handler
     service = HttpSecurity(security_store, public_origin, insecure_http, trusted_proxies,
                            allow_insecure_remote_http)

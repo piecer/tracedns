@@ -19,3 +19,4 @@ class HttpContext:
     cache_lock: Any = None
     results_cache: Dict[str, Any] = field(default_factory=dict)
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
+    read_model: Any = None

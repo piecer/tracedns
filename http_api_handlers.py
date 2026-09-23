@@ -114,6 +114,8 @@ def attach_api_handlers(
     history,
     purge_removed_domains_state,
     max_body_bytes: int | None = None,
+    background_enrichment=None,
+    read_model=None,
 ):
     cache_lock = threading.RLock()
     if max_body_bytes is None:
@@ -130,6 +132,7 @@ def attach_api_handlers(
         cache_lock=cache_lock,
         results_cache={},
         max_body_bytes=max_body_bytes,
+        read_model=read_model,
     )
     ips_cache = {'version': 0, 'rows': []}
 
@@ -153,6 +156,9 @@ def attach_api_handlers(
         return _handle_config_basic(ctx, self)
 
     def _handle_results(self, qs=None):
+        if (qs or {}).get('read_mode', ['sync'])[0] == 'background':
+            from http_api.prepared_reads import serve_prepared
+            return serve_prepared(self, read_model, background_enrichment, 'results', qs or {})
         return _handle_results_basic(ctx, self, qs or {})
 
     def _handle_decoders(self):
@@ -390,8 +396,14 @@ def attach_api_handlers(
     
     def _handle_domain_analysis(self, qs):
         """Return per-domain resolving/decoded IP view with optional AS context."""
+        if qs.get('read_mode', ['sync'])[0] == 'background':
+            from http_api.prepared_reads import serve_prepared
+            return serve_prepared(self, read_model, background_enrichment, 'domains', qs)
         try:
             import ipaddress as _ip
+            vt_mode = qs.get('vt_mode', ['sync'])[0]
+            if vt_mode not in ('sync', 'background'):
+                return self._send_json({'error': 'invalid vt_mode'}, 400)
             include_vt = True
             if qs.get('include_vt') is not None:
                 try:
@@ -479,10 +491,25 @@ def attach_api_handlers(
                             continue
     
             vt_cache = {}
+            enrichment = {'status': 'disabled'}
+            if vt_mode == 'background' and include_vt:
+                enrichment = {'status': 'unavailable'}
+                if background_enrichment is not None:
+                    ips = sorted({ip for ent in domain_map.values()
+                                  for ip in ent['resolved_ips'] | ent['decoded_ips']
+                                  if _is_global_external_lookup_ip(ip)})
+                    try:
+                        budget = max(0, min(5000, int(qs.get('vt_budget', ['200'])[0])))
+                    except (ValueError, TypeError):
+                        budget = 200
+                    vt_cache, enrichment = background_enrichment.request(
+                        ips, budget=budget, owner=str((getattr(self, 'principal', None) or {}).get('id', 'local')))
     
             def _vt_brief(ip):
                 if not include_vt or not get_ip_report or not _is_global_external_lookup_ip(ip):
                     return None
+                if vt_mode == 'background':
+                    return vt_cache.get(str(ipaddress.ip_address(ip)))
                 if ip in vt_cache:
                     return vt_cache[ip]
                 rep = None
@@ -504,7 +531,7 @@ def attach_api_handlers(
     
             out = []
             vt_batch_started = False
-            if include_vt and get_ip_report:
+            if include_vt and get_ip_report and vt_mode != 'background':
                 begin_cache_batch()
                 vt_batch_started = True
             try:
@@ -549,7 +576,10 @@ def attach_api_handlers(
                 if vt_batch_started:
                     end_cache_batch(flush=True)
     
-            self._send_json({'domains': out, 'include_vt': include_vt})
+            payload = {'domains': out, 'include_vt': include_vt}
+            if vt_mode == 'background':
+                payload['enrichment'] = enrichment
+            self._send_json(payload)
         except Exception as e:
             self._send_json({'error': str(e)}, 500)
 
@@ -2039,7 +2069,13 @@ def attach_api_handlers(
         - Supports pagination so VT lookups only run on the visible page.
         - VT lookups can be parallelized via vt_workers.
         """
+        if qs.get('read_mode', ['sync'])[0] == 'background':
+            from http_api.prepared_reads import serve_prepared
+            return serve_prepared(self, read_model, background_enrichment, 'ips', qs)
         try:
+            vt_mode = qs.get('vt_mode', ['sync'])[0]
+            if vt_mode not in ('sync', 'background'):
+                return self._send_json({'error': 'invalid vt_mode'}, 400)
             base_rows = self._gather_ip_rows()
 
             # apply 'since' filter if requested (seconds)
@@ -2077,8 +2113,20 @@ def attach_api_handlers(
             page = [dict(row) for row in out[offset: offset + limit]]
             truncated = (offset + limit) < total
 
-            # VT enrichment only for the visible page (bounded + optionally parallel)
-            if include_vt and get_ip_report and vt_budget > 0 and page:
+            enrichment = {'status': 'disabled'}
+            if vt_mode == 'background' and include_vt:
+                enrichment = {'status': 'unavailable'}
+                if background_enrichment is not None:
+                    reports, enrichment = background_enrichment.request(
+                        [row['ip'] for row in page if _is_global_external_lookup_ip(row['ip'])],
+                        budget=vt_budget,
+                        owner=str((getattr(self, 'principal', None) or {}).get('id', 'local')))
+                    for row in page:
+                        row['vt'] = (reports.get(str(ipaddress.ip_address(row['ip'])))
+                                     if _is_global_external_lookup_ip(row['ip']) else None)
+
+            # Synchronous mode is retained for existing API clients only.
+            if vt_mode != 'background' and include_vt and get_ip_report and vt_budget > 0 and page:
                 begin_cache_batch()
                 try:
                     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -2111,6 +2159,7 @@ def attach_api_handlers(
 
             self._send_json({
                 'ips': page,
+                **({'enrichment': enrichment} if vt_mode == 'background' else {}),
                 'ips_total_count': total,
                 'ips_displayed_count': len(page),
                 'ips_offset': offset,

@@ -221,11 +221,16 @@ def handle_results(ctx: HttpContext, handler, qs: Dict[str, Any]) -> None:
         cache_key = 'raw' if include_raw else 'agg'
         version = get_state_version()
 
+        cached_payload = None
         if ctx.cache_lock is not None:
             with ctx.cache_lock:
                 cached = ctx.results_cache.get(cache_key)
                 if isinstance(cached, dict) and int(cached.get('version') or 0) == version:
-                    return send_json(handler, cached.get('payload', {}))
+                    cached_payload = cached.get('payload', {})
+        # Cached payloads are replaced, never mutated. Serialization, security
+        # projection and socket writes must not own a lock shared with readers.
+        if cached_payload is not None:
+            return send_json(handler, cached_payload)
 
         snap_version, current_snapshot, history_meta_snapshot = snapshot_results_inputs(ctx.current_results, ctx.history)
         payload = _build_results_payload(current_snapshot, history_meta_snapshot, include_raw=include_raw)
