@@ -92,10 +92,16 @@ class HttpSecurity:
         handler._security_cookies = []
         handler._security_status = 500
         handler.close_connection = True
+        original_path, original_method = handler.path, handler.command
         parsed = urlsplit(handler.path)
         path, qs = parsed.path, parse_qs(parsed.query, keep_blank_values=True)
         try:
             self.transport(handler)
+            if path == '/api' or path.startswith('/api/'):
+                from http_api.rest import resolve_route
+                path, handler.command = resolve_route(path, handler.command)
+                handler.path = path + ('?' + parsed.query if parsed.query else '')
+                original = handler.api_legacy_methods.get(handler.command, original)
             if handler.command == 'GET' and path in PUBLIC:
                 return self.page(handler, path)
             if self.store is None:
@@ -160,6 +166,10 @@ class HttpSecurity:
                     '/auth/me', '/auth/logout', '/auth/password', '/account.html',
                     '/auth_frontend.js', '/security_ui.js'}:
                 raise SecurityError('Password change required', 403)
+            if path in ('/api-info', '/openapi.json'):
+                from http_api.rest import discovery
+                from http_api.openapi import openapi_document
+                return send_json(handler, discovery() if path == '/api-info' else openapi_document())
             if path in PAGES:
                 return self.page(handler, path)
             if path.startswith(('/auth/', '/admin/')):
@@ -187,6 +197,8 @@ class HttpSecurity:
             LOGGER.error('Request failed; request_id=%s', handler.request_id)
             if not getattr(handler, '_headers_sent', False):
                 send_json(handler, {'error': 'Service unavailable', 'request_id': handler.request_id}, 503)
+        finally:
+            handler.path, handler.command = original_path, original_method
 
     @staticmethod
     def page(handler, path):
@@ -232,6 +244,10 @@ def secure_handler(handler_class, service):
     def unavailable(self):
         send_json(self, {'error': 'Method not allowed'}, 405)
 
+    handler_class.api_legacy_methods = {
+        method: getattr(handler_class, 'do_' + method, unavailable)
+        for method in ('GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS', 'TRACE', 'CONNECT')
+    }
     for method in ('GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS', 'TRACE', 'CONNECT'):
         name = 'do_' + method
         setattr(handler_class, name, wrap(getattr(handler_class, name, unavailable)))

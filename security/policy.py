@@ -2,7 +2,7 @@
 import re
 
 READ = {'/config', '/results', '/decoders', '/decoders/custom', '/history', '/ip', '/ips',
-        '/domains', '/domain-analysis'}
+        '/domains', '/domain-analysis', '/api-info', '/openapi.json'}
 OPERATE = {'/resolve', '/ip', '/analyze', '/verify', '/domain-precheck', '/ip-list-analysis',
            '/ip-relationship-jobs', '/ip-relationship-analysis', '/misp/search', '/misp/event-ips'}
 PAGES = {'/', '/dns_frontend.html', '/dns_dashboard.html', '/dns_frontend.js', '/dns_frontend.css',

@@ -24,6 +24,17 @@ DB 및 상위 디렉터리는 서비스 계정만 읽고 쓸 수 있어야 한�
 
 `--insecure-http`은 기본적으로 loopback 바인딩에서만 허용된다. 신뢰된 내부망에서만 필요한 경우 `--allow-insecure-remote-http`와 `--public-origin http://<host>:<port>`를 함께 주어 원격 HTTP를 명시적으로 허용할 수 있다. 이 모드는 비밀번호·세션 쿠키·DNS 결과가 TLS 없이 전송되므로 인터넷, Wi-Fi, VPN 공유망에서는 사용하지 않는다.
 
+## 외부 REST API / AI 클라이언트
+
+`/api/v1`은 기존 UI와 동일한 세션·CSRF·역할·감사 경계를 통과한다.
+프록시에서 공개 Host를 유지하고 `/api/v1` 경로를 그대로 전달한다.
+별도의 익명 접근, CORS 허용, Bearer/API 키 우회를 추가하지 않는다.
+외부 AI에는 viewer 또는 operator 전용 계정을 우선 사용하고, admin은 필요한 작업에만 부여한다.
+계정의 최초 비밀번호 변경을 마친 뒤 secret manager로 클라이언트 환경에 주입한다.
+`scripts/tracedns_api.py`는 HTTPS를 검증하고 세션을 메모리에만 보관하며 작업 후 로그아웃한다.
+클라이언트는 서버의 LAN plaintext 허용 옵션과 무관하게 원격 HTTP를 거절한다.
+API 계약/제한은 `docs/API.md`, AI 작업 절차는 루트 `SKILL.md`를 참고한다.
+
 ## 계정과 감사
 
 admin은 계정 생성·역할 변경·비활성화·임시 비밀번호 재설정·세션 철회와 전체 감사 로그/JSONL 내보내기를 수행한다. operator는 도메인과 분석/강제 조회를 관리한다. viewer는 저장된 관제 데이터만 본다. 마지막 활성 admin은 서버에서 보호한다.

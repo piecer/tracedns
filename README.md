@@ -88,6 +88,35 @@ and re-adding a target starts a new registration. Renaming a target or changing
 its ENS/SNS identity is likewise a new registration. Direct file edits are not
 tracked and cannot be used to reconstruct historical dates.
 
+## REST API and external AI integration
+
+External tools can use the versioned `/api/v1` API without changing the existing UI.
+It shares the same session/CSRF authentication, roles, audit trail and monitoring state.
+Read observations/history, update monitored targets with revision checks, request
+resolution, run asynchronous relationship analysis, and manage settings/decoders/accounts
+with the appropriate role. No unauthenticated or remote shell interface is added.
+
+- AI instructions: [`SKILL.md`](SKILL.md).
+- API/authentication/workflow reference: [`docs/API.md`](docs/API.md).
+- Machine-readable contract: [`docs/openapi.json`](docs/openapi.json), also served at
+  `GET /api/v1/openapi.json` after login; discovery is `GET /api/v1`.
+- Standalone Python client: `scripts/tracedns_api.py` (stdlib only; HTTPS remotely).
+
+Set `TRACEDNS_BASE_URL` to the public HTTPS origin and `TRACEDNS_USERNAME` to a
+dedicated account. Supply `TRACEDNS_PASSWORD` via your secret manager, or enter it
+at the hidden prompt for interactive use; never put passwords in command arguments.
+
+```bash
+python3 scripts/tracedns_api.py GET /
+python3 scripts/tracedns_api.py GET '/results?aggregate=1'
+python3 scripts/tracedns_api.py GET '/ips?include_vt=0&limit=100'
+```
+
+The client handles login, cookies, CSRF and logout. For polling or multi-step changes,
+reuse a `TraceDNSClient` session as shown in the API reference. Removing a target from
+the full `domains` list also removes its history; read/merge/verify instead of blindly
+overwriting configuration. Queued work is not completed work.
+
 ## Configuration (`dns_config.json`)
 
 Key items in `dns_config.json`:

@@ -2362,7 +2362,16 @@ def attach_api_handlers(
                 body=body,
             )
         if parsed.path == '/misp/search':
-            return self._handle_misp_search({})
+            body, rejected = get_request_body(self, max_length=self.max_body_bytes)
+            if rejected:
+                return
+            try:
+                data = json.loads(body) if body else {}
+            except (ValueError, UnicodeError):
+                return self._send_json({'error': 'invalid json'}, 400)
+            if not isinstance(data, dict) or not isinstance(data.get('value'), str):
+                return self._send_json({'error': 'value must be a string'}, 400)
+            return self._handle_misp_search({'value': [data['value']]})
         if parsed.path == '/misp/event-ips':
             return self._handle_misp_event_ips()
         if parsed.path == '/settings':
