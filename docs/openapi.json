@@ -5023,7 +5023,7 @@
     },
     "/domain-analysis": {
       "get": {
-        "description": "Read grouped domain analysis. DEFAULT include_vt=1 causes external lookups. Use include_vt=0 for stored-only viewer-safe reads. CSRF is required when include_vt is enabled; this conditional is described here rather than as unconditional OpenAPI security.",
+        "description": "Read grouped domain analysis. DEFAULT include_vt=1 causes external lookups. Use include_vt=0 for stored-only viewer-safe reads. read_mode=background is bounded to 200 display units and 1 MiB; follow page.next_offset. Domain display units are IP-role rows (empty domain counts one). CSRF is required when include_vt is enabled; this conditional is described here rather than as unconditional OpenAPI security.",
         "operationId": "get_domain_analysis",
         "parameters": [
           {
@@ -5037,6 +5037,83 @@
                 "1"
               ]
             }
+          },
+          {
+            "in": "query",
+            "name": "vt_mode",
+            "required": false,
+            "schema": {
+              "default": "sync",
+              "enum": [
+                "sync",
+                "background"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "vt_budget",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 5000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "read_mode",
+            "required": false,
+            "schema": {
+              "default": "sync",
+              "description": "background reads prepared snapshots; 202 is not empty success. See docs/API.md.",
+              "enum": [
+                "sync",
+                "background"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "if_version",
+            "required": false,
+            "schema": {
+              "description": "Opaque view_version for this exact query; unchanged responses omit row data.",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "description": "Prepared results/domain name substring filter.",
+              "maxLength": 253,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 10000000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -5044,12 +5121,66 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "type": "object"
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": true,
+                      "properties": {
+                        "enrichment": {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        "page": {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        "snapshot": {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        "unchanged": {
+                          "const": true
+                        },
+                        "view_version": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "unchanged",
+                        "view_version",
+                        "snapshot",
+                        "page"
+                      ],
+                      "type": "object"
+                    }
+                  ]
                 }
               }
             },
             "description": "Success"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "snapshot": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "snapshot"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Prepared snapshot not ready; retain prior UI data with a warning."
           },
           "400": {
             "content": {
@@ -5130,6 +5261,16 @@
               }
             },
             "description": "Body too large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A complete entry cannot fit the prepared response budget; use explicit legacy JSON download."
           },
           "429": {
             "content": {
@@ -7144,7 +7285,7 @@
     },
     "/ips": {
       "get": {
-        "description": "Read paginated stored IP rows (ips,ips_total_count,ips_displayed_count,ips_offset,ips_limit,ips_truncated). include_vt=1 performs external enrichment, needs operator/admin and CSRF. CSRF is required when include_vt is enabled; this conditional is described here rather than as unconditional OpenAPI security.",
+        "description": "Read paginated stored IP rows (ips,ips_total_count,ips_displayed_count,ips_offset,ips_limit,ips_truncated). include_vt=1 performs external enrichment, needs operator/admin and CSRF. read_mode=background is bounded to 200 display units and 1 MiB; follow page.next_offset. Domain display units are IP-role rows (empty domain counts one). CSRF is required when include_vt is enabled; this conditional is described here rather than as unconditional OpenAPI security.",
         "operationId": "get_ips",
         "parameters": [
           {
@@ -7173,6 +7314,7 @@
             "required": false,
             "schema": {
               "default": 500,
+              "description": "Legacy: max 5000/default 500. Prepared: max 200/default 100, further reduced by byte budget.",
               "maximum": 5000,
               "minimum": 1,
               "type": "integer"
@@ -7205,6 +7347,61 @@
             "schema": {
               "type": "integer"
             }
+          },
+          {
+            "in": "query",
+            "name": "vt_mode",
+            "required": false,
+            "schema": {
+              "default": "sync",
+              "description": "background returns published reports and bounded enrichment admission status without waiting for VT.",
+              "enum": [
+                "sync",
+                "background"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "read_mode",
+            "required": false,
+            "schema": {
+              "default": "sync",
+              "description": "background reads prepared snapshots; 202 is not empty success. See docs/API.md.",
+              "enum": [
+                "sync",
+                "background"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "if_version",
+            "required": false,
+            "schema": {
+              "description": "Opaque view_version for this exact query; unchanged responses omit row data.",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "description": "Prepared results/domain name substring filter.",
+              "maxLength": 253,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "valid_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Filter before prepared pagination.",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -7212,47 +7409,101 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "properties": {
+                        "include_vt": {
+                          "type": "boolean"
+                        },
+                        "ips": {
+                          "items": {
+                            "additionalProperties": true,
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "ips_displayed_count": {
+                          "type": "integer"
+                        },
+                        "ips_limit": {
+                          "type": "integer"
+                        },
+                        "ips_offset": {
+                          "type": "integer"
+                        },
+                        "ips_total_count": {
+                          "type": "integer"
+                        },
+                        "ips_truncated": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "ips",
+                        "ips_total_count",
+                        "ips_displayed_count",
+                        "ips_offset",
+                        "ips_limit",
+                        "ips_truncated"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": true,
+                      "properties": {
+                        "enrichment": {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        "page": {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        "snapshot": {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        "unchanged": {
+                          "const": true
+                        },
+                        "view_version": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "unchanged",
+                        "view_version",
+                        "snapshot",
+                        "page"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
                   "additionalProperties": true,
                   "properties": {
-                    "include_vt": {
-                      "type": "boolean"
-                    },
-                    "ips": {
-                      "items": {
-                        "additionalProperties": true,
-                        "type": "object"
-                      },
-                      "type": "array"
-                    },
-                    "ips_displayed_count": {
-                      "type": "integer"
-                    },
-                    "ips_limit": {
-                      "type": "integer"
-                    },
-                    "ips_offset": {
-                      "type": "integer"
-                    },
-                    "ips_total_count": {
-                      "type": "integer"
-                    },
-                    "ips_truncated": {
-                      "type": "boolean"
+                    "snapshot": {
+                      "additionalProperties": true,
+                      "type": "object"
                     }
                   },
                   "required": [
-                    "ips",
-                    "ips_total_count",
-                    "ips_displayed_count",
-                    "ips_offset",
-                    "ips_limit",
-                    "ips_truncated"
+                    "snapshot"
                   ],
                   "type": "object"
                 }
               }
             },
-            "description": "Success"
+            "description": "Prepared snapshot not ready; retain prior UI data with a warning."
           },
           "400": {
             "content": {
@@ -7333,6 +7584,16 @@
               }
             },
             "description": "Body too large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A complete entry cannot fit the prepared response budget; use explicit legacy JSON download."
           },
           "429": {
             "content": {
@@ -8269,7 +8530,7 @@
     },
     "/results": {
       "get": {
-        "description": "Read current results/results_agg/domain_meta. aggregate=1 omits raw results unless include_raw=1. Observed values are not a maliciousness verdict.",
+        "description": "Read current results/results_agg/domain_meta. aggregate=1 omits raw results unless include_raw=1. Observed values are not a maliciousness verdict. read_mode=background is bounded to 200 display units and 1 MiB; follow page.next_offset. Domain display units are IP-role rows (empty domain counts one).",
         "operationId": "get_results",
         "parameters": [
           {
@@ -8288,6 +8549,60 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "in": "query",
+            "name": "read_mode",
+            "required": false,
+            "schema": {
+              "default": "sync",
+              "description": "background reads prepared snapshots; 202 is not empty success. See docs/API.md.",
+              "enum": [
+                "sync",
+                "background"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "if_version",
+            "required": false,
+            "schema": {
+              "description": "Opaque view_version for this exact query; unchanged responses omit row data.",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "description": "Prepared results/domain name substring filter.",
+              "maxLength": 253,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 10000000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -8295,30 +8610,84 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "properties": {
+                        "domain_meta": {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        "results": {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        "results_agg": {
+                          "additionalProperties": true,
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "results_agg",
+                        "domain_meta"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": true,
+                      "properties": {
+                        "enrichment": {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        "page": {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        "snapshot": {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        "unchanged": {
+                          "const": true
+                        },
+                        "view_version": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "unchanged",
+                        "view_version",
+                        "snapshot",
+                        "page"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
                   "additionalProperties": true,
                   "properties": {
-                    "domain_meta": {
-                      "additionalProperties": true,
-                      "type": "object"
-                    },
-                    "results": {
-                      "additionalProperties": true,
-                      "type": "object"
-                    },
-                    "results_agg": {
+                    "snapshot": {
                       "additionalProperties": true,
                       "type": "object"
                     }
                   },
                   "required": [
-                    "results_agg",
-                    "domain_meta"
+                    "snapshot"
                   ],
                   "type": "object"
                 }
               }
             },
-            "description": "Success"
+            "description": "Prepared snapshot not ready; retain prior UI data with a warning."
           },
           "400": {
             "content": {
@@ -8399,6 +8768,16 @@
               }
             },
             "description": "Body too large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A complete entry cannot fit the prepared response budget; use explicit legacy JSON download."
           },
           "429": {
             "content": {

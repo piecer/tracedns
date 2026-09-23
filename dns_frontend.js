@@ -9,6 +9,149 @@ const SECTION_BUTTON_MAP = {
   validips: 'menuValidIPs'
 };
 
+function setSectionRefreshStatus(section, text){
+  const parent = document.getElementById(section);
+  if(!parent) return;
+  let status = document.getElementById(section + '-refresh-status');
+  if(!status){
+    status = document.createElement('p');
+    status.id = section + '-refresh-status';
+    status.setAttribute('role', 'status');
+    parent.prepend(status);
+  }
+  status.textContent = text;
+}
+
+const sectionRefreshOwners = new Map();
+// Only the currently displayed query may negotiate an unchanged body. A prior
+// page's validator without its rows would incorrectly retain the current page.
+const preparedViews = new Map();
+async function readPreparedJSON(owner){
+  const url = owner.url;
+  const previous = preparedViews.get(owner.section);
+  const query = new URL(url, location.href);
+  if(previous && previous.url === url && previous.version){
+    query.searchParams.set('if_version', previous.version);
+  }
+  const data = await window.TraceAuth.readJSON(query.href, {signal:owner.controller.signal});
+  owner.payload = data;
+  return data;
+}
+function preparedStatus(owner){
+  const j = owner.payload || {};
+  const s = j.snapshot || {};
+  const time = s.generated_at ? formatUnixTsLocal(s.generated_at) : 'unknown time';
+  setSectionRefreshStatus(owner.section, `Snapshot from ${time}${s.stale ? ' (stale)' : ''}; source checks are periodic.` +
+    (j.enrichment ? ` VT: ${j.enrichment.status}.` : ''));
+}
+function completePreparedRender(owner){
+  if(!isSectionRefreshCurrent(owner)) return;
+  const j = owner.payload || {};
+  updatePreparedPage(owner.section, j.page);
+  preparedStatus(owner);
+  const status = document.getElementById(owner.section + '-refresh-status');
+  preparedViews.set(owner.section, {url:owner.url, version:j.view_version || null, page:j.page, status:status ? status.textContent : ''});
+}
+function preparedResponseHandled(owner){
+  if(!isSectionRefreshCurrent(owner)) return true;
+  const j = owner.payload || {};
+  if(j.snapshot && j.snapshot.ready === false){
+    const previous = preparedViews.get(owner.section);
+    setSectionRefreshStatus(owner.section, 'Preparing snapshot... Previous data retained. ' + (previous ? previous.status : ''));
+    return true;
+  }
+  if(j.unchanged){
+    completePreparedRender(owner);
+    return true;
+  }
+  return false;
+}
+
+const preparedOffsets = {status:0, ips:0, validips:0, domainanalysis:0};
+function preparedQuery(section){
+  const params = new URLSearchParams({read_mode:'background', limit:String(section === 'ips' ? getIpsPageSize() : 100), offset:String(preparedOffsets[section])});
+  let path = '/ips';
+  if(section === 'status'){ path = '/results'; params.set('aggregate', '1'); }
+  if(section === 'validips'){
+    params.set('valid_only', '1');
+    const since = parseBoundedInt((document.getElementById('valid_since') || {}).value, 0, 0, 315360000);
+    if(since > 0) params.set('since', String(since));
+  }
+  if(section === 'domainanalysis' || section === 'ips'){
+    const domain = section === 'domainanalysis';
+    if(domain) path = '/domain-analysis';
+    const includeVT = !!(document.getElementById(domain ? 'domain_analysis_include_vt' : 'ips_include_vt') || {}).checked;
+    params.set('include_vt', includeVT ? '1' : '0');
+    params.set('vt_mode', 'background');
+    if(domain) params.set('q', String((document.getElementById('domain_analysis_query') || {}).value || '').trim());
+    else if(includeVT){
+      params.set('vt_workers', String(parseBoundedInt((document.getElementById('ips_vt_workers') || {}).value, 8, 1, 32)));
+      params.set('vt_budget', String(parseBoundedInt((document.getElementById('ips_vt_budget') || {}).value, getIpsPageSize(), 0, 200)));
+    }
+  }
+  return path + '?' + params.toString();
+}
+function updatePreparedPage(section, page){
+  if(!page) return;
+  const meta = document.getElementById(section + '_page_meta');
+  if(meta) meta.textContent = `Showing ${page.displayed ? page.offset + 1 : 0}-${page.offset + page.displayed} / ${page.total} ${page.unit}${page.domains_total != null ? ` / ${page.domains_total} domains` : ''}`;
+  for(const direction of ['previous', 'next']){
+    const btn = document.getElementById(section + (direction === 'previous' ? '_prev_btn' : '_next_btn'));
+    if(btn) btn.disabled = page[direction + '_offset'] == null;
+  }
+}
+function navigatePreparedPage(section, direction){
+  const state = preparedViews.get(section);
+  const offset = state && state.page && state.page[direction + '_offset'];
+  if(!Number.isInteger(offset) || offset < 0) return;
+  preparedOffsets[section] = offset;
+  triggerSectionRefresh(section);
+}
+function beginSectionRefresh(section){
+  if(document.hidden) return null;
+  const url = preparedQuery(section);
+  const previous = sectionRefreshOwners.get(section);
+  if(previous){
+    if(previous.url === url) return null;
+    previous.controller.abort();
+    sectionRefreshOwners.delete(section);
+  }
+  const owner = {section, url, controller: new AbortController()};
+  sectionRefreshOwners.set(section, owner);
+  return owner;
+}
+
+function isSectionRefreshCurrent(owner){
+  return sectionRefreshOwners.get(owner.section) === owner && !owner.controller.signal.aborted;
+}
+
+function finishSectionRefresh(owner){
+  if(isSectionRefreshCurrent(owner)) sectionRefreshOwners.delete(owner.section);
+}
+
+function failSectionRefresh(owner, error){
+  if(isSectionRefreshCurrent(owner)){
+    const oversize = error && /\b422\b/.test(String(error.message));
+    setSectionRefreshStatus(owner.section, oversize
+      ? 'Prepared entry is too large (422). Previous data retained. Use the full JSON download below; no automatic fallback.'
+      : 'Data may be stale. Refresh failed; will retry on the next refresh.');
+  }
+}
+
+function cancelSectionRefreshes(exceptSection){
+  for(const owner of sectionRefreshOwners.values()){
+    if(owner.section === exceptSection) continue;
+    owner.controller.abort();
+    setSectionRefreshStatus(owner.section, 'Data may be stale. Refresh paused while hidden.');
+    sectionRefreshOwners.delete(owner.section);
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if(document.hidden) cancelSectionRefreshes();
+  else if(!isPaused()) triggerSectionRefresh(getActiveSectionId());
+});
+
 function getActiveSectionId(){
   const el = document.querySelector('.section.active');
   return el ? el.id : '';
@@ -28,8 +171,7 @@ function triggerSectionRefresh(name){
     return;
   }
   if(name === 'validips'){
-    const since = parseInt((document.getElementById('valid_since') || {}).value, 10) || 0;
-    refreshValidIPs(since);
+    refreshValidIPs();
     return;
   }
   if(name === 'domainanalysis'){
@@ -38,6 +180,7 @@ function triggerSectionRefresh(name){
 }
 
 function showSection(name){
+  cancelSectionRefreshes(name);
   ['settings','domainverify','status','query','domainanalysis','ipintel','ips','validips'].forEach(id=>document.getElementById(id).classList.remove('active'));
   document.getElementById(name).classList.add('active');
   Object.keys(SECTION_BUTTON_MAP).forEach(sec=>{
@@ -80,7 +223,7 @@ let ipIntelAnalyzeSeq = 0;
 let ipRelAnalyzeController = null;
 let ipRelAnalyzeSeq = 0;
 let ipIntelBusyCount = 0;
-let refreshDomainAnalysisInFlight = false;
+
 
 function setIpIntelBusy(isBusy){
   ipIntelBusyCount = Math.max(0, ipIntelBusyCount + (isBusy ? 1 : -1));
@@ -1067,38 +1210,37 @@ function getDomainStatsEntry(domainObj){
   };
 }
 
-function populateDomainAnalysisFilter(domains){
+function populateDomainAnalysisFilter(domains, commits=null){
   const sel = document.getElementById('domainAnalysisDomainSelect');
   if(!sel) return '';
   const prev = String(sel.value || '');
   const names = Array.from(new Set((domains || []).map(d=>String((d && d.domain) || '').trim()).filter(Boolean))).sort();
-  sel.innerHTML = '';
+  const options = [];
   const allOpt = document.createElement('option');
   allOpt.value = '';
-  allOpt.textContent = 'All domains';
-  sel.appendChild(allOpt);
+  allOpt.textContent = 'All domains on this page';
+  options.push(allOpt);
   names.forEach(name=>{
     const o = document.createElement('option');
     o.value = name;
     o.textContent = name;
-    sel.appendChild(o);
+    options.push(o);
   });
-  sel.value = names.includes(prev) ? prev : '';
-  return sel.value;
+  const selected = names.includes(prev) ? prev : '';
+  const commit = ()=>{ sel.replaceChildren(...options); sel.value = selected; };
+  if(commits) commits.push(commit); else commit();
+  return selected;
 }
 
-function renderDomainStatsTable(allDomains, selectedDomain){
+function renderDomainStatsTable(allDomains, selectedDomain, commits=null){
   const tbody = document.querySelector('#domainDomainStatsTable tbody');
   if(!tbody) return;
-  tbody.innerHTML = '';
   const arr = Array.isArray(allDomains) ? allDomains.slice() : [];
   const selectedSet = getDomainAnalysisSelectionSet();
-  if(!arr.length){
-    setSummaryMessage(tbody, 11, 'No domains available');
-    return;
-  }
   arr.sort((a,b)=>String((a && a.domain) || '').localeCompare(String((b && b.domain) || '')));
-  arr.forEach(d=>{
+  const items = arr.map(d=>({key:d.domain, time:d.last_ts, value:d, content:{domain:rowContentWithoutTime(d, 'last_ts'), selected:selectedDomain === d.domain, checked:selectedSet.has(d.domain)}}));
+  reconcilePreparedRows(tbody, items, item=>{
+    const d = item.value;
     const name = String((d && d.domain) || '');
     const nonResolving = isDomainNonResolving(d || {});
     const statusObj = getDomainLifecycleStatus(d || {});
@@ -1120,6 +1262,13 @@ function renderDomainStatsTable(allDomains, selectedDomain){
     statusBadge.className = `domain-state-badge ${statusCls}`;
     statusBadge.textContent = statusLabel;
     c2.appendChild(statusBadge);
+    if(d.ip_rows_total != null){
+      const count = Array.isArray(d.ip_rows) ? d.ip_rows.length : 0;
+      const offset = Number(d.ip_rows_offset || 0);
+      const coverage = document.createElement('span');
+      coverage.textContent = ` — IP rows ${count ? offset + 1 : 0}-${offset + count} / ${d.ip_rows_total}${d.ip_rows_truncated ? ' (partial domain)' : ''}`;
+      c2.appendChild(coverage);
+    }
 
     const c3 = document.createElement('td'); c3.textContent = String(st.resolvedCount);
     const c4 = document.createElement('td'); c4.textContent = String(st.decodedCount);
@@ -1138,8 +1287,8 @@ function renderDomainStatsTable(allDomains, selectedDomain){
     chk.checked = nonResolving && selectedSet.has(name);
     chk.title = nonResolving ? 'Select for bulk remove' : 'Only non-resolving domains can be selected';
     chk.onchange = ()=>{
-      if(chk.checked) selectedSet.add(name);
-      else selectedSet.delete(name);
+      if(chk.checked) getDomainAnalysisSelectionSet().add(name);
+      else getDomainAnalysisSelectionSet().delete(name);
       applyDomainAnalysisFilter();
     };
     c10.appendChild(chk);
@@ -1178,14 +1327,21 @@ function renderDomainStatsTable(allDomains, selectedDomain){
     tr.appendChild(c9);
     tr.appendChild(c10);
     tr.appendChild(c11);
-    tbody.appendChild(tr);
-  });
+    return tr;
+  }, 8, commits);
 }
 
-function renderDomainAnalysisSummaries(domains, includeVT){
-  const asBody = document.querySelector('#domainAsSummaryTable tbody');
-  const countryBody = document.querySelector('#domainCountrySummaryTable tbody');
-  const crossBody = document.querySelector('#domainAsCountrySummaryTable tbody');
+function renderDomainAnalysisSummaries(domains, includeVT, commits=null){
+  const stagedBody = selector=>{
+    const live = document.querySelector(selector);
+    if(!live || !commits) return live;
+    const staged = document.createElement('tbody');
+    commits.push(()=>live.replaceChildren(...staged.childNodes));
+    return staged;
+  };
+  const asBody = stagedBody('#domainAsSummaryTable tbody');
+  const countryBody = stagedBody('#domainCountrySummaryTable tbody');
+  const crossBody = stagedBody('#domainAsCountrySummaryTable tbody');
   if(!asBody || !countryBody || !crossBody){
     return {asGroups: 0, countries: 0, intersections: 0};
   }
@@ -1364,100 +1520,59 @@ function renderDomainAnalysisSummaries(domains, includeVT){
   };
 }
 
-function renderDomainAnalysisTable(domains, includeVT, totalDomainsCount){
+function renderDomainAnalysisTable(domains, includeVT, totalDomainsCount, commits=null){
   const tbody = document.querySelector('#domainAnalysisTable tbody');
   const meta = document.getElementById('domainAnalysisMeta');
   if(!tbody) return;
-  tbody.innerHTML = '';
-
   const arr = Array.isArray(domains) ? domains : [];
-  let ipRowsCount = 0;
-  let nxdomainActiveCount = 0;
-  let errorOnlyCount = 0;
-  arr.forEach(d=>{
-    const domainName = String((d && d.domain) || '');
-    if(d && d.nxdomain_active) nxdomainActiveCount += 1;
-    if(d && d.dns_error_only_active) errorOnlyCount += 1;
-    const statusObj = getDomainLifecycleStatus(d || {});
-    const types = Array.isArray(d && d.record_types) ? d.record_types.join(', ') : '-';
-    const tsText = formatUnixTsLocal(d && d.last_ts);
-    const rows = Array.isArray(d && d.ip_rows) ? d.ip_rows : [];
-    if(!rows.length){
-      const tr = document.createElement('tr');
-      const c1 = document.createElement('td'); c1.textContent = domainName;
-      applyNxdomainLifecycleStyle(c1, d || {}, domainName);
-      if(d && d.dns_error_only_active){
-        c1.title = `All DNS servers failed in last cycle (${domainName})`;
-      }
-      const c2 = document.createElement('td');
-      const statusBadge = document.createElement('span');
-      statusBadge.className = `domain-state-badge ${statusObj.cls}`;
-      statusBadge.textContent = statusObj.label;
-      c2.appendChild(statusBadge);
-      const c3 = document.createElement('td'); c3.textContent = types;
-      const c4 = document.createElement('td'); c4.textContent = '-';
-      const c5 = document.createElement('td'); c5.textContent = '-';
-      const c6 = document.createElement('td'); c6.textContent = '-';
-      const c7 = document.createElement('td'); c7.textContent = '-';
-      const c8 = document.createElement('td'); c8.textContent = '-';
-      const c9 = document.createElement('td'); c9.textContent = includeVT ? '-' : 'off';
-      const c10 = document.createElement('td'); c10.textContent = tsText;
-      tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3); tr.appendChild(c4); tr.appendChild(c5); tr.appendChild(c6); tr.appendChild(c7); tr.appendChild(c8); tr.appendChild(c9); tr.appendChild(c10);
-      tbody.appendChild(tr);
-      return;
+  const items = [];
+  for(const d of arr){
+    const rows = Array.isArray(d.ip_rows) && d.ip_rows.length ? d.ip_rows : [null];
+    for(const row of rows){
+      const domain = String(d.domain || '');
+      items.push({key:JSON.stringify([domain, row && row.role, row && row.ip]), time:d.last_ts,
+        content:{domain, record_types:d.record_types, nxdomain_active:d.nxdomain_active,
+          nxdomain_since:d.nxdomain_since, dns_error_only_active:d.dns_error_only_active, includeVT, row}, d, row});
     }
-    rows.forEach(row=>{
-      ipRowsCount += 1;
-      const tr = document.createElement('tr');
-      const vt = (row && row.vt) || null;
-      const m = Number((vt && vt.malicious) || 0);
-      const s = Number((vt && vt.suspicious) || 0);
-
-      const c1 = document.createElement('td'); c1.textContent = domainName;
-      applyNxdomainLifecycleStyle(c1, d || {}, domainName);
-      if(d && d.dns_error_only_active){
-        c1.title = `All DNS servers failed in last cycle (${domainName})`;
-      }
-      const c2 = document.createElement('td');
-      const statusBadge = document.createElement('span');
-      statusBadge.className = `domain-state-badge ${statusObj.cls}`;
-      statusBadge.textContent = statusObj.label;
-      c2.appendChild(statusBadge);
-      const c3 = document.createElement('td'); c3.textContent = types;
-      const c4 = document.createElement('td'); c4.textContent = String((row && row.role) || '-');
-      const c5 = document.createElement('td');
-      c5.textContent = String((row && row.ip) || '-');
-      if(isIPv4(row && row.ip)){
-        c5.style.cursor = 'pointer';
-        c5.title = 'Open in Query';
-        c5.onclick = ()=> openQueryForValue(row.ip);
-      }
-      const c6 = document.createElement('td'); c6.textContent = vt && vt.asn != null ? String(vt.asn) : '-';
-      const c7 = document.createElement('td'); c7.textContent = vt && vt.as_owner ? String(vt.as_owner) : '-';
-      const c8 = document.createElement('td'); c8.textContent = vt && vt.country ? String(vt.country) : '-';
-      const c9 = document.createElement('td'); c9.textContent = includeVT ? `${m}/${s}` : 'off';
-      const c10 = document.createElement('td'); c10.textContent = tsText;
-      tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3); tr.appendChild(c4); tr.appendChild(c5); tr.appendChild(c6); tr.appendChild(c7); tr.appendChild(c8); tr.appendChild(c9); tr.appendChild(c10);
-      tbody.appendChild(tr);
-    });
-  });
-
-  const summary = renderDomainAnalysisSummaries(arr, includeVT);
-  const selected = String((document.getElementById('domainAnalysisDomainSelect') || {}).value || '');
-  const selectedRemoveCount = getDomainAnalysisSelectionSet().size;
-  if(meta){
-    meta.textContent = `${arr.length}/${Math.max(0, Number(totalDomainsCount || arr.length))} domains / ${ipRowsCount} IP rows / AS ${summary.asGroups} / Countries ${summary.countries} / AS×Country ${summary.intersections} / NXDOMAIN ${nxdomainActiveCount} / Error-only ${errorOnlyCount} / Selected ${selectedRemoveCount}${selected ? ` / Filter: ${selected}` : ''}`;
   }
-  touchOverviewTs();
+  reconcilePreparedRows(tbody, items, item=>{
+    const {d, row} = item;
+    const tr = document.createElement('tr');
+    const status = getDomainLifecycleStatus(d);
+    const vt = row && row.vt;
+    const values = [d.domain || '', '', (d.record_types || []).join(', ') || '-', row && row.role || '-', row && row.ip || '-',
+      vt && vt.asn != null ? String(vt.asn) : '-', vt && vt.as_owner || '-', vt && vt.country || '-',
+      includeVT ? (row ? `${Number(vt && vt.malicious || 0)}/${Number(vt && vt.suspicious || 0)}` : '-') : 'off', formatUnixTsLocal(d.last_ts)];
+    values.forEach(value=>{const cell = document.createElement('td');cell.textContent = value;tr.appendChild(cell);});
+    applyNxdomainLifecycleStyle(tr.children[0], d, d.domain);
+    if(d.dns_error_only_active) tr.children[0].title = `All DNS servers failed in last cycle (${d.domain})`;
+    const badge = document.createElement('span');
+    badge.className = `domain-state-badge ${status.cls}`;
+    badge.textContent = status.label;
+    tr.children[1].appendChild(badge);
+    if(row && isIPv4(row.ip)){
+      tr.children[4].style.cursor = 'pointer';
+      tr.children[4].title = 'Open in Query';
+      tr.children[4].onclick = ()=>openQueryForValue(row.ip);
+    }
+    return tr;
+  }, 9, commits);
+  const summary = renderDomainAnalysisSummaries(arr, includeVT, commits);
+  const text = `Current page: ${arr.length}/${totalDomainsCount || arr.length} domains / ${items.length} rows / AS ${summary.asGroups} / Countries ${summary.countries} / AS×Country ${summary.intersections} / Selected ${getDomainAnalysisSelectionSet().size}`;
+  const commit = ()=>{ if(meta) meta.textContent = text; touchOverviewTs(); };
+  if(commits) commits.push(commit); else commit();
 }
 
-function applyDomainAnalysisFilter(){
+function applyDomainAnalysisFilter(commits=null, selectedOverride){
   const allDomains = Array.isArray(window.DOMAIN_ANALYSIS_CACHE) ? window.DOMAIN_ANALYSIS_CACHE : [];
   const includeVT = !!window.DOMAIN_ANALYSIS_INCLUDE_VT;
-  const selected = String((document.getElementById('domainAnalysisDomainSelect') || {}).value || '');
+  const selected = selectedOverride === undefined
+    ? String((document.getElementById('domainAnalysisDomainSelect') || {}).value || '') : selectedOverride;
   const filtered = selected ? allDomains.filter(d=>String((d && d.domain) || '') === selected) : allDomains;
-  renderDomainStatsTable(allDomains, selected);
-  renderDomainAnalysisTable(filtered, includeVT, allDomains.length);
+  const staged = commits || [];
+  renderDomainStatsTable(allDomains, selected, staged);
+  renderDomainAnalysisTable(filtered, includeVT, allDomains.length, staged);
+  if(!commits) staged.forEach(commit=>commit());
 }
 
 function pruneDomainAnalysisSelection(){
@@ -1568,25 +1683,37 @@ async function removeSelectedNonResolvingDomains(){
 }
 
 async function refreshDomainAnalysis(){
-  if(refreshDomainAnalysisInFlight) return;
-  refreshDomainAnalysisInFlight = true;
+  const owner = beginSectionRefresh('domainanalysis');
+  if(!owner) return;
   try{
     const includeVT = !!(document.getElementById('domain_analysis_include_vt') && document.getElementById('domain_analysis_include_vt').checked);
-    const r = await fetch('/domain-analysis?include_vt=' + (includeVT ? '1' : '0'));
-    if(!r.ok){
-      console.error('refreshDomainAnalysis: HTTP error', r.status);
-      return;
+    const j = await readPreparedJSON(owner);
+    if(preparedResponseHandled(owner)) return;
+    if(!Array.isArray(j.domains)) throw new Error('Invalid domain page');
+    const previousCache = window.DOMAIN_ANALYSIS_CACHE;
+    const previousVT = window.DOMAIN_ANALYSIS_INCLUDE_VT;
+    const previousSelection = window.DOMAIN_ANALYSIS_SELECTED_REMOVE;
+    try{
+      window.DOMAIN_ANALYSIS_CACHE = j.domains;
+      window.DOMAIN_ANALYSIS_INCLUDE_VT = includeVT;
+      pruneDomainAnalysisSelection();
+      // Stage the whole view: no filter/table/timestamp is published until all
+      // renderers succeed. A retained validator must describe every panel.
+      const commits = [];
+      const selected = populateDomainAnalysisFilter(window.DOMAIN_ANALYSIS_CACHE, commits);
+      applyDomainAnalysisFilter(commits, selected);
+      commits.forEach(commit=>commit());
+    }catch(error){
+      window.DOMAIN_ANALYSIS_CACHE = previousCache;
+      window.DOMAIN_ANALYSIS_INCLUDE_VT = previousVT;
+      window.DOMAIN_ANALYSIS_SELECTED_REMOVE = previousSelection;
+      throw error;
     }
-    const j = await r.json();
-    window.DOMAIN_ANALYSIS_CACHE = Array.isArray(j.domains) ? j.domains : [];
-    window.DOMAIN_ANALYSIS_INCLUDE_VT = includeVT;
-    pruneDomainAnalysisSelection();
-    populateDomainAnalysisFilter(window.DOMAIN_ANALYSIS_CACHE);
-    applyDomainAnalysisFilter();
+    completePreparedRender(owner);
   }catch(e){
-    console.log('refreshDomainAnalysis error', e);
+    failSectionRefresh(owner, e);
   }finally{
-    refreshDomainAnalysisInFlight = false;
+    finishSectionRefresh(owner);
   }
 }
 
@@ -2318,6 +2445,33 @@ async function loadIpIntelFromMisp(autoAnalyze){
   }
 }
 
+function renderPreparedValues(td, values){
+  const list = Array.isArray(values) ? values.map(String) : [];
+  td.className = 'wrap-cell';
+  if(!list.length){ td.textContent = '-'; return; }
+  const preview = list.slice(0, 20);
+  preview.forEach((value, index)=>{
+    if(index) td.appendChild(document.createTextNode(' | '));
+    if(isIPv4(value)){
+      const link = document.createElement('a');
+      link.href = '#'; link.textContent = value;
+      link.onclick = event=>{event.preventDefault();openQueryForValue(value);};
+      td.appendChild(link);
+    }else{
+      td.appendChild(document.createTextNode(value.length > 200 ? value.slice(0, 200) + '…' : value));
+    }
+  });
+  if(list.length > preview.length || preview.some(value=>value.length > 200)){
+    const details = document.createElement('details');
+    const summary = document.createElement('summary');
+    summary.textContent = `Show all ${list.length} values (plain text)`;
+    const pre = document.createElement('pre');
+    pre.style.whiteSpace = 'pre-wrap';
+    pre.textContent = list.join('\n');
+    details.appendChild(summary); details.appendChild(pre); td.appendChild(details);
+  }
+}
+
 function renderCellWithClickableIps(td, rawValues, fallbackText, maxDisplayItems){
   const values = Array.isArray(rawValues) ? Array.from(new Set(rawValues.map(v=>String(v || '').trim()).filter(Boolean))) : [];
   const ips = values.filter(isIPv4);
@@ -2358,12 +2512,8 @@ const uiOverview = {
   validIps: 0,
   lastRefreshLocal: '-'
 };
-let refreshResultsInFlight = false;
-let refreshIPsInFlight = false;
-let refreshValidIPsInFlight = false;
-let lastStatusRenderFingerprint = '';
-let lastAllIpsRenderFingerprint = '';
-let lastValidIpsRenderFingerprint = '';
+
+
 
 function updateOverviewPanel(){
   const set = (id, value)=>{
@@ -3136,61 +3286,52 @@ function formatDnsServerSummary(servers){
   return `${arr.length} servers (${arr.slice(0, 3).join(', ')}...)`;
 }
 
-function buildStatusFingerprint(resultsAgg, domainMeta){
-  const keys = Object.keys(resultsAgg || {}).sort();
-  const parts = [];
-  keys.forEach(d=>{
-    const it = resultsAgg[d] || {};
-    const meta = (domainMeta && domainMeta[d]) || {};
-    parts.push([
-      d,
-      Number(it.ts || 0),
-      Array.isArray(it.values) ? it.values.length : 0,
-      Array.isArray(it.decoded_ips) ? it.decoded_ips.length : 0,
-      Array.isArray(it.servers) ? it.servers.length : 0,
-      String(it.method_summary || ''),
-      meta.nxdomain_active ? 1 : 0,
-      Number(meta.nxdomain_since || 0),
-      Number(meta.nxdomain_cleared_ts || 0),
-    ].join('|'));
-  });
-  return `${keys.length}#${parts.join('||')}`;
+// Compare actual values, not lengths or aggregates. Timestamp is a separate
+// text-only patch; all other content (including VT flags) is part of identity.
+function rowContentWithoutTime(value, timeKey){
+  const content = {...value};
+  delete content[timeKey];
+  return content;
 }
-
-function buildIpsFingerprint(arr){
-  const list = Array.isArray(arr) ? arr : [];
-  let totalCount = 0;
-  let maxTs = 0;
-  const limit = 400;
-  const parts = [];
-  list.forEach((it, idx)=>{
-    const count = Number((it && it.count) || 0);
-    const ts = Number((it && it.last_ts) || 0);
-    totalCount += count;
-    if(ts > maxTs) maxTs = ts;
-    if(idx >= limit) return;
-    parts.push([
-      String((it && it.ip) || ''),
-      count,
-      ts,
-      Array.isArray(it && it.domains) ? it.domains.length : 0,
-      Number((it && ((it.vt || {}).malicious || 0)) || 0),
-      Number((it && ((it.vt || {}).suspicious || 0)) || 0),
-    ].join('|'));
-  });
-  return `${list.length}#${totalCount}#${maxTs}#${parts.join('||')}`;
+function reconcilePreparedRows(tbody, items, createRow, timeCell, commits=null){
+  const previous = tbody._preparedRows || new Map();
+  const next = new Map();
+  const updates = [];
+  for(const item of items.slice(0, 200)){
+    const signature = JSON.stringify(item.content);
+    const old = previous.get(item.key);
+    const row = old && old.signature === signature ? old.row : createRow(item);
+    next.set(item.key, {row, signature});
+    updates.push({row, text:formatUnixTsLocal(item.time)});
+  }
+  // Build every changed row off-DOM before touching the last-good display.
+  const desired = [];
+  for(const {row} of updates){
+    desired.push(row);
+    const detail = row.nextElementSibling;
+    if(detail && detail.classList.contains('verify-row')) desired.push(detail);
+  }
+  const keep = new Set(desired);
+  const commit = ()=>{
+    for(const {row, text} of updates){
+      const cell = row.children[timeCell];
+      if(cell && cell.textContent !== text) cell.textContent = text;
+    }
+    for(const child of Array.from(tbody.children)) if(!keep.has(child)) child.remove();
+    desired.forEach((row, index)=>{
+      if(tbody.children[index] !== row) tbody.insertBefore(row, tbody.children[index] || null);
+    });
+    tbody._preparedRows = next;
+  };
+  if(commits) commits.push(commit); else commit();
 }
 
 async function refreshResults(){
-  if(refreshResultsInFlight) return;
-  refreshResultsInFlight = true;
+  const owner = beginSectionRefresh('status');
+  if(!owner) return;
   try{
-    const r = await fetch('/results?aggregate=1');
-    if(!r.ok){
-      console.error('refreshResults: HTTP error', r.status);
-      return;
-    }
-    const j = await r.json();
+    const j = await readPreparedJSON(owner);
+    if(preparedResponseHandled(owner)) return;
     const resultsAgg = (j && j.results_agg && typeof j.results_agg === 'object')
       ? j.results_agg
       : {};
@@ -3210,25 +3351,13 @@ async function refreshResults(){
         if(s) managedSet.add(s);
       });
     });
-    uiOverview.statusRows = domains.length;
+    uiOverview.statusRows = j.results_total_count ?? (j.page && j.page.total) ?? domains.length;
     uiOverview.managedIps = managedSet.size;
 
-    const statusFp = buildStatusFingerprint(resultsAgg, domainMeta);
-    if(statusFp === lastStatusRenderFingerprint){
-      touchOverviewTs();
-      return;
-    }
-    lastStatusRenderFingerprint = statusFp;
-
-    tbody.innerHTML = '';
-    if(!domains.length){
-      setSummaryMessage(tbody, 8, 'No current results');
-      touchOverviewTs();
-      return;
-    }
-
-    const frag = document.createDocumentFragment();
-    domains.forEach(d=>{
+    const items = domains.map(d=>({key:d, time:(resultsAgg[d] || {}).ts,
+      content:{info:rowContentWithoutTime(resultsAgg[d] || {}, 'ts'), meta:domainMeta[d] || {}}}));
+    reconcilePreparedRows(tbody, items, item=>{
+      const d = item.key;
       const info = resultsAgg[d] || {};
       const values = Array.isArray(info.values) ? info.values : [];
       const decodedIps = Array.isArray(info.decoded_ips) ? info.decoded_ips : [];
@@ -3248,10 +3377,10 @@ async function refreshResults(){
       tdType.textContent = rowType;
 
       const tdVals = document.createElement('td');
-      renderCellWithClickableIps(tdVals, values, formatListPreview(values, 4), 10);
+      renderPreparedValues(tdVals, values);
 
       const tdDecoded = document.createElement('td');
-      renderCellWithClickableIps(tdDecoded, decodedIps, formatListPreview(decodedIps, 4), 10);
+      renderPreparedValues(tdDecoded, decodedIps);
 
       const tdMethod = document.createElement('td');
       tdMethod.className = 'wrap-cell';
@@ -3393,15 +3522,14 @@ async function refreshResults(){
       tr.appendChild(tdServers);
       tr.appendChild(tdTs);
       tr.appendChild(tdActions);
-      frag.appendChild(tr);
-    });
-
-    tbody.appendChild(frag);
+      return tr;
+    }, 6);
     touchOverviewTs();
+    completePreparedRender(owner);
   }catch(e){
-    console.log('refresh error', e);
+    failSectionRefresh(owner, e);
   }finally{
-    refreshResultsInFlight = false;
+    finishSectionRefresh(owner);
   }
 }
 
@@ -3447,12 +3575,11 @@ document.getElementById('doQuery').onclick = async ()=>{
   await runQuery(v);
 };
 
-// All IPs pagination state
-let ipsOffset = 0;
+
 
 function getIpsPageSize(){
   const el = document.getElementById('ips_page_size');
-  const n = parseBoundedInt(el ? el.value : 200, 200, 50, 5000);
+  const n = parseBoundedInt(el ? el.value : 100, 100, 50, 200);
   return n;
 }
 
@@ -3475,52 +3602,23 @@ function updateIpsMeta(j){
 }
 
 async function refreshIPs(){
-  if(refreshIPsInFlight) return;
-  refreshIPsInFlight = true;
+  const owner = beginSectionRefresh('ips');
+  if(!owner) return;
   try{
     const includeVT = !!(document.getElementById('ips_include_vt') && document.getElementById('ips_include_vt').checked);
-    const limit = getIpsPageSize();
-    const vtWorkers = parseBoundedInt((document.getElementById('ips_vt_workers') || {}).value, 8, 1, 32);
-    const vtBudget = parseBoundedInt((document.getElementById('ips_vt_budget') || {}).value, limit, 0, 5000);
-
-    const params = new URLSearchParams();
-    params.set('limit', String(limit));
-    params.set('offset', String(Math.max(0, ipsOffset)));
-    if(includeVT) params.set('include_vt', '1');
-    if(includeVT){
-      params.set('vt_workers', String(vtWorkers));
-      params.set('vt_budget', String(vtBudget));
-    }
-
-    const r = await fetch('/ips?' + params.toString());
-    if(!r.ok) {
-      console.error('refreshIPs: HTTP error', r.status);
-      return;
-    }
-    const j = await r.json();
+    const j = await readPreparedJSON(owner);
+    if(preparedResponseHandled(owner)) return;
     const tbody = document.querySelector('#ipsTable tbody');
     const arr = j.ips || [];
-    if(!Array.isArray(arr)) {
-      console.error('refreshIPs: ips is not an array', arr);
-      return;
-    }
+    if(!Array.isArray(arr)) throw new Error('Invalid IP page');
 
     // overview counts should reflect total, not just the current page
-    uiOverview.allIps = Number(j.ips_total_count || arr.length || 0);
-    uiOverview.validIps = null; // unknown without full set
+    uiOverview.allIps = j.all_ips_total_count ?? j.ips_total_count ?? arr.length;
     updateOverviewPanel();
 
-    const fp = `vt:${includeVT ? 1 : 0}|off:${ipsOffset}|lim:${getIpsPageSize()}|${buildIpsFingerprint(arr)}`;
-    if(fp === lastAllIpsRenderFingerprint){
-      updateIpsMeta(j);
-      touchOverviewTs();
-      return;
-    }
-    lastAllIpsRenderFingerprint = fp;
-
-    tbody.innerHTML = '';
-    arr.forEach(it=>{
-      if(typeof it !== 'object') return;
+    const items = arr.map(it=>({key:it.ip, time:it.last_ts, content:{includeVT, info:rowContentWithoutTime(it, 'last_ts')}, value:it}));
+    reconcilePreparedRows(tbody, items, item=>{
+      const it = item.value;
       const tr = document.createElement('tr');
       const tdIp = document.createElement('td');
       tdIp.textContent = it.ip || '';
@@ -3561,20 +3659,14 @@ async function refreshIPs(){
       tr.appendChild(tdTs);
       tr.appendChild(tdVtScore);
       tr.appendChild(tdVtCtx);
-      tbody.appendChild(tr);
-    });
-
-    // enable/disable paging buttons
-    const total = Number(j.ips_total_count || 0);
-    const prevBtn = document.getElementById('ips_prev_btn');
-    const nextBtn = document.getElementById('ips_next_btn');
-    if(prevBtn) prevBtn.disabled = ipsOffset <= 0;
-    if(nextBtn) nextBtn.disabled = (ipsOffset + arr.length) >= total;
+      return tr;
+    }, 3);
 
     updateIpsMeta(j);
     touchOverviewTs();
-  }catch(e){ console.log('refreshIPs error', e); }
-  finally{ refreshIPsInFlight = false; }
+    completePreparedRender(owner);
+  }catch(e){ failSectionRefresh(owner, e); }
+  finally{ finishSectionRefresh(owner); }
 }
 
 function renderAnalyzeResult(j){
@@ -3607,28 +3699,21 @@ function renderAnalyzeResult(j){
 }
 
 async function refreshValidIPs(){
-  if(refreshValidIPsInFlight) return;
-  refreshValidIPsInFlight = true;
+  const owner = beginSectionRefresh('validips');
+  if(!owner) return;
   try{
-    const r = await fetch('/ips');
-    if(!r.ok){ console.error('refreshValidIPs HTTP', r.status); return; }
-    const j = await r.json();
+    const j = await readPreparedJSON(owner);
+    if(preparedResponseHandled(owner)) return;
     const tbody = document.querySelector('#validIpsTable tbody');
     const arr = j.ips || [];
-    if(!Array.isArray(arr)) return;
+    if(!Array.isArray(arr)) throw new Error('Invalid IP page');
     // display only syntactically valid IPs (backend also provides 'valid')
     const validOnly = arr.filter(it => it && it.valid);
-    const fp = `valid|${buildIpsFingerprint(validOnly)}`;
-    uiOverview.allIps = arr.length;
-    uiOverview.validIps = validOnly.length;
-    updateOverviewPanel();
-    if(fp === lastValidIpsRenderFingerprint){
-      touchOverviewTs();
-      return;
-    }
-    lastValidIpsRenderFingerprint = fp;
-    tbody.innerHTML = '';
-    validOnly.forEach(it=>{
+    uiOverview.allIps = j.all_ips_total_count ?? uiOverview.allIps;
+    uiOverview.validIps = j.ips_total_count ?? (j.page && j.page.total) ?? validOnly.length;
+    const items = validOnly.map(it=>({key:it.ip, time:it.last_ts, content:rowContentWithoutTime(it, 'last_ts'), value:it}));
+    reconcilePreparedRows(tbody, items, item=>{
+      const it = item.value;
       const tr = document.createElement('tr');
       const tdIp = document.createElement('td');
       tdIp.textContent = it.ip || '';
@@ -3642,18 +3727,19 @@ async function refreshValidIPs(){
       const tdTs = document.createElement('td'); tdTs.textContent = formatUnixTsLocal(it.last_ts);
       const tdValid = document.createElement('td'); tdValid.textContent = it.valid ? 'YES' : 'NO';
       tr.appendChild(tdIp); tr.appendChild(tdDomains); tr.appendChild(tdCount); tr.appendChild(tdTs); tr.appendChild(tdValid);
-      tbody.appendChild(tr);
-    });
+      return tr;
+    }, 3);
     touchOverviewTs();
-  }catch(e){ console.log('refreshValidIPs error', e); }
-  finally{ refreshValidIPsInFlight = false; }
+    completePreparedRender(owner);
+  }catch(e){ failSectionRefresh(owner, e); }
+  finally{ finishSectionRefresh(owner); }
 }
 
   // Auto-refresh control
   let manualPause = false; // user toggled pause
   let hoverPause = false;  // temporary pause while hovering over results
 
-  function isPaused(){ return manualPause || hoverPause; }
+  function isPaused(){ return document.hidden || manualPause || hoverPause; }
   function updateRefreshStateBadge(){
     const el = document.getElementById('refreshState');
     if(!el) return;
@@ -3676,32 +3762,23 @@ async function refreshValidIPs(){
     if(!manualPause){ triggerSectionRefresh(getActiveSectionId()); }
   };
 
-  // All IPs paging controls
-  const ipsPrevBtn = document.getElementById('ips_prev_btn');
-  const ipsNextBtn = document.getElementById('ips_next_btn');
+  // Page controls use server-issued offsets, never inferred full-data fetches.
+  for(const section of ['status', 'ips', 'validips', 'domainanalysis']){
+    for(const direction of ['previous', 'next']){
+      const button = document.getElementById(section + (direction === 'previous' ? '_prev_btn' : '_next_btn'));
+      if(button) button.onclick = ()=>navigatePreparedPage(section, direction);
+    }
+  }
   const ipsRefreshBtn = document.getElementById('ips_refresh_btn');
-  const ipsPageSize = document.getElementById('ips_page_size');
-  if(ipsPrevBtn){
-    ipsPrevBtn.onclick = ()=>{
-      ipsOffset = Math.max(0, ipsOffset - getIpsPageSize());
-      refreshIPs();
-    };
+  if(ipsRefreshBtn) ipsRefreshBtn.onclick = ()=>refreshIPs();
+  for(const id of ['ips_page_size', 'ips_include_vt', 'ips_vt_workers', 'ips_vt_budget']){
+    const el = document.getElementById(id);
+    if(el) el.onchange = ()=>{ preparedOffsets.ips = 0; refreshIPs(); };
   }
-  if(ipsNextBtn){
-    ipsNextBtn.onclick = ()=>{
-      ipsOffset = ipsOffset + getIpsPageSize();
-      refreshIPs();
-    };
-  }
-  if(ipsRefreshBtn){
-    ipsRefreshBtn.onclick = ()=> refreshIPs();
-  }
-  if(ipsPageSize){
-    ipsPageSize.onchange = ()=>{
-      ipsOffset = 0;
-      refreshIPs();
-    };
-  }
+  const domainQuery = document.getElementById('domain_analysis_query');
+  if(domainQuery) domainQuery.oninput = ()=>{ preparedOffsets.domainanalysis = 0; refreshDomainAnalysis(); };
+  const validSince = document.getElementById('valid_since');
+  if(validSince) validSince.onchange = ()=>{ preparedOffsets.validips = 0; refreshValidIPs(); };
 
   // pause when user hovers results table to allow inspection of long URLs
   const resultsTable = document.getElementById('resultsTable');
@@ -3720,8 +3797,7 @@ async function refreshValidIPs(){
   setInterval(()=>{
     if(isPaused()) return;
     if(getActiveSectionId() === 'validips'){
-      const s = parseInt((document.getElementById('valid_since') || {}).value, 10) || 0;
-      refreshValidIPs(s);
+      refreshValidIPs();
     }
   }, 15000);
   setInterval(()=>{
@@ -3795,8 +3871,8 @@ window.addEventListener('load', ()=>{
   }
   
   document.getElementById('refreshValidBtn').onclick = ()=>{
-    const s = parseInt(document.getElementById('valid_since').value) || 0;
-    refreshValidIPs(s);
+    preparedOffsets.validips = 0;
+    refreshValidIPs();
   };
   const includeVtEl = document.getElementById('ips_include_vt');
   if(includeVtEl){

@@ -126,6 +126,53 @@ with TraceDNSClient(os.environ['TRACEDNS_BASE_URL']) as api:
 | 사용자 변경 | POST `/admin/users/{user_id}/update`, `/reset`, `/revoke` | role/active 변경, 비밀번호 재설정, 전체 세션 철회 |
 | 감사 조회/출력 | GET `/admin/audit`, POST `/admin/audit/export` | admin; export는 한 페이지의 JSONL |
 
+## 웹 화면의 비동기 VT 조회
+
+`/ips`와 `/domain-analysis`는 `vt_mode=background`를 선택할 수 있다.
+생략 또는 `sync`는 기존의 동기 API 동작을 유지한다. 웹의 자동 갱신은
+background 모드를 사용하여 외부 VT 통신/캐시 파일 저장을 기다리지 않는다.
+응답에는 현재 준비된 VT 정보와 `enrichment` 상태가 포함되며, HTTP 200은
+모든 외부 조회의 완료를 뜻하지 않는다. 다음 갱신에서 완료된 정보가 나타난다.
+`include_vt=0`은 background 모드에서도 외부 조회를 등록하지 않는다.
+`include_vt=1`은 기존과 동일하게 operator/admin, CSRF, 감사 기록이 필요하다.
+VT 작업의 실행/대기/보관에는 상한이 있으며 한도 초과 항목은 다음 요청에서
+다시 시도할 수 있다. 캐시 조회 전용 경로도 파일 I/O 락을 기다리지 않는다.
+
+## 준비된 조회 스냅샷과 페이지/버전
+
+`GET /results`, `/ips`, `/domain-analysis` 및 해당 `/api/v1` 경로에서
+`read_mode=background`를 지정하면 요청 스레드는 준비된 메모리 데이터만 읽는다.
+생략 시 기존 동기 API 계약을 유지한다. 별도의 단일 생성기가 관측/설정 버전을
+1초 간격으로 확인한다. 최초 준비 전에는 202와 `snapshot.ready=false`를 반환한다.
+이는 빈 결과가 아니다. 생성 지연/실패 시 이전 정상 결과의 `snapshot.stale`,
+`status`, `generated_at`, `source_version`, `error_code`를 확인해야 한다.
+스냅샷은 요청 순간의 최신 원본과 일치한다는 보장이 아닌 주기적 조회용 데이터다.
+
+- `limit` 기본 100, 최대 200; `offset` 기본 0. 전체 응답 UTF-8 JSON 본문 상한은
+  1 MiB이며 바이트 예산 때문에 실제 페이지가 더 작을 수 있다.
+- `page`에는 `offset`, `limit`, `displayed`, `total`, `next_offset`,
+  `previous_offset`, `unit`이 있다. 다음 위치는 직접 계산하지 말고 `next_offset`을
+  따른다. `null`이면 끝이다. 페이지 이동 사이에 새 스냅샷이 게시될 수 있으므로
+  여러 페이지가 하나의 고정 시점 내보내기를 구성한다고 가정하지 않는다.
+- Status는 도메인 단위, IP 목록은 IP 단위다. Domain Analysis는 IP 역할 행 단위이며
+  IP 없는 도메인은 한 단위다. 하나의 도메인이 여러 페이지에 걸칠 수 있다.
+  `ip_rows_total`, `ip_rows_offset`, `ip_rows_truncated`가 범위를 나타낸다.
+  이 모드의 `resolved_ips`, `decoded_ips`, AS 요약은 해당 페이지의 부분 집합이다.
+  `resolving` 등 도메인 상태는 전체 관측 기준이다.
+- `q`는 Status/Domain Analysis의 도메인 부분 문자열 검색(최대 253자)이다.
+  `/ips?valid_only=1`은 유효 IP를 먼저 선택하고 페이지를 나눈다.
+- 같은 질의에 이전 `view_version`을 `if_version`으로 보내면 내용이 같을 때
+  `unchanged=true`와 상태/페이지 메타데이터만 받는다. 이전 표 데이터를 유지한다.
+  토큰은 사용자에게 허용된 정제 응답에 기반하며 인증/RBAC/CSRF 검사는 생략되지 않는다.
+- 한 항목조차 바이트 상한에 들어가지 않으면 성공 헤더 전 422를 반환한다.
+  자동 동기 재조회는 하지 않는다. 사용자가 명시적으로 기존 동기 JSON 내보내기를
+  선택할 수 있다. 원본 관측/이력은 페이지 축소나 표시 제한 때문에 삭제하지 않는다.
+
+조회 스냅샷은 JSON 기준 최대 32 MiB의 마지막 정상 게시본 하나를 보관하며,
+생성 중 입력/후보와 진행 중 응답이 이전 참조를 일시 보유할 수 있다. 이는 프로세스
+전체 메모리 상한이 아니다. 실행 중 VT/생성 작업은 강제로 종료할 수 없으며,
+서버는 새 작업을 중단하고 공유 1초 배수 예산 뒤에도 남은 실행을 사실대로 보고한다.
+
 ## 안전한 대상 수정
 
 `GET /config`의 최신 revision과 전체 domains를 읽고 원하는 항목만 편집한다.

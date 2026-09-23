@@ -122,10 +122,18 @@
     });
     if (user.role === 'viewer') ['ips_include_vt','domain_analysis_include_vt'].forEach(id => { if ($(id)) { $(id).checked = false; $(id).disabled = true; } });
   }
+  let startComplete = false;
+  let startPending = false;
+  let startRetry = null;
   async function start() {
+    if(startComplete || startPending) return;
+    startPending = true;
+    let authenticationReady = false;
+    if(startRetry !== null) { clearTimeout(startRetry); startRetry = null; }
     try {
       const user = await A.ready;
-      if (location.pathname === '/login.html') { await login(); return; }
+      authenticationReady = true;
+      if (location.pathname === '/login.html') { await login(); startComplete = true; return; }
       if (!user) return;
       nav(user); permissions(user);
       if (user.must_change_password && location.pathname !== '/account.html') return;
@@ -135,7 +143,15 @@
       if (location.pathname === '/audit.html') await audit(user);
       if (location.pathname === '/settings.html') location.replace('/dns_frontend.html#settings-alerts');
       if (location.pathname === '/dns_dashboard.html') location.replace('/dns_frontend.html');
-    } catch (error) { A.message(error.message); }
+      startComplete = true;
+    } catch (error) {
+      // Authentication owns its transient banner and retry policy. Re-running
+      // page initialization on downstream 403/503 would duplicate decoration
+      // and repeatedly dispatch reads that cannot repair authentication.
+      if(!authenticationReady){
+        if(A.retryDelay !== null) startRetry = setTimeout(start, A.retryDelay);
+      } else { A.message(error.message); }
+    } finally { startPending = false; }
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded',start); else start();
 })();

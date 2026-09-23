@@ -111,12 +111,28 @@ QUERIES = {
              'offset': {'type': 'integer', 'minimum': 0, 'maximum': 10000000, 'default': 0},
              'limit': {'type': 'integer', 'minimum': 1, 'maximum': 5000, 'default': 500},
              'include_vt': {'enum': ['0', '1'], 'default': '0'},
-             'vt_budget': INTEGER, 'vt_workers': INTEGER},
-    '/domain-analysis': {'include_vt': {'enum': ['0', '1'], 'default': '1'}},
+             'vt_budget': INTEGER, 'vt_workers': INTEGER,
+             'vt_mode': {'enum': ['sync', 'background'], 'default': 'sync',
+                         'description': 'background returns published reports and bounded enrichment admission status without waiting for VT.'}},
+    '/domain-analysis': {'include_vt': {'enum': ['0', '1'], 'default': '1'},
+                         'vt_mode': {'enum': ['sync', 'background'], 'default': 'sync'},
+                         'vt_budget': {'type': 'integer', 'minimum': 0, 'maximum': 5000, 'default': 200}},
     '/ip-relationship-jobs/{job_id}': {'result': {'enum': ['0', '1'], 'default': '0'}},
     '/misp/search': {'value': STRING},
     '/auth/activity': AUDIT_FILTERS, '/admin/audit': AUDIT_FILTERS,
 }
+PREPARED_PATHS = ('/results', '/ips', '/domain-analysis')
+for _path in PREPARED_PATHS:
+    QUERIES[_path].update({
+        'read_mode': {'enum': ['sync', 'background'], 'default': 'sync',
+                      'description': 'background reads prepared snapshots; 202 is not empty success. See docs/API.md.'},
+        'if_version': {'type': 'string', 'description': 'Opaque view_version for this exact query; unchanged responses omit row data.'},
+        'q': {'type': 'string', 'maxLength': 253, 'description': 'Prepared results/domain name substring filter.'},
+    })
+    QUERIES[_path].setdefault('offset', {'type': 'integer', 'minimum': 0, 'maximum': 10000000, 'default': 0})
+    QUERIES[_path].setdefault('limit', {'type': 'integer', 'minimum': 1, 'maximum': 200, 'default': 100})
+QUERIES['/ips']['valid_only'] = {'type': 'boolean', 'default': False, 'description': 'Filter before prepared pagination.'}
+QUERIES['/ips']['limit']['description'] = 'Legacy: max 5000/default 500. Prepared: max 200/default 100, further reduced by byte budget.'
 DESCRIPTIONS = {
     '/': 'Discover the versioned API. No process start/stop or arbitrary shell execution API is provided.',
     '/openapi.json': 'Read this OpenAPI document. Requires an authenticated account.',
@@ -233,6 +249,17 @@ def openapi_document():
             for status in ('400', '413'):
                 operation['responses'][status]['content']['text/plain'] = {'schema': STRING}
             operation['responses']['503']['description'] += '; worker saturation may return an empty body'
+            if path in PREPARED_PATHS and method == 'GET':
+                operation['description'] += ' read_mode=background is bounded to 200 display units and 1 MiB; follow page.next_offset. Domain display units are IP-role rows (empty domain counts one).'
+                original = operation['responses']['200']['content']['application/json']['schema']
+                operation['responses']['200']['content']['application/json']['schema'] = {'anyOf': [
+                    original, obj({'unchanged': {'const': True}, 'view_version': STRING,
+                                   'snapshot': OBJECT, 'page': OBJECT, 'enrichment': OBJECT},
+                                  ('unchanged', 'view_version', 'snapshot', 'page'))]}
+                operation['responses']['202'] = {'description': 'Prepared snapshot not ready; retain prior UI data with a warning.',
+                    'content': {'application/json': {'schema': obj({'snapshot': OBJECT}, ('snapshot',))}}}
+                operation['responses']['422'] = {'description': 'A complete entry cannot fit the prepared response budget; use explicit legacy JSON download.',
+                    'content': {'application/json': {'schema': {'$ref': '#/components/schemas/Error'}}}}
             if path.endswith('/cancel'):
                 operation['responses']['409']['description'] = 'Already running or already finished; cancelled=false'
                 operation['responses']['409']['content']['application/json']['schema'] = OBJECT

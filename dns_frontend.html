@@ -41,11 +41,11 @@
     <span class="metric-value" id="metricConfigured">0</span>
   </div>
   <div class="metric-card">
-    <span class="metric-label">Status Rows</span>
+    <span class="metric-label">Status Domains (total)</span>
     <span class="metric-value" id="metricStatusRows">0</span>
   </div>
   <div class="metric-card">
-    <span class="metric-label">Managed IOC IPs</span>
+    <span class="metric-label">Managed IOC IPs (status page)</span>
     <span class="metric-value" id="metricDecoded">0</span>
   </div>
   <div class="metric-card">
@@ -53,7 +53,7 @@
     <span class="metric-value" id="metricIps">0 / valid 0</span>
   </div>
   <div class="metric-card">
-    <span class="metric-label">Last Refresh (Local)</span>
+    <span class="metric-label">Last UI Refresh (Local)</span>
     <span class="metric-value" id="metricUpdated">-</span>
   </div>
 </div>
@@ -261,12 +261,18 @@
 
 <div id="status" class="section">
   <h3>📊 Current Status</h3>
+  <p><a data-full-json href="/results?include_raw=1" download="status-full.json">Download full legacy JSON (raw facts; may be large)</a></p>
   <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:15px;">
     <button id="pauseRefreshBtn">⏸️ Pause Auto-Refresh</button>
     <button id="statusVerifyBtn" data-access="operator">🔬 Verify Domains</button>
     <span id="refreshState">Auto-refresh active</span>
   </div>
   <div id="statusVerifyResult" style="background:#f8f9fa;padding:15px;max-height:240px;overflow:auto;margin-bottom:15px;font-family:monospace;border-radius:8px;border:2px solid #e9ecef;display:none;"></div>
+  <div class="toolbar-row">
+    <button id="status_prev_btn" disabled>Previous</button>
+    <button id="status_next_btn" disabled>Next</button>
+    <span id="status_page_meta" role="status">Preparing page...</span>
+  </div>
   <table id="resultsTable">
     <thead><tr><th>Domain</th><th>Type</th><th>Values</th><th>Decoded IPs</th><th>Method</th><th>DNS Servers</th><th>Last Seen</th><th>Actions</th></tr></thead>
     <tbody></tbody>
@@ -295,6 +301,9 @@
 
 <div id="domainanalysis" class="section">
   <h3>🧭 Domain Analysis</h3>
+  <p><a data-full-json href="/domain-analysis?include_vt=0" download="domainanalysis-full.json">Download full legacy JSON (raw facts; may be large)</a></p>
+  <label>Search all domains (substring)<input id="domain_analysis_query" type="search" maxlength="253" placeholder="Domain substring" /></label>
+  <p>IP and AS statistics below describe the current page only. A domain can span multiple pages; lifecycle status describes the full domain.</p>
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
     <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
       <input id="domain_analysis_include_vt" type="checkbox" checked style="width:auto;margin:0;" />
@@ -309,38 +318,43 @@
   </div>
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
     <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
-      Domain Filter
+      Current-page domain filter
       <select id="domainAnalysisDomainSelect" style="width:auto;min-width:220px;margin-top:0;">
-        <option value="">All domains</option>
+        <option value="">All domains on this page</option>
       </select>
     </label>
-    <button id="clearDomainAnalysisFilterBtn">Show All</button>
-    <button id="selectNonResolvingDomainsBtn">Select Non-resolving</button>
+    <button id="clearDomainAnalysisFilterBtn">Show current page</button>
+    <button id="selectNonResolvingDomainsBtn">Select Non-resolving on this page</button>
     <button id="clearSelectedDomainsBtn">Clear Selection</button>
     <button id="removeSelectedDomainsBtn" data-access="operator">🗑️ Remove Selected</button>
     <span id="domainRemoveStatus" class="settings-status"></span>
   </div>
+  <div class="toolbar-row">
+    <button id="domainanalysis_prev_btn" disabled>Previous</button>
+    <button id="domainanalysis_next_btn" disabled>Next</button>
+    <span id="domainanalysis_page_meta" role="status">Preparing page...</span>
+  </div>
   <table id="domainDomainStatsTable">
-    <thead><tr><th>Domain</th><th>Status</th><th>Resolved IPs</th><th>Decoded IPs</th><th>Unique AS</th><th>Unique Countries</th><th>Top AS</th><th>Top Country</th><th>Last Seen</th><th>Select</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Domain</th><th>Status</th><th>Resolved IPs (page)</th><th>Decoded IPs (page)</th><th>Unique AS (page)</th><th>Unique Countries (page)</th><th>Top AS (page)</th><th>Top Country (page)</th><th>Last Seen</th><th>Select</th><th>Actions</th></tr></thead>
     <tbody></tbody>
   </table>
   <div class="domain-summary-grid">
     <div class="summary-card">
-      <h4>AS Group Summary</h4>
+      <h4>AS Group Summary (current page only)</h4>
       <table id="domainAsSummaryTable">
         <thead><tr><th>ASN</th><th>AS Owner</th><th>IPs</th><th>Domains</th><th>Countries</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
     <div class="summary-card">
-      <h4>Country Summary</h4>
+      <h4>Country Summary (current page only)</h4>
       <table id="domainCountrySummaryTable">
         <thead><tr><th>Country</th><th>IPs</th><th>Domains</th><th>ASNs</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
     <div class="summary-card">
-      <h4>AS × Country Intersection</h4>
+      <h4>AS × Country Intersection (current page only)</h4>
       <table id="domainAsCountrySummaryTable">
         <thead><tr><th>ASN</th><th>Country</th><th>AS Owner</th><th>IPs</th><th>Domains</th></tr></thead>
         <tbody></tbody>
@@ -499,6 +513,7 @@
 
 <div id="ips" class="section">
   <h3>📍 All IPs</h3>
+  <p><a data-full-json href="/ips?include_vt=0&amp;limit=5000" download="ips-legacy.json">Download legacy IP JSON (first 5,000 rows; use offset for more)</a> · <a href="/results?include_raw=1" download="dns-raw.json">Download full current DNS raw facts</a></p>
   <div class="toolbar-row" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
     <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
       <input id="ips_include_vt" type="checkbox" checked style="width:auto;margin:0;" />
@@ -508,10 +523,8 @@
     <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
       Page size
       <select id="ips_page_size" style="width:auto;min-width:90px;">
-        <option value="100">100</option>
-        <option value="200" selected>200</option>
-        <option value="500">500</option>
-        <option value="1000">1000</option>
+        <option value="100" selected>100</option>
+        <option value="200">200</option>
       </select>
     </label>
 
@@ -529,6 +542,7 @@
     <button id="ips_next_btn">Next ▶</button>
     <button id="ips_refresh_btn">🔄 Refresh</button>
 
+    <span id="ips_page_meta" role="status"></span>
     <span id="ips_meta" style="font-size:.78rem;color:#5b6a77;">-</span>
   </div>
 
@@ -540,10 +554,16 @@
 
 <div id="validips" class="section">
   <h3>✅ Valid IPs (syntactically valid)</h3>
+  <p><a data-full-json href="/ips?include_vt=0&amp;limit=5000" download="validips-legacy.json">Download legacy IP JSON (first 5,000 rows; use offset for more)</a> · <a href="/results?include_raw=1" download="dns-raw.json">Download full current DNS raw facts</a></p>
   <label>Recent seconds:
     <input id="valid_since" type="number" min="0" value="3600" />
     <button id="refreshValidBtn">🔄 Refresh</button>
   </label>
+  <div class="toolbar-row">
+    <button id="validips_prev_btn" disabled>Previous</button>
+    <button id="validips_next_btn" disabled>Next</button>
+    <span id="validips_page_meta" role="status">Preparing page...</span>
+  </div>
   <table id="validIpsTable">
     <thead><tr><th>IP</th><th>Domains</th><th>Count</th><th>Last Seen</th><th>Valid</th></tr></thead>
     <tbody></tbody>
