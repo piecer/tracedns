@@ -39,12 +39,15 @@ class FailIfCancelledFuture:
 
 class TestRelationshipJobLimit(unittest.TestCase):
     def setUp(self):
+        self.original_service = rh._legacy_job_service
+        rh._legacy_job_service = rh._LegacyRelationshipJobService()
         self.original_jobs = rh._IP_REL_JOBS
         self.original_executor = rh._IP_REL_JOB_EXECUTOR
         rh._IP_REL_JOBS = {}
         rh._IP_REL_JOB_EXECUTOR = PendingExecutor()
 
     def tearDown(self):
+        rh._legacy_job_service = self.original_service
         rh._IP_REL_JOBS = self.original_jobs
         rh._IP_REL_JOB_EXECUTOR = self.original_executor
 
@@ -235,6 +238,37 @@ class TestRelationshipJobLimit(unittest.TestCase):
             rh._cleanup_ip_rel_jobs(now=10)
 
         self.assertEqual(set(rh._IP_REL_JOBS), {"active", "done-3"})
+
+    def test_submission_releases_oversized_result_future(self):
+        import gc
+        import weakref
+
+        class Payload(dict):
+            pass
+
+        refs = []
+
+        class ImmediateExecutor:
+            def submit(self, fn, *args):
+                result = fn(*args)
+                result['payload'] = Payload(result['payload'])
+                refs.append(weakref.ref(result['payload']))
+                future = Future()
+                future.set_result(result)
+                return future
+
+        rh._IP_REL_JOB_EXECUTOR = ImmediateExecutor()
+        with mock.patch.object(rh, '_IP_REL_JOB_MAX_RESULT_BYTES', 1024 * 1024):
+            job_id = rh.start_ip_relationship_job({
+                'ips': [f'2001:db8::{i:x}' for i in range(2000)],
+                'include_vt': False,
+            })['job_id']
+        payload, status = rh.get_ip_relationship_job(job_id, include_result=True)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload['status_code'], 413)
+        self.assertTrue(payload['result']['result_too_large'])
+        gc.collect()
+        self.assertTrue(refs[0]() is None, 'terminal job retains rejected payload through its Future')
 
     def test_completion_replaces_oversized_result_with_explicit_failure(self):
         future = Future()

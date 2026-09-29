@@ -6,7 +6,8 @@ from typing import List, Optional, Tuple
 
 from a_decoder import decode_a_hidden_ips
 from ens_decoder import decode_ens_endpoints, decode_ens_hidden_ips, parse_ens_options
-from ens_query import EnsQueryError, fetch_ens_text_record, format_ens_error
+from ens_query import EnsQueryError, fetch_ens_text_record
+from monitor.diagnostics import query_error
 from sns_query import fetch_sns_record
 from dns_query import query_dns
 from models import DomainSpec, Snapshot, QueryResult
@@ -77,7 +78,7 @@ def collect_snapshot(domain: DomainSpec, server: str) -> Collected:
                     rtype='ENS',
                     status='error',
                     values=[],
-                    error=format_ens_error(e),
+                    error=query_error(e, ens_name=name if isinstance(e, EnsQueryError) else None),
                 ),
                 snapshot=None,
             )
@@ -89,7 +90,7 @@ def collect_snapshot(domain: DomainSpec, server: str) -> Collected:
                     rtype='ENS',
                     status='error',
                     values=[],
-                    error=format_ens_error(e),
+                    error=query_error(e, ens_name=name if isinstance(e, EnsQueryError) else None),
                 ),
                 snapshot=None,
             )
@@ -107,7 +108,7 @@ def collect_snapshot(domain: DomainSpec, server: str) -> Collected:
             return Collected(query=QueryResult(server=str(server), domain=name, rtype='SNS', status='ok', values=snap_values), snapshot=snap)
         except Exception as e:
             return Collected(
-                query=QueryResult(server=str(server), domain=name, rtype='SNS', status='error', values=[], error=str(e)),
+                query=QueryResult(server=str(server), domain=name, rtype='SNS', status='error', values=[], error=query_error(e)),
                 snapshot=None,
             )
 

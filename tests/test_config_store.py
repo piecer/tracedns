@@ -16,8 +16,11 @@ class TestConfigStore(unittest.TestCase):
         }
         store = ConfigStore(shared, threading.Lock())
 
-        first = store.snapshot().force_req
-        second = store.snapshot().force_req
+        self.assertIsNone(store.snapshot().force_req)
+        self.assertIsNone(store.snapshot().force_req)
+        self.assertEqual(len(shared['_force_resolve_queue']), 2)
+        first = store.dequeue_force()
+        second = store.dequeue_force()
 
         self.assertIsNotNone(first)
         self.assertIsNotNone(second)

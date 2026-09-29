@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from typing import Callable
 
 from .context import HttpContext
@@ -45,147 +44,15 @@ def handle_config_post(ctx: HttpContext, handler) -> None:
     if data is None:
         send_json(handler, {"error": "invalid json"}, 400)
         return
-    removed = []
-    with ctx.config_lock if ctx.config_lock else _NullCtx():
-        from .settings_handlers import check_revision, validate_clear_fields
-        if not check_revision(ctx, handler, data):
-            return
-        clear_fields = validate_clear_fields(handler, data, {'ens_rpc_url', 'DEFAULT_SNS_PROXY_HOSTS'})
-        if clear_fields is None:
-            return
-        candidate = dict(ctx.shared_config)
-        if "domains" in data:
-            import config_manager as _CM
-            prev = list(candidate.get("domains", []) or [])
-            normalized = _CM.normalize_domains(data["domains"])
-            new_identities = {_CM.domain_identity(d) for d in normalized}
-            removed_config_keys = {
-                _CM.domain_storage_name(d)
-                for d in prev
-                if _CM.domain_identity(d) not in new_identities
-            }
-            new_storage_keys = {
-                _CM.domain_storage_name(d).rstrip('.').lower()
-                for d in normalized
-            }
-            current_result_keys = {
-                str(d or "") for d in (ctx.current_results or {}).keys()
-            }
-            current_result_keys.discard("")
-            history_keys = {
-                str(d or "") for d in (ctx.history or {}).keys()
-            }
-            history_keys.discard("")
-            orphan_keys = {
-                key
-                for key in current_result_keys | history_keys
-                if key.rstrip('.').lower() not in new_storage_keys
-            }
-            removed = sorted(removed_config_keys | orphan_keys)
-            previous = {_CM.domain_identity(d): d for d in _CM.normalize_domains(prev)}
-            prior_metadata = candidate.get('domain_metadata') or {}
-            now = datetime.now(timezone.utc).isoformat()
-            metadata = {}
-            for domain in normalized:
-                identity = _CM.domain_identity(domain)
-                old = previous.get(identity)
-                dates = dict(prior_metadata.get(identity) or {}) if old is not None else {}
-                if old is None:
-                    dates = {'created_at': now, 'updated_at': now}
-                elif old != domain:
-                    dates['updated_at'] = now
-                metadata[identity] = dates
-            candidate['domain_metadata'] = metadata
-            candidate["domains"] = normalized
-        if "servers" in data:
-            if not isinstance(data["servers"], list):
-                send_json(handler, {"error": "servers must be a list"}, 400)
-                return
-            servers = [str(server).strip() for server in data["servers"] if str(server or "").strip()]
-            if len(servers) > 64:
-                send_json(handler, {"error": "servers must contain at most 64 entries"}, 400)
-                return
-            candidate["servers"] = servers
-        if "interval" in data:
-            interval = data["interval"]
-            if isinstance(interval, bool) or not isinstance(interval, int) or not 1 <= interval <= 86400:
-                send_json(handler, {"error": "interval must be an integer between 1 and 86400"}, 400)
-                return
-            candidate["interval"] = interval
-        if "max_workers" in data:
-            max_workers = data["max_workers"]
-            if isinstance(max_workers, bool) or not isinstance(max_workers, int) or not 1 <= max_workers <= 64:
-                send_json(handler, {"error": "max_workers must be an integer between 1 and 64"}, 400)
-                return
-            candidate["max_workers"] = max_workers
-        if "ens_rpc_url" in data and str(data["ens_rpc_url"] or "").strip():
-            candidate["ens_rpc_url"] = str(data["ens_rpc_url"] or "").strip()
-        if "ens_rpc_url" in clear_fields:
-            candidate.pop("ens_rpc_url", None)
-        if "DEFAULT_SNS_PROXY_HOSTS" in data:
-            hosts = data["DEFAULT_SNS_PROXY_HOSTS"]
-            if not isinstance(hosts, list):
-                send_json(handler, {"error": "DEFAULT_SNS_PROXY_HOSTS must be a list"}, 400)
-                return
-            if hosts:
-                candidate["DEFAULT_SNS_PROXY_HOSTS"] = [str(host).strip() for host in hosts if str(host or "").strip()]
-        if 'DEFAULT_SNS_PROXY_HOSTS' in clear_fields:
-            candidate['DEFAULT_SNS_PROXY_HOSTS'] = []
-        for key in ("custom_decoders", "custom_a_decoders"):
-            if key in data:
-                if not isinstance(data[key], list):
-                    send_json(handler, {"error": f"{key} must be a list"}, 400)
-                    return
-                candidate[key] = list(data[key])
-        candidate['config_revision'] = ctx.shared_config.get('_config_revision', 0) + 1
-        if ctx.config_path:
-            import config_manager as _CM
-            try:
-                _CM.write_config(ctx.config_path, {k: v for k, v in candidate.items() if not k.startswith("_")})
-            except Exception as exc:  # noqa: BLE001
-                send_json(handler, {
-                    "error": f"config save failed: {exc}",
-                    "status": "error",
-                }, 500)
-                return
-        candidate["_config_revision"] = ctx.shared_config.get("_config_revision", 0) + 1
-        revision = candidate["_config_revision"]
-        if getattr(ctx, 'read_model', None) is not None:
-            ctx.read_model.invalidate(hard=True)
-        ctx.shared_config.clear()
-        ctx.shared_config.update(candidate)
-    if removed and callable(getattr(ctx, "purge_removed_domains_state", None)):
-        ctx.purge_removed_domains_state(
-            ctx.current_results,
-            ctx.history,
-            ctx.history_dir,
-            removed,
-        )
-    # A builder may have captured between config publication and state purge.
-    # Fence that generation too before acknowledging the successful mutation.
-    if getattr(ctx, 'read_model', None) is not None:
-        ctx.read_model.invalidate(hard=True)
-    payload = {"status": "ok", "revision": revision}
-    cfg = {}
-    cfg['domain_metadata'] = dict(ctx.shared_config.get('domain_metadata') or {})
-    if "domains" in ctx.shared_config:
-        cfg["domains"] = list(ctx.shared_config.get("domains", []))
-    if "servers" in ctx.shared_config:
-        cfg["servers"] = list(ctx.shared_config.get("servers", []))
-    if "interval" in ctx.shared_config:
-        cfg["interval"] = ctx.shared_config.get("interval")
-    if "max_workers" in ctx.shared_config:
-        cfg["max_workers"] = ctx.shared_config.get("max_workers")
-    if "ens_rpc_url" in ctx.shared_config:
-        cfg["ens_rpc_url"] = str(ctx.shared_config.get("ens_rpc_url") or "")
-    if "DEFAULT_SNS_PROXY_HOSTS" in ctx.shared_config:
-        cfg["DEFAULT_SNS_PROXY_HOSTS"] = list(
-            ctx.shared_config.get("DEFAULT_SNS_PROXY_HOSTS", []) or []
-        )
-    if cfg:
-        payload["config"] = cfg
-    from .settings_handlers import redacted_config
-    send_json(handler, redacted_config(payload))
+    from .settings_handlers import validate_clear_fields
+    from monitor.config_service import commit_request
+    if validate_clear_fields(handler, data, {'ens_rpc_url', 'DEFAULT_SNS_PROXY_HOSTS'}) is None:
+        return
+    result = commit_request(ctx, handler, 'config', data)
+    if result is not None:
+        from .basic_handlers import config_payload
+        result['config'] = config_payload(result['config'])
+        send_json(handler, result)
 
 def handle_resolve(ctx: HttpContext, handler) -> None:
     body = _read_body(handler, ctx)
@@ -199,6 +66,10 @@ def handle_resolve(ctx: HttpContext, handler) -> None:
 
     lock = ctx.config_lock if ctx.config_lock is not None else _NullCtx()
     with lock:
+        if (ctx.shared_config.get('_monitor_stopped') or
+                getattr(ctx.shared_config.get('_signal_stop'), 'requested', False)):
+            send_json(handler, {'error': 'monitor stopped'}, 503)
+            return
         if "domains" in data:
             if not isinstance(data["domains"], list):
                 send_json(handler, {"error": "domains must be a list"}, 400)
@@ -218,11 +89,13 @@ def handle_resolve(ctx: HttpContext, handler) -> None:
             send_json(handler, {"error": "domains must contain at most 64 entries"}, 400)
             return
 
-        configured_domains = list(ctx.shared_config.get("domains", []) or [])
-        configured_ids = {domain_identity(domain) for domain in configured_domains}
-        if any(domain_identity(domain) not in configured_ids for domain in domains):
+        from copy import deepcopy
+        configured_domains = normalize_domains(ctx.shared_config.get("domains", []) or [])
+        configured_by_id = {domain_identity(domain): domain for domain in configured_domains}
+        if any(domain_identity(domain) not in configured_by_id for domain in domains):
             send_json(handler, {"error": "domains must be configured"}, 400)
             return
+        domains = [deepcopy(configured_by_id[domain_identity(domain)]) for domain in domains]
 
         configured_servers = [
             str(server).strip()
@@ -230,26 +103,60 @@ def handle_resolve(ctx: HttpContext, handler) -> None:
             if str(server or "").strip()
         ]
         servers = data.get("servers", configured_servers)
-        if not isinstance(servers, list) or not servers:
-            send_json(handler, {"error": "servers must be a non-empty list"}, 400)
+        if not isinstance(servers, list):
+            send_json(handler, {"error": "servers must be a list"}, 400)
             return
         servers = [str(server).strip() for server in servers if str(server or "").strip()]
-        if not servers or len(servers) > 64:
-            send_json(handler, {"error": "servers must contain between 1 and 64 entries"}, 400)
+        if len(servers) > 64:
+            send_json(handler, {"error": "servers must contain at most 64 entries"}, 400)
             return
         if any(server not in configured_servers for server in servers):
             send_json(handler, {"error": "servers must be configured"}, 400)
             return
+        from monitor.targets import providers_for
+        from monitor.repository import normalized_domain_specs
+        ens_rpc_url = str(ctx.shared_config.get('ens_rpc_url') or '').strip()
+        sns_proxy_hosts = list(ctx.shared_config.get('DEFAULT_SNS_PROXY_HOSTS',
+                              ctx.shared_config.get('DEFAULT_SOLAR_PROXY_HOSTS', [])) or [])
+        if any(not providers_for(d, servers, ens_rpc_url, sns_proxy_hosts)
+               for d in normalized_domain_specs(domains)):
+            send_json(handler, {'error': 'configured provider required'}, 400)
+            return
 
-        queue = ctx.shared_config.setdefault("_force_resolve_queue", [])
+        queue = ctx.shared_config.get("_force_resolve_queue", [])
         if len(queue) >= 64:
             send_json(handler, {"error": "resolve request queue is full"}, 429)
             return
-        job = {"domains": domains, "servers": servers}
+        job = {"domains": domains, "servers": servers,
+               'ens_rpc_url': ens_rpc_url, 'sns_proxy_hosts': deepcopy(sns_proxy_hosts)}
+        repository = getattr(ctx, 'state_repository', None)
+        if repository is not None:
+            from config_manager import domain_storage_name
+            captured = repository.capture()
+            job['_target_leases'] = {domain_storage_name(d): captured.get(domain_storage_name(d))
+                                     for d in domains}
+            if not all(repository.valid(lease) for lease in job['_target_leases'].values()):
+                send_json(handler, {'error': 'target unavailable'}, 400)
+                return
+        registry_snapshot = ctx.shared_config.get('_decoder_registry_snapshot')
+        if registry_snapshot is not None:
+            job['_registry_view'] = registry_snapshot()
         from security.jobs import prepare_force
         if not prepare_force(handler, job, queue):
             return
+        from monitor.projection_authority import advance_security_projection_locked
+        try:
+            advance_security_projection_locked(ctx.shared_config)
+        except Exception:
+            # Admission audit already started; this job will never be queued.
+            from security.jobs import finish_force
+            finish_force(job, 'failure')
+            raise
+        ctx.shared_config['_force_resolve_queue'] = queue
         queue.append(job)
+        condition = ctx.shared_config.get('_monitor_condition')
+        if condition is not None:
+            condition.notify_all()
     send_json(handler, {"status": "ok", "requested": True, "job_id": job.get('job_id')})
 
 

@@ -33,6 +33,8 @@ def allowed(role, method, path, qs=None, body=None):
         return True
     if method == 'GET' and path in READ:
         return role != 'viewer' or not external_read(path, qs)
+    if method == 'GET' and path == '/delivery-health':
+        return role in ('admin', 'operator')
     if re.fullmatch(r'/ip-relationship-jobs/[a-f0-9]{32}', path) and method == 'GET':
         return role in ('admin', 'operator')
     if re.fullmatch(r'/ip-relationship-jobs/[a-f0-9]{32}/cancel', path) and method == 'POST':

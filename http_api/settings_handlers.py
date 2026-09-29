@@ -4,8 +4,6 @@ import json
 import logging
 from typing import Any, Dict
 
-from config_manager import read_config, write_config
-
 try:
     from vt_lookup import set_api_key, set_cache_ttl_days, get_cache_ttl_days
 except Exception:
@@ -22,7 +20,7 @@ from .utils import send_json
 logger = logging.getLogger(__name__)
 
 
-SECRET_FIELDS = frozenset(('vt_api_key', 'api_key', 'misp_key', 'misp_url', 'teams_webhook', 'ens_rpc_url',
+SECRET_FIELDS = frozenset(('vt_api_key', 'api_key', 'misp_key', 'misp_url', 'misp_ca_bundle', 'teams_webhook', 'ens_rpc_url',
                            'DEFAULT_SNS_PROXY_HOSTS', 'DEFAULT_SOLAR_PROXY_HOSTS'))
 
 
@@ -52,25 +50,12 @@ def validate_clear_fields(handler, data, allowed):
     return fields
 
 
-def check_revision(ctx, handler, data):
-    revision = ctx.shared_config.get('_config_revision', 0)
-    if getattr(handler, 'principal', None) is not None and (
-        type(data.get('revision')) is not int or data['revision'] != revision
-    ):
-        send_json(handler, {'error': 'config revision conflict', 'revision': revision}, 409)
-        return False
-    return True
-
-
 def handle_settings_get(ctx: HttpContext, handler) -> None:
     try:
-        with ctx.config_lock:
-            alerts = ctx.shared_config.get('alerts', None)
-            revision = ctx.shared_config.get('_config_revision', 0)
-        if alerts is None and ctx.config_path:
-            cfg = read_config(ctx.config_path) or {}
-            alerts = cfg.get('alerts', {})
-        alerts_out = dict(alerts or {})
+        from monitor.config_service import get_config_service
+        snapshot = get_config_service(ctx).snapshot()
+        revision = snapshot['config_revision']
+        alerts_out = snapshot.get('alerts') or {}
         ttl_days_current = get_cache_ttl_days()
         try:
             ttl_days_value = int(str(alerts_out.get('vt_cache_ttl_days')).strip())
@@ -102,88 +87,40 @@ def handle_settings_post(ctx: HttpContext, handler) -> None:
     if not isinstance(data, dict):
         return send_json(handler, {'error': 'json object required'}, 400)
 
-    alerts = data.get('alerts')
-    if alerts is None or not isinstance(alerts, dict):
-        return send_json(handler, {'error': 'alerts object required'}, 400)
-
     clear_fields = validate_clear_fields(handler, data, SECRET_FIELDS - {'ens_rpc_url'})
     if clear_fields is None:
         return
-    alerts = dict(alerts)
-    alerts.pop('configured', None)
+    from monitor.config_service import commit_request
+    result = commit_request(ctx, handler, 'settings', data)
+    if result is not None:
+        return send_json(handler, {'status': 'ok', 'alerts': redacted_config(result['alerts']),
+                                  'revision': result['revision'], 'warnings': result['warnings']})
 
-    # Validate VirusTotal API key if provided (basic checks)
+
+def apply_runtime_settings(alerts):
+    """Best effort, sanitized failures; caller owns writer order but no read lock."""
     try:
-        import re as _re
-
-        vt = alerts.get('vt_api_key')
-        if vt is not None and str(vt).strip() != '':
-            vts = str(vt).strip()
-            if _re.search(r"\s", vts) or len(vts) < 20 or len(vts) > 128:
-                return send_json(handler, {'error': 'invalid vt_api_key (bad format or length)'}, 400)
-            if not (_re.fullmatch(r'[A-Fa-f0-9]{64}', vts) or _re.fullmatch(r'[A-Za-z0-9\-_=]+', vts)):
-                return send_json(handler, {'error': 'invalid vt_api_key (unexpected characters)'}, 400)
-            alerts['vt_api_key'] = vts
+        from alerts import init_from_alerts
     except Exception:
-        return send_json(handler, {'error': 'vt_api_key validation error'}, 400)
-
-    # Validate VT cache TTL (days)
-    try:
-        ttl_raw = alerts.get('vt_cache_ttl_days')
-        ttl_days = get_cache_ttl_days() if ttl_raw in (None, '') else int(str(ttl_raw).strip())
-        if ttl_days < 1 or ttl_days > 3650:
-            return send_json(handler, {'error': 'vt_cache_ttl_days must be between 1 and 3650'}, 400)
-        if 'vt_cache_ttl_days' in alerts:
-            alerts['vt_cache_ttl_days'] = int(ttl_days)
-    except Exception:
-        return send_json(handler, {'error': 'invalid vt_cache_ttl_days'}, 400)
-
-    if 'misp_remove_on_absent' in alerts:
-        raw_remove = alerts['misp_remove_on_absent']
-        alerts['misp_remove_on_absent'] = raw_remove if isinstance(raw_remove, bool) else str(raw_remove).strip().lower() in ('1', 'true', 'yes', 'on', 'y')
-
-    with ctx.config_lock:
-        if not check_revision(ctx, handler, data):
-            return
-        cfg = read_config(ctx.config_path) or {} if ctx.config_path else {}
-        cfg.update({k: v for k, v in ctx.shared_config.items() if not k.startswith('_')})
-        merged = dict(cfg.get('alerts') or {})
-        merged.update({k: v for k, v in alerts.items() if k not in SECRET_FIELDS or str(v or '').strip()})
-        for key in clear_fields:
-            merged.pop(key, None)
-        merged.setdefault('vt_cache_ttl_days', get_cache_ttl_days())
-        alerts = merged
-        cfg['config_revision'] = ctx.shared_config.get('_config_revision', 0) + 1
-        cfg['alerts'] = alerts
-        cfg = {k: v for k, v in cfg.items() if not k.startswith('_')}
-        if ctx.config_path:
-            try:
-                write_config(ctx.config_path, cfg)
-            except Exception as e:
-                logger.warning('Failed to save settings to %s: %s', ctx.config_path, e)
-                return send_json(handler, {'error': f'config save failed: {e}'}, 500)
-            logger.debug('Settings saved to %s', ctx.config_path)
-        ctx.shared_config['alerts'] = alerts
-        revision = ctx.shared_config.get('_config_revision', 0) + 1
-        ctx.shared_config['_config_revision'] = revision
-
-        if set_api_key is not None:
-            try:
-                set_api_key(alerts.get('vt_api_key', ''))
-            except Exception:
-                pass
-        if set_cache_ttl_days is not None:
-            try:
-                set_cache_ttl_days(alerts['vt_cache_ttl_days'])
-            except Exception:
-                pass
-
-        # apply alert runtime immediately (best effort)
+        init_from_alerts = None
+    warnings = []
+    for adapter, value, warning in (
+        (set_api_key, alerts.get('vt_api_key', ''), 'vt_api_key_apply_failed'),
+        (set_cache_ttl_days, alerts['vt_cache_ttl_days'], 'vt_cache_ttl_apply_failed'),
+        (init_from_alerts, alerts, 'alerts_runtime_apply_failed'),
+    ):
+        if adapter is None:
+            warnings.append(warning)
+            continue
         try:
-            from alerts import init_from_alerts as _init_alerts_runtime
-
-            _init_alerts_runtime(alerts)
-        except Exception as e:
-            logger.warning('Failed to apply runtime alert settings: %s', e)
-
-    return send_json(handler, {'status': 'ok', 'alerts': redacted_config(alerts), 'revision': revision})
+            adapter(value)
+            if warning == 'alerts_runtime_apply_failed' and alerts.get('misp_url') and alerts.get('api_key'):
+                # The legacy alert adapter logs and swallows PyMISP failures.
+                # Its boolean return also counts event IDs, so inspect the
+                # actual client rather than equating truthy return with success.
+                import mispupdate_code
+                if getattr(mispupdate_code, 'misp', None) is None:
+                    warnings.append(warning)
+        except Exception:
+            warnings.append(warning)
+    return warnings

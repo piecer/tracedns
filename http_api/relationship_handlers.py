@@ -5,6 +5,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import multiprocessing
 import os
 import re
 import threading
@@ -46,7 +47,7 @@ def _bounded_bucket_members(bucket_key: str, ips: Any, limit: int) -> Tuple[List
     )
     return sorted(ranked[:limit]), True
 
-_IP_REL_JOB_LOCK = threading.Lock()
+_IP_REL_JOB_LOCK = threading.RLock()
 _IP_REL_JOBS: Dict[str, Dict[str, Any]] = {}
 _IP_REL_JOB_EXECUTOR: Optional[ProcessPoolExecutor] = None
 _IP_REL_JOB_MAX_WORKERS = max(1, int(os.environ.get("TRACEDNS_IP_REL_JOB_WORKERS", "1") or "1"))
@@ -79,19 +80,118 @@ class RelationshipRequestError(ValueError):
         self.payload = {"error": message, **details}
 
 
-def _get_ip_rel_job_executor() -> ProcessPoolExecutor:
-    global _IP_REL_JOB_EXECUTOR
-    with _IP_REL_JOB_LOCK:
-        if _IP_REL_JOB_EXECUTOR is None:
-            _IP_REL_JOB_EXECUTOR = ProcessPoolExecutor(max_workers=_IP_REL_JOB_MAX_WORKERS)
+class RelationshipJobStoppedError(RuntimeError):
+    """The owning server has permanently stopped relationship admission."""
+
+
+class RelationshipJobService:
+    """One server's jobs, admission fence, and lazily allocated process pool."""
+
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.jobs: Any = {}
+        self.executor: Any = None
+        self.stopped = False
+        self._close_lock = threading.Lock()
+        self._drain: Any = None
+        self.force_stopping = False
+
+    def start(self):
+        # Server lifecycle hook; never reopens a stopped owner.
+        pass
+
+    def check_open(self):
+        if self.stopped:
+            raise RelationshipJobStoppedError("relationship job service is stopped")
+
+    def stop_admission(self):
+        # Publish the permanent fence without waiting on an already admitted
+        # executor submission. close() synchronizes with that region using its
+        # remaining deadline and reports incomplete drainage if it is stuck.
+        self.stopped = True
+
+    def close(self, timeout=3.0):
+        """Fence permanently; split one deadline between drain/TERM/KILL/reap.
+
+        A zero remaining budget still signals owned workers, but reports any
+        survivors honestly. Repeated close can finish reaping the same owner.
+        """
+        from http_api.relationship_job_pool import ProcessPoolDrain
+
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        self.stop_admission()
+        if not self._close_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            return {"closed": False, "close_in_progress": True}
+        try:
+            if not self.lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+                return {"closed": False, "submission_in_progress": True,
+                        "surviving_workers": None, "admission_fenced": True}
+            try:
+                if self._drain is None and self.executor is not None:
+                    self._drain = ProcessPoolDrain(self.executor)
+                    self.executor = None
+            finally:
+                self.lock.release()
+            if self._drain is None:
+                return {"closed": True, "surviving_workers": 0, "manager_alive": False,
+                        "ownership_supported": True, "terminate_attempts": 0, "kill_attempts": 0}
+            return self._drain.close(deadline, before_terminate=self._mark_forced_shutdown)
+        finally:
+            self._close_lock.release()
+
+    def _mark_forced_shutdown(self):
+        # Callbacks map forced process failure to shutdown failure, not cancel.
+        self.force_stopping = True
+
+
+class _LegacyRelationshipJobService(RelationshipJobService):
+    """Keep direct helper/global fixtures compatible; HTTP never uses this owner."""
+
+    def __init__(self):
+        self.stopped = False
+        self._close_lock = threading.Lock()
+        self._drain: Any = None
+        self.force_stopping = False
+
+    @property
+    def lock(self):
+        return _IP_REL_JOB_LOCK
+
+    @property
+    def jobs(self):
+        return _IP_REL_JOBS
+
+    @property
+    def executor(self):
         return _IP_REL_JOB_EXECUTOR
 
+    @executor.setter
+    def executor(self, executor):
+        global _IP_REL_JOB_EXECUTOR
+        _IP_REL_JOB_EXECUTOR = executor
 
-def _bound_terminal_jobs_locked(keep_job_id: Optional[str] = None):
+
+_legacy_job_service = _LegacyRelationshipJobService()
+
+
+def _get_ip_rel_job_executor(service=None) -> ProcessPoolExecutor:
+    service = service if service is not None else _legacy_job_service
+    with service.lock:
+        service.check_open()
+        if service.executor is None:
+            service.executor = ProcessPoolExecutor(
+                max_workers=_IP_REL_JOB_MAX_WORKERS,
+                mp_context=multiprocessing.get_context("spawn"),
+            )
+        return service.executor
+
+
+def _bound_terminal_jobs_locked(keep_job_id: Optional[str] = None, service=None):
+    service = service if service is not None else _legacy_job_service
     terminal = sorted(
         (
             (str(job_id), float(job.get("done_at") or 0), int(job.get("result_bytes") or 0))
-            for job_id, job in _IP_REL_JOBS.items()
+            for job_id, job in service.jobs.items()
             if job.get("status") in ("completed", "failed", "cancelled")
         ),
         key=lambda item: (item[1], item[0]),
@@ -103,22 +203,23 @@ def _bound_terminal_jobs_locked(keep_job_id: Optional[str] = None):
             break
         job_id, _done_at, result_bytes = terminal.pop(evict_at)
         total_bytes -= result_bytes
-        _IP_REL_JOBS.pop(job_id, None)
+        service.jobs.pop(job_id, None)
 
 
-def _cleanup_ip_rel_jobs(now: Optional[float] = None):
+def _cleanup_ip_rel_jobs(now: Optional[float] = None, service=None):
+    service = service if service is not None else _legacy_job_service
     now_f = float(now if now is not None else time.time())
-    with _IP_REL_JOB_LOCK:
+    with service.lock:
         old_ids = []
-        for job_id, job in _IP_REL_JOBS.items():
+        for job_id, job in service.jobs.items():
             if job.get("status") not in ("completed", "failed", "cancelled"):
                 continue
             done_at = float(job.get("done_at") or 0)
             if done_at and now_f - done_at > _IP_REL_JOB_TTL_SECONDS:
                 old_ids.append(job_id)
         for job_id in old_ids:
-            _IP_REL_JOBS.pop(job_id, None)
-        _bound_terminal_jobs_locked()
+            service.jobs.pop(job_id, None)
+        _bound_terminal_jobs_locked(service=service)
 
 
 class _CapturingRelationshipHandler:
@@ -187,18 +288,21 @@ def _audit_job_terminal(job):
         logger.exception('Failed to audit analysis completion')
 
 
-def _ip_rel_job_done(job_id: str, fut):
+def _ip_rel_job_done(job_id: str, fut, service=None):
+    service = service if service is not None else _legacy_job_service
     now = time.time()
-    with _IP_REL_JOB_LOCK:
-        job = _IP_REL_JOBS.get(job_id)
-        if not job or job.get("status") in ("completed", "failed", "cancelled"):
+    with service.lock:
+        job = service.jobs.get(job_id)
+        if not job:
             return
-        job["done_at"] = now
-        if fut.cancelled():
-            job["status"] = "cancelled"
-            _audit_job_terminal(job)
-            _bound_terminal_jobs_locked(keep_job_id=job_id)
+        if job.get("status") in ("completed", "failed", "cancelled"):
+            job.pop("future", None)
             return
+        job = {key: value for key, value in job.items() if key != "future"}
+    job["done_at"] = now
+    if fut.cancelled():
+        job["status"] = "cancelled"
+    else:
         try:
             result = fut.result()
             payload = result.get("payload") if isinstance(result, dict) else result
@@ -224,14 +328,24 @@ def _ip_rel_job_done(job_id: str, fut):
                 job["status_code"] = int((result or {}).get("status_code") or 200) if isinstance(result, dict) else 200
                 job["status"] = "completed" if int(job.get("status_code") or 200) < 400 else "failed"
         except Exception:
-            logger.exception("IP relationship analysis worker failed")
+            if not service.force_stopping:
+                logger.exception("IP relationship analysis worker failed")
             job.pop("result", None)
             job["result_bytes"] = 0
             job["status"] = "failed"
-            job["status_code"] = 500
-            job["error"] = "relationship analysis failed"
-        _audit_job_terminal(job)
-        _bound_terminal_jobs_locked(keep_job_id=job_id)
+            job["status_code"] = 503 if service.force_stopping else 500
+            job["error"] = (
+                "relationship analysis stopped during shutdown" if service.force_stopping
+                else "relationship analysis failed"
+            )
+    with service.lock:
+        current = service.jobs.get(job_id)
+        if current is None or current.get("status") in ("completed", "failed", "cancelled"):
+            return
+        current.pop("future", None)
+        current.update(job)
+        _bound_terminal_jobs_locked(keep_job_id=job_id, service=service)
+    _audit_job_terminal(current)
 
 
 def _job_visible(job, principal):
@@ -240,25 +354,28 @@ def _job_visible(job, principal):
     )
 
 
-def _check_user_capacity_locked(principal):
+def _check_user_capacity_locked(principal, service=None):
+    service = service if service is not None else _legacy_job_service
     if principal is not None and sum(
-        1 for job in _IP_REL_JOBS.values()
+        1 for job in service.jobs.values()
         if job.get('status') in ('queued', 'running') and job.get('owner_id') == principal.get('id')
     ) >= 4:
         raise RelationshipJobCapacityError('per-user relationship job queue is full')
 
 
-def ensure_ip_relationship_job_capacity(*, principal=None) -> None:
+def ensure_ip_relationship_job_capacity(*, principal=None, service=None) -> None:
     """Fail fast before callers perform expensive request preparation.
 
     Submission still repeats this check while inserting the job so concurrent
     requests cannot exceed the pending-job limit.
     """
-    _cleanup_ip_rel_jobs()
-    with _IP_REL_JOB_LOCK:
-        _check_user_capacity_locked(principal)
+    service = service if service is not None else _legacy_job_service
+    _cleanup_ip_rel_jobs(service=service)
+    with service.lock:
+        service.check_open()
+        _check_user_capacity_locked(principal, service=service)
         active_jobs = sum(
-            1 for existing in _IP_REL_JOBS.values()
+            1 for existing in service.jobs.values()
             if existing.get("status") in ("queued", "running")
         )
         if active_jobs >= _IP_REL_JOB_MAX_PENDING:
@@ -270,13 +387,14 @@ def start_ip_relationship_job(
     shared_config: Optional[Dict[str, Any]] = None,
     local_dns_context: Optional[Dict[str, Any]] = None,
     misp_context: Optional[Dict[str, Any]] = None,
-    *, principal=None, security_store=None, request_id="", source_ip="",
+    *, principal=None, security_store=None, request_id="", source_ip="", service=None,
 ) -> Dict[str, Any]:
+    service = service if service is not None else _legacy_job_service
     valid_ips, _invalid = _validate_relationship_request(data)
     context_snapshot, context_metadata = _sanitize_local_dns_context(
         local_dns_context, allowed_ips=set(valid_ips), include_metadata=True
     )
-    _cleanup_ip_rel_jobs()
+    _cleanup_ip_rel_jobs(service=service)
     job_id = uuid.uuid4().hex
     now = time.time()
     job = {
@@ -292,45 +410,51 @@ def start_ip_relationship_job(
         "status_code": None,
         "error": None,
     }
-    with _IP_REL_JOB_LOCK:
-        _check_user_capacity_locked(principal)
-        active_jobs = sum(
-            1 for existing in _IP_REL_JOBS.values()
-            if existing.get("status") in ("queued", "running")
-        )
-        if active_jobs >= _IP_REL_JOB_MAX_PENDING:
-            raise RelationshipJobCapacityError("relationship job queue is full")
-        _audit_job_started(job)
-        _IP_REL_JOBS[job_id] = job
+    # Audit intent can block on storage. Do it before the atomic reservation /
+    # submit region, then repeat admission so a concurrent stop always wins.
+    ensure_ip_relationship_job_capacity(principal=principal, service=service)
+    _audit_job_started(job)
     try:
-        fut = _get_ip_rel_job_executor().submit(
-            _run_ip_relationship_analysis_payload,
-            data,
-            {k: v for k, v in (shared_config or {}).items() if not k.startswith("_")},
-            get_vt_runtime_config() if get_vt_runtime_config is not None else None,
-            context_snapshot,
-            context_metadata,
-            copy.deepcopy(misp_context) if isinstance(misp_context, dict) else None,
-        )
+        with service.lock:
+            service.check_open()
+            _check_user_capacity_locked(principal, service=service)
+            active_jobs = sum(
+                1 for existing in service.jobs.values()
+                if existing.get("status") in ("queued", "running")
+            )
+            if active_jobs >= _IP_REL_JOB_MAX_PENDING:
+                raise RelationshipJobCapacityError("relationship job queue is full")
+            service.jobs[job_id] = job
+            fut = (
+                _get_ip_rel_job_executor() if service is _legacy_job_service
+                else _get_ip_rel_job_executor(service=service)
+            ).submit(
+                _run_ip_relationship_analysis_payload,
+                data,
+                {k: v for k, v in (shared_config or {}).items() if not k.startswith("_")},
+                get_vt_runtime_config() if get_vt_runtime_config is not None else None,
+                context_snapshot,
+                context_metadata,
+                copy.deepcopy(misp_context) if isinstance(misp_context, dict) else None,
+            )
+            job["future"] = fut
+            job["status"] = "running"
     except Exception:
+        with service.lock:
+            service.jobs.pop(job_id, None)
         job['status'] = 'failed'
         job['error'] = 'relationship analysis enqueue failed'
         _audit_job_terminal(job)
-        with _IP_REL_JOB_LOCK:
-            _IP_REL_JOBS.pop(job_id, None)
         raise
-    with _IP_REL_JOB_LOCK:
-        if job_id in _IP_REL_JOBS:
-            _IP_REL_JOBS[job_id]["future"] = fut
-            _IP_REL_JOBS[job_id]["status"] = "running"
-    fut.add_done_callback(lambda f, jid=job_id: _ip_rel_job_done(jid, f))
+    fut.add_done_callback(lambda f, jid=job_id: _ip_rel_job_done(jid, f, service=service))
     return {"status": "queued", "job_id": job_id}
 
 
-def get_ip_relationship_job(job_id: str, *, include_result: bool = False, principal=None) -> Tuple[Dict[str, Any], int]:
-    _cleanup_ip_rel_jobs()
-    with _IP_REL_JOB_LOCK:
-        job = _IP_REL_JOBS.get(str(job_id or ""))
+def get_ip_relationship_job(job_id: str, *, include_result: bool = False, principal=None, service=None) -> Tuple[Dict[str, Any], int]:
+    service = service if service is not None else _legacy_job_service
+    _cleanup_ip_rel_jobs(service=service)
+    with service.lock:
+        job = service.jobs.get(str(job_id or ""))
         if not job or not _job_visible(job, principal):
             return ({"error": "job not found"}, 404)
         out = {
@@ -347,10 +471,11 @@ def get_ip_relationship_job(job_id: str, *, include_result: bool = False, princi
         return (out, 200)
 
 
-def cancel_ip_relationship_job(job_id: str, *, principal=None) -> Tuple[Dict[str, Any], int]:
+def cancel_ip_relationship_job(job_id: str, *, principal=None, service=None) -> Tuple[Dict[str, Any], int]:
+    service = service if service is not None else _legacy_job_service
     job_key = str(job_id or "")
-    with _IP_REL_JOB_LOCK:
-        job = _IP_REL_JOBS.get(job_key)
+    with service.lock:
+        job = service.jobs.get(job_key)
         if not job or not _job_visible(job, principal):
             return ({"error": "job not found"}, 404)
         if job.get("status") == "cancelled":
@@ -369,8 +494,8 @@ def cancel_ip_relationship_job(job_id: str, *, principal=None) -> Tuple[Dict[str
 
     cancelled = bool(fut.cancel()) if fut is not None else False
 
-    with _IP_REL_JOB_LOCK:
-        job = _IP_REL_JOBS.get(job_key)
+    with service.lock:
+        job = service.jobs.get(job_key)
         if not job or not _job_visible(job, principal):
             return ({"error": "job not found"}, 404)
         if cancelled:
@@ -393,14 +518,10 @@ def cancel_ip_relationship_job(job_id: str, *, principal=None) -> Tuple[Dict[str
         )
 
 
-def shutdown_ip_relationship_jobs(*, wait: bool = False) -> None:
-    """Cancel queued work and release the analysis pool during server shutdown."""
-    global _IP_REL_JOB_EXECUTOR
-    with _IP_REL_JOB_LOCK:
-        executor = _IP_REL_JOB_EXECUTOR
-        _IP_REL_JOB_EXECUTOR = None
-    if executor is not None:
-        executor.shutdown(wait=wait, cancel_futures=True)
+def shutdown_ip_relationship_jobs(*, wait: bool = False, timeout: float = 3.0, service=None):
+    """Compatibility entry point; ``wait`` no longer permits unbounded drainage."""
+    service = service if service is not None else _legacy_job_service
+    return service.close(timeout=timeout)
 
 
 def _tokenize_ip_input(raw: Any) -> List[str]:

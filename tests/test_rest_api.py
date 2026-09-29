@@ -39,6 +39,28 @@ def test_versioned_login_read_and_mutation_share_legacy_state(app):
     assert client.call('GET', '/api/v1/results')[0] == 401
 
 
+@pytest.mark.parametrize('kind', ['ENS', 'SNS', 'A'])
+def test_force_schema_allows_empty_dns_subset_only_when_runtime_has_chain_provider(app, kind):
+    _, client, _ = app
+    assert client.login()[0] == 200
+    _, config = client.call('GET', '/api/v1/config')
+    domain = {'name': 'chain.eth' if kind == 'ENS' else 'chain.sol' if kind == 'SNS' else 'dns.test',
+              'type': kind}
+    code, saved = client.call('POST', '/api/v1/config', {
+        'revision': config['revision'], 'domains': [domain], 'servers': [],
+        'ens_rpc_url': 'http://127.0.0.1:1', 'DEFAULT_SNS_PROXY_HOSTS': ['http://127.0.0.1:1'],
+    })
+    assert code == 200, saved
+    code, admitted = client.call('POST', '/api/v1/resolve', {'domains': [domain], 'servers': []})
+    if kind == 'A':
+        assert code == 400, admitted
+    else:
+        assert code == 200, admitted
+        _, document = client.call('GET', '/api/v1/openapi.json')
+        schema = document['paths']['/resolve']['post']['requestBody']['content']['application/json']['schema']
+        assert schema['properties']['servers'].get('minItems', 0) == 0
+
+
 def test_discovery_is_authenticated_and_describes_only_mounted_routes(app):
     _, client, _ = app
     assert client.call('GET', '/api/v1/openapi.json')[0] == 401
@@ -130,8 +152,17 @@ def test_auth_body_limit_survives_version_prefix(app):
     assert isinstance(body, str)  # framing/body-limit errors remain text/plain
 
 
-def test_actual_async_worker_via_versioned_http(app, monkeypatch):
+@pytest.mark.parametrize('delay_terminal_audit', [False, True])
+def test_actual_async_worker_via_versioned_http(app, monkeypatch, delay_terminal_audit):
+    import threading
     import http_api.relationship_handlers as jobs
+    release_audit = threading.Event()
+    original_audit = jobs._audit_job_terminal
+    if delay_terminal_audit:
+        def delayed_audit(job):
+            assert release_audit.wait(10), 'test must release terminal audit'
+            original_audit(job)
+        monkeypatch.setattr(jobs, '_audit_job_terminal', delayed_audit)
     monkeypatch.setattr(jobs, '_IP_REL_JOBS', {})
     monkeypatch.setattr(jobs, '_IP_REL_JOB_EXECUTOR', None)
     _, client, _ = app
@@ -146,7 +177,13 @@ def test_actual_async_worker_via_versioned_http(app, monkeypatch):
             code, job = client.call('GET', '/api/v1/ip-relationship-jobs/' + accepted['job_id'] + '?result=1')
             assert code == 200
             if job['status'] not in ('queued', 'running'):
-                break
+                if delay_terminal_audit and not release_audit.is_set():
+                    assert job['audit_status'] == 'pending'
+                    release_audit.set()
+                # Result publication precedes the unlocked terminal audit.
+                # Keep the same deadline until both outcomes are observable.
+                if job['audit_status'] != 'pending':
+                    break
             assert time.monotonic() < deadline, job
             time.sleep(0.05)
         assert job['status'] == 'completed', job
@@ -157,6 +194,7 @@ def test_actual_async_worker_via_versioned_http(app, monkeypatch):
         assert other.call('POST', '/api/v1/ip-relationship-jobs/' + accepted['job_id'] + '/cancel', {})[0] == 404
         assert client.call('POST', '/api/v1/ip-relationship-jobs/' + accepted['job_id'] + '/cancel', {})[0] == 409
     finally:
+        release_audit.set()
         jobs.shutdown_ip_relationship_jobs(wait=True)
 
 
@@ -199,6 +237,11 @@ def test_read_responses_match_documented_schemas(app):
             continue  # exercised by the real worker test
         query = '?domain=example.org' if path == '/history' else '?ip=192.0.2.1' if path == '/ip' else ''
         status, body = client.call('GET', '/api/v1' + path + query)
+        if path == '/delivery-health':
+            # This fixture intentionally has no delivery owner. Healthy and
+            # degraded cache schemas are exercised by test_delivery_health_http.
+            assert status == 503 and 'missed_total' not in body
+            continue
         assert status == 200, (path, status, body)
         Draft7Validator.check_schema(schema)
         Draft7Validator(schema).validate(body)

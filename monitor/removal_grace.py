@@ -23,6 +23,25 @@ def _labels(value: Any) -> List[str]:
     return sorted({str(item).strip() for item in values if str(item or "").strip()})
 
 
+def load_legacy_grace(history_dir):
+    """One-time bounded read; malformed/oversize import is unknown, not empty."""
+    path = os.path.join(history_dir, IP_REMOVAL_GRACE_STATE_FILENAME)
+    try:
+        with open(path, 'rb') as source:
+            raw = source.read(2 * 1024 * 1024 + 1)
+        if len(raw) > 2 * 1024 * 1024:
+            return None
+        value = json.loads(raw)
+        pending = value.get('pending') if isinstance(value, dict) else None
+        if not isinstance(pending, dict) or len(pending) > 8192:
+            return None
+        return pending
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, TypeError):
+        return None
+
+
 class IpRemovalGraceTracker:
     """Track IPs that disappeared until their removal grace period expires.
 

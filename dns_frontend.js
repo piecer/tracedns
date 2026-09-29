@@ -2504,6 +2504,205 @@ function renderCellWithClickableIps(td, rawValues, fallbackText, maxDisplayItems
   }
 }
 
+// Delivery health owns its lifecycle independently of data/settings refreshes.
+(() => {
+  const panel = document.getElementById('deliveryHealth');
+  if(!panel || !window.TraceAuth) return;
+  const status = document.getElementById('deliveryStatus');
+  const details = document.getElementById('deliveryDetails');
+  const checked = document.getElementById('deliveryChecked');
+  const reasons = new Set([
+    'delivery_storage', 'delivery_capacity', 'tracking_overflow', 'old_binding_blocked',
+    'client_unavailable', 'configuration_unavailable', 'provider_auth', 'provider_tls',
+    'provider_timeout', 'provider_transport', 'provider_rate_limit', 'provider_unavailable',
+    'provider_response', 'provider_work_limit', 'attempts_exhausted', 'invalid_payload',
+    'recovery_gap', 'receipt_persistence', 'history_persistence', 'delivery_unknown',
+    'destination_disabled', 'destination_invalid', 'adapter_unapplied', 'removal_disabled',
+    'tls_config', 'tls_error', 'provider_transient', 'provider_http', 'provider_protocol',
+    'transport_error', 'response_limit', 'attribute_limit', 'payload_invalid', 'payload_limit',
+    'sighting_absent'
+  ]);
+  const count = n => typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= 2 ** 63;
+  const optionalCount = n => n === null || count(n);
+  const flag = n => typeof n === 'boolean';
+  const reason = n => n === null || typeof n === 'string' && reasons.has(n);
+  const enumeration = values => n => values.includes(n);
+  function closed(value, fields){
+    return value !== null && typeof value === 'object' && !Array.isArray(value) &&
+      Object.keys(value).length === Object.keys(fields).length &&
+      Object.entries(fields).every(([key, validate]) => Object.hasOwn(value, key) && validate(value[key]));
+  }
+  const channel = value => closed(value, {enabled:flag, pending:count, blocked:count,
+    last_success_at:optionalCount, last_error:reason});
+  function validate(value){
+    if(!closed(value, {
+      status:enumeration(['disabled','ok','degraded','blocked']), observation_policy:enumeration(['continue']),
+      storage_ok:flag, worker_running:flag, coverage:enumeration(['covered','gap','rebaselining']),
+      accounting_complete:flag, missed_total:count, missed_unpersisted:count, failed_total:count,
+      acked_total:count, pending:count, retry_wait:count, blocked:count, oldest_pending_age_seconds:optionalCount,
+      capacity:v => closed(v, {used_receipts:count, max_receipts:count, used_payload_bytes:count, max_payload_bytes:count}),
+      channels:v => closed(v, {teams:channel, misp:channel}), tracking_complete:flag, counts_stale:flag, last_error:reason
+    })) throw new Error('Invalid health');
+    return value;
+  }
+  const number = n => Number.isSafeInteger(n) ? String(n) : 'precision unavailable';
+  const errorText = code => code === null ? 'no reported error' : code.replaceAll('_', ' ');
+  function timestamp(n){
+    if(n === null) return 'unknown';
+    if(!Number.isSafeInteger(n) || n > 8640000000000) return 'precision unavailable';
+    return new Date(n * 1000).toISOString();
+  }
+  function capacity(used, max){
+    if(!Number.isSafeInteger(used) || !Number.isSafeInteger(max) || max <= 0 || used > max) return 'unknown';
+    return `${number(used)} / ${number(max)} (${(used / max * 100).toFixed(1)}%)`;
+  }
+  let lastGood = false;
+  let incompleteSeen = false;
+  function render(h){
+    const unsafe = JSON.stringify(h, (_, v) => typeof v === 'number' && !Number.isSafeInteger(v) ? 'UNSAFE' : v).includes('UNSAFE');
+    incompleteSeen = incompleteSeen || !h.accounting_complete || unsafe;
+    status.textContent = [
+      `Backend delivery status: ${h.status}.`,
+      `${number(h.missed_total)} not admitted (durable); ${number(h.missed_unpersisted)} volatile known misses; ${number(h.failed_total)} failed.`,
+      incompleteSeen ? 'Accounting incomplete — lower bound; total loss unknown.' : 'Accounting complete for this epoch.',
+      `Worker: ${h.worker_running ? 'running' : 'not running'}${h.counts_stale ? ' — Counts stale' : ''}. Observation continues.`
+    ].join(' ');
+    const lines = [
+      `${number(h.missed_total)} destination-items not admitted (durably recorded).`,
+      `Volatile known misses: ${number(h.missed_unpersisted)} — not included in the durable count; may be lost on restart.`,
+      incompleteSeen ? 'Accounting incomplete: known misses are a lower bound; total loss unknown.' : 'Accounting complete for this epoch.',
+      `Pending: ${number(h.pending)} · Retrying: ${number(h.retry_wait)} · Blocked: ${number(h.blocked)}`,
+      `Failed: ${number(h.failed_total)} · ACKed: ${number(h.acked_total)}`,
+      `Storage: ${h.storage_ok ? 'available' : 'degraded'} · Worker: ${h.worker_running ? 'running' : 'not running'}`,
+      `Coverage: ${h.coverage} · Tracking: ${h.tracking_complete ? 'complete' : 'incomplete'} · ${h.counts_stale ? 'Counts stale' : 'Counts current at health read'}`,
+      `Oldest pending age: ${h.oldest_pending_age_seconds === null ? 'unknown' : number(h.oldest_pending_age_seconds) + ' seconds'}`,
+      `Receipt capacity: ${capacity(h.capacity.used_receipts, h.capacity.max_receipts)}`,
+      `Payload capacity (bytes): ${capacity(h.capacity.used_payload_bytes, h.capacity.max_payload_bytes)}`,
+      `Delivery error: ${errorText(h.last_error)}`
+    ];
+    for(const [key, title] of [['teams','Teams'], ['misp','MISP']]){
+      const c = h.channels[key];
+      lines.push(`${title}: ${c.enabled ? 'enabled' : 'disabled'} · ${errorText(c.last_error)} · Pending: ${number(c.pending)} · Blocked: ${number(c.blocked)} · Last success: ${timestamp(c.last_success_at)}`);
+    }
+    const fragment = document.createDocumentFragment();
+    for(const line of lines){
+      const p = document.createElement('p');
+      p.textContent = line;
+      fragment.appendChild(p);
+    }
+    details.replaceChildren(fragment);
+    checked.textContent = 'Last successful health read: ' + new Date().toISOString();
+    lastGood = true;
+  }
+  async function readHealth(response, signal){
+    if(!response.ok || !response.body) throw new Error('Health unavailable');
+    const reader = response.body.getReader();
+    const cancel = () => { reader.cancel().catch(() => {}); };
+    signal.addEventListener('abort', cancel, {once:true});
+    let length = 0;
+    let text = '';
+    const decoder = new TextDecoder('utf-8', {fatal:true});
+    try {
+      if(signal.aborted) throw new Error('Health cancelled');
+      while(true){
+        const {done, value} = await reader.read();
+        if(signal.aborted) throw new Error('Health cancelled');
+        if(done) break;
+        length += value.byteLength;
+        if(length > 4096) throw new Error('Health too large');
+        text += decoder.decode(value, {stream:true});
+      }
+      text += decoder.decode();
+      // Check integer wire tokens before JSON.parse can round them. Strings are
+      // consumed whole, so numbers inside strings are never treated as counters.
+      for(const token of text.matchAll(/"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g)){
+        if(token[0].startsWith('"')) continue;
+        if(!/^(0|[1-9]\d*)$/.test(token[0]) || BigInt(token[0]) > 9223372036854775807n) throw new Error('Invalid counter');
+      }
+      return validate(JSON.parse(text));
+    } finally {
+      signal.removeEventListener('abort', cancel);
+      cancel();
+      reader.releaseLock();
+    }
+  }
+  const intervalMs = 15000;
+  const deadlineMs = 10000;
+  let nextAttempt = 0;
+  let timer = null;
+  let active = null;
+  let pageStopped = false;
+  let permitted = true;
+  function schedule(){
+    clearTimeout(timer);
+    if(!pageStopped && !document.hidden && permitted && !active){
+      timer = setTimeout(poll, Math.max(0, nextAttempt - performance.now()));
+    }
+  }
+  async function poll(){
+    if(pageStopped || document.hidden || !permitted || active) return;
+    if(performance.now() < nextAttempt) return schedule();
+    const controller = new AbortController();
+    active = controller;
+    nextAttempt = performance.now() + intervalMs;
+    let abortListener;
+    const aborted = new Promise((_, reject) => {
+      abortListener = () => reject(new Error('Health read cancelled'));
+      controller.signal.addEventListener('abort', abortListener, {once:true});
+    });
+    const deadline = setTimeout(() => controller.abort(), deadlineMs);
+    const work = async () => {
+      const user = await window.TraceAuth.ready;
+      if(controller.signal.aborted) return;
+      if(!user || !['admin', 'operator'].includes(user.role)){
+        permitted = false;
+        panel.hidden = true;
+        return;
+      }
+      panel.hidden = false;
+      // Auth can consume most of the deadline: pace actual requests too.
+      nextAttempt = performance.now() + intervalMs;
+      const response = await fetch('/delivery-health', {cache:'no-store', signal:controller.signal});
+      const health = await readHealth(response, controller.signal);
+      if(!controller.signal.aborted) render(health);
+    };
+    try {
+      await Promise.race([work(), aborted]);
+    } catch (error) {
+      // TraceAuth deliberately exposes only this fixed local permission error,
+      // never the server's body. Stop after revocation rather than spamming 403.
+      if(error && error.message === 'Permission denied for this action.'){
+        permitted = false;
+        panel.hidden = true;
+        details.replaceChildren();
+        checked.textContent = 'Last successful health read: unknown';
+        lastGood = false;
+      }
+      status.textContent = lastGood ? 'Delivery health unavailable — stale last successful snapshot.' : 'Delivery health unavailable — unknown.';
+    } finally {
+      clearTimeout(deadline);
+      controller.signal.removeEventListener('abort', abortListener);
+      if(active === controller) active = null;
+      // Pace from completion/cancellation as well, including auth-wrapper time.
+      nextAttempt = Math.max(nextAttempt, performance.now() + intervalMs);
+      schedule();
+    }
+  }
+  function pause(){
+    clearTimeout(timer);
+    if(active) active.abort();
+    if(lastGood) status.textContent = 'Delivery health paused — stale last successful snapshot.';
+  }
+  // Join the console's ordinary load lifecycle. Installing the script alone
+  // (for an embedded view or a fixture) must not start unrelated background I/O.
+  window.addEventListener('load', () => {
+    document.addEventListener('visibilitychange', () => document.hidden ? pause() : schedule());
+    window.addEventListener('pagehide', () => { pageStopped = true; pause(); });
+    window.addEventListener('pageshow', () => { pageStopped = false; schedule(); });
+    schedule();
+  });
+})();
+
 const uiOverview = {
   configured: 0,
   statusRows: 0,
@@ -2536,12 +2735,13 @@ function touchOverviewTs(){
 function setAlertSettingsStatus(message, kind){
   const el = document.getElementById('alertSettingsStatus');
   if(!el) return;
+  clearTimeout(el._statusTimer);
   el.textContent = message || '';
   el.classList.remove('ok', 'err');
   if(kind === 'ok') el.classList.add('ok');
   if(kind === 'err') el.classList.add('err');
-  if(message){
-    setTimeout(()=>{
+  if(message && kind !== 'warn'){
+    el._statusTimer = setTimeout(()=>{
       el.textContent = '';
       el.classList.remove('ok', 'err');
     }, 2800);
@@ -2561,7 +2761,7 @@ async function loadAlertSettings(){
     document.getElementById('misp_key_front').value = alerts.api_key || '';
     document.getElementById('push_event_id_front').value = alerts.push_event_id || '';
     document.getElementById('vt_api_key_front').value = alerts.vt_api_key || '';
-    const secretIds = {teams_webhook:'teams_webhook_front', api_key:'misp_key_front', vt_api_key:'vt_api_key_front', misp_url:'misp_url_front'};
+    const secretIds = {teams_webhook:'teams_webhook_front', api_key:'misp_key_front', vt_api_key:'vt_api_key_front', misp_url:'misp_url_front', misp_ca_bundle:'misp_ca_bundle_front'};
     for(const [key, id] of Object.entries(secretIds)) secretInput(id, key, !!(alerts.configured || {})[key], 'alerts');
     const removeOnAbsentEl = document.getElementById('misp_remove_on_absent_front');
     if(removeOnAbsentEl){
@@ -2584,12 +2784,23 @@ async function loadAlertSettings(){
 }
 
 async function saveAlertSettings(){
+  const caInput = document.getElementById('misp_ca_bundle_front');
+  const caPath = caInput.value.trim();
+  const clearFields = selectedSecretClears('alerts');
+  // The server checks existence and PEM contents; never reflect a private path.
+  if(caPath && !clearFields.includes('misp_ca_bundle') &&
+     (!(/^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(caPath)) || /[\x00-\x1f\x7f]/.test(caPath))){
+    setAlertSettingsStatus('Use an absolute PEM path on the server.', 'warn');
+    caInput.focus();
+    return;
+  }
   const vtTtlEl = document.getElementById('vt_cache_ttl_days_front');
   const currentTtl = parseBoundedInt((vtTtlEl && vtTtlEl.dataset ? vtTtlEl.dataset.current : ''), 1, 1, 3650);
   const vtTtlDays = parseBoundedInt((vtTtlEl || {}).value, currentTtl, 1, 3650);
   const alerts = {
     teams_webhook: document.getElementById('teams_webhook_front').value.trim(),
     misp_url: document.getElementById('misp_url_front').value.trim(),
+    misp_ca_bundle: clearFields.includes('misp_ca_bundle') ? '' : caPath,
     api_key: document.getElementById('misp_key_front').value.trim(),
     push_event_id: document.getElementById('push_event_id_front').value.trim(),
     misp_remove_on_absent: !!((document.getElementById('misp_remove_on_absent_front') || {}).checked),
@@ -2600,7 +2811,7 @@ async function saveAlertSettings(){
     const r = await fetch('/settings', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({alerts, revision: alertRevision, clear_fields: selectedSecretClears('alerts')})
+      body: JSON.stringify({alerts, revision: alertRevision, clear_fields: clearFields})
     });
     const j = await r.json();
     if(!(r.ok && j && j.status === 'ok')){
@@ -2612,7 +2823,8 @@ async function saveAlertSettings(){
     }
     alertRevision = j.revision;
     await loadAlertSettings();
-    setAlertSettingsStatus('Saved', 'ok');
+    const warnings = Array.isArray(j.warnings) ? j.warnings : [];
+    setAlertSettingsStatus(warnings.length ? 'Saved with warnings: '+warnings.join(', ') : 'Saved', warnings.length ? 'warn' : 'ok');
   }catch(e){
     setAlertSettingsStatus('Save failed', 'err');
   }
@@ -2625,23 +2837,43 @@ window.ENS_DECODERS = [];
 window.CUSTOM_DECODERS = [];
 window.CUSTOM_A_DECODERS = [];
 
+let decoderRevision = null;
+function applyDecoderCatalog(j){
+  if(!j || !Number.isInteger(j.revision)) throw new Error('Invalid decoder catalog revision');
+  decoderRevision = j.revision;
+  window.DECODERS = Array.isArray(j.decoders) ? j.decoders : [];
+  window.CUSTOM_DECODERS = Array.isArray(j.custom) ? j.custom : [];
+  window.CUSTOM_A_DECODERS = Array.isArray(j.custom_a) ? j.custom_a : [];
+  if ((!window.CUSTOM_DECODERS.length && !window.CUSTOM_A_DECODERS.length) && Array.isArray(j.custom_all)) {
+    window.CUSTOM_DECODERS = j.custom_all.filter(x => String((x && x.decoder_type) || 'TXT').toUpperCase() === 'TXT');
+    window.CUSTOM_A_DECODERS = j.custom_all.filter(x => String((x && x.decoder_type) || '').toUpperCase() === 'A');
+  }
+  window.A_DECODERS = Array.isArray(j.a_decoders) ? j.a_decoders : [];
+  window.ENS_DECODERS = Array.isArray(j.ens_decoders) ? j.ens_decoders : [];
+}
+
 async function loadDecoders(){
-  try{
-    const r = await fetch('/decoders');
-    if(!r.ok) return;
-    const j = await r.json();
-    if(j){
-      window.DECODERS = Array.isArray(j.decoders) ? j.decoders : [];
-      window.CUSTOM_DECODERS = Array.isArray(j.custom) ? j.custom : [];
-      window.CUSTOM_A_DECODERS = Array.isArray(j.custom_a) ? j.custom_a : [];
-      if ((!window.CUSTOM_DECODERS.length && !window.CUSTOM_A_DECODERS.length) && Array.isArray(j.custom_all)) {
-        window.CUSTOM_DECODERS = j.custom_all.filter(x => String((x && x.decoder_type) || 'TXT').toUpperCase() === 'TXT');
-        window.CUSTOM_A_DECODERS = j.custom_all.filter(x => String((x && x.decoder_type) || '').toUpperCase() === 'A');
-      }
-      window.A_DECODERS = Array.isArray(j.a_decoders) ? j.a_decoders : [];
-      window.ENS_DECODERS = Array.isArray(j.ens_decoders) ? j.ens_decoders : [];
-    }
-  }catch(e){ /* ignore */ }
+  const r = await fetch('/decoders');
+  if(!r.ok) throw new Error('Decoder catalog load failed');
+  applyDecoderCatalog(await r.json());
+}
+
+function commitWarningText(result){
+  return Array.isArray(result.warnings) && result.warnings.length
+    ? ' — committed with warnings: '+result.warnings.join(', ') : '';
+}
+
+async function mutateDecoder(method, data){
+  const r = await fetch('/decoders/custom', {method, headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({...data, revision: decoderRevision})});
+  const j = await r.json();
+  if(r.status === 409){
+    document.getElementById('customPreviewResult').textContent = 'Conflict: configuration changed. Draft retained. Reload catalog and review before retrying.';
+    return null;
+  }
+  if(!r.ok || !j || j.status !== 'ok') throw new Error(j && j.error || 'Decoder save failed');
+  applyDecoderCatalog(j.catalog);
+  return j;
 }
 
 function filterDomainSettings(){
@@ -2934,10 +3166,8 @@ function showSettingsTab(tab){
     btnDomains.classList.remove('active');
     btnCustom.classList.add('active');
     btnAlerts.classList.remove('active');
-    // Ensure latest custom decoder list is visible when entering the tab.
-    if (typeof window.refreshCustomDecoders === 'function') {
-      window.refreshCustomDecoders();
-    }
+    // The catalog revision belongs to the loaded draft, not a tab switch.
+    // Refresh only at startup or through the explicit reload/review action.
   } else if(tab === 'alerts'){
     dom.style.display = 'none';
     custom.style.display = 'none';
@@ -3111,7 +3341,7 @@ document.getElementById('save').onclick = async ()=>{
     const j = await r.json();
     if(!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
     applyDomainConfig({...j.config, revision: j.revision});
-    status.textContent = 'Settings saved';
+    status.textContent = 'Settings saved'+commitWarningText(j);
     log('Settings saved');
   }catch(e){
     status.textContent = `Save failed: ${e.message}`;
@@ -3971,20 +4201,16 @@ window.addEventListener('load', ()=>{
       const del = document.createElement('button'); del.textContent='Delete'; del.onclick = async ()=>{
         if(!confirm(`Delete decoder ${c.name} [${dtype}] ?`)) return;
         try{
-          const r = await fetch('/decoders/custom',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:c.name, decoder_type:dtype})});
-          const j = await r.json();
-          if(j && j.status === 'ok'){ document.getElementById('customPreviewResult').textContent = `Deleted ${c.name} [${dtype}]`; await loadDecoders(); renderCustomList(); loadCfg(); }
-          else { document.getElementById('customPreviewResult').textContent = 'Delete failed: '+JSON.stringify(j); }
+          const j = await mutateDecoder('DELETE', {name:c.name, decoder_type:dtype});
+          if(j){ document.getElementById('customPreviewResult').textContent = `Deleted ${c.name} [${dtype}]${commitWarningText(j)}`; renderCustomList(); }
         }catch(e){ document.getElementById('customPreviewResult').textContent = 'Delete error: '+e; }
       };
       const upd = document.createElement('button'); upd.textContent='Update'; upd.onclick = async ()=>{
         const stepsRaw = document.getElementById('custom_steps').value.trim(); let steps;
         try{ steps = JSON.parse(stepsRaw); }catch(e){ alert('Invalid JSON: '+e); return; }
         try{
-          const r = await fetch('/decoders/custom',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:c.name,steps:steps, decoder_type:dtype})});
-          const j = await r.json();
-          if(j && j.status === 'ok'){ document.getElementById('customPreviewResult').textContent = `Updated ${c.name} [${dtype}]`; await loadDecoders(); renderCustomList(); loadCfg(); document.getElementById('custom_name').disabled = false; }
-          else { document.getElementById('customPreviewResult').textContent = 'Update failed: '+JSON.stringify(j); }
+          const j = await mutateDecoder('PUT', {name:c.name, steps, decoder_type:dtype});
+          if(j){ document.getElementById('customPreviewResult').textContent = `Updated ${c.name} [${dtype}]${commitWarningText(j)}`; renderCustomList(); document.getElementById('custom_name').disabled = false; }
         }catch(e){ document.getElementById('customPreviewResult').textContent = 'Update error: '+e; }
       };
       btnRow.appendChild(edit); btnRow.appendChild(upd); btnRow.appendChild(del); row.appendChild(btnRow);
@@ -4000,6 +4226,15 @@ window.addEventListener('load', ()=>{
     renderCustomList();
   }
   window.refreshCustomDecoders = refreshCustomDecoders;
+  document.getElementById('reloadCustom').onclick = async ()=>{
+    try{
+      await loadDecoders();
+      renderCustomList();
+      document.getElementById('customPreviewResult').textContent = 'Catalog reloaded; draft retained — review it before saving.';
+    }catch(e){
+      document.getElementById('customPreviewResult').textContent = 'Reload failed; draft retained: '+e;
+    }
+  };
 
   document.getElementById('previewCustom').onclick = async ()=>{
     const stepsRaw = document.getElementById('custom_steps').value.trim();
@@ -4022,16 +4257,10 @@ window.addEventListener('load', ()=>{
     let steps;
     try{ steps = JSON.parse(stepsRaw); }catch(e){ alert('Invalid JSON steps: '+e); return; }
     try{
-      const r = await fetch('/decoders/custom',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name: name, steps: steps, decoder_type: decoderType})});
-      const j = await r.json();
-      if(j && j.status === 'ok'){
-        document.getElementById('customPreviewResult').textContent = `Registered: ${name} [${decoderType}]`;
-        // reload decoders and UI
-        await loadDecoders();
+      const j = await mutateDecoder('POST', {name, steps, decoder_type:decoderType});
+      if(j){
+        document.getElementById('customPreviewResult').textContent = `Registered: ${name} [${decoderType}]${commitWarningText(j)}`;
         renderCustomList();
-        loadCfg();
-      } else {
-        document.getElementById('customPreviewResult').textContent = 'Register failed: '+JSON.stringify(j);
       }
     }catch(e){ document.getElementById('customPreviewResult').textContent = 'Register error: '+e; }
   };

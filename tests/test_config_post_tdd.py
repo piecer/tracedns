@@ -285,7 +285,7 @@ class TestConfigPostSaveError(_ConfigPostBase):
         )
 
         self.assertEqual(out["code"], 500, out)
-        self.assertEqual(state["shared_config"], self._base_shared_config)
+        self.assertEqual({k: v for k, v in state["shared_config"].items() if k != "_config_service"}, self._base_shared_config)
         self.assertIn("keep.example", current_results)
         self.assertIn("keep.example", history)
         self.assertEqual(state["purge_calls"], [])

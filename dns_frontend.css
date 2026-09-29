@@ -38,6 +38,24 @@ body{
   box-shadow:var(--shadow-xl);
   overflow:hidden;
 }
+.delivery-health{
+  margin:16px clamp(12px, 2.2vw, 26px);
+  padding:16px;
+  border:1px solid var(--line);
+  border-left:4px solid var(--accent);
+  border-radius:var(--radius-md);
+  background:var(--surface-soft);
+  overflow-wrap:anywhere;
+  min-width:0;
+}
+.delivery-health[hidden]{display:none;}
+.delivery-health h2{font-size:1.1rem;margin-bottom:8px;}
+.delivery-health p{margin:6px 0;line-height:1.45;}
+#deliveryStatus{font-weight:700;}
+#deliveryDetails{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 20px;}
+#deliveryDetails p:nth-child(-n+3){grid-column:1 / -1;}
+#deliveryChecked,.delivery-health .hint{font-size:.85rem;color:var(--muted);}
+@media(max-width:600px){#deliveryDetails{grid-template-columns:minmax(0,1fr);}}
 header{
   position:relative;
   overflow:hidden;

@@ -3287,7 +3287,7 @@
                       "type": "integer"
                     },
                     "revision": {
-                      "description": "Latest GET /config or /settings revision; stale/missing => 409.",
+                      "description": "Revision of the loaded /config, /settings or /decoders snapshot; one global CAS. Missing, boolean, noninteger or stale => 409.",
                       "minimum": 0,
                       "type": "integer"
                     },
@@ -3553,7 +3553,7 @@
                     "type": "integer"
                   },
                   "revision": {
-                    "description": "Latest GET /config or /settings revision; stale/missing => 409.",
+                    "description": "Revision of the loaded /config, /settings or /decoders snapshot; one global CAS. Missing, boolean, noninteger or stale => 409.",
                     "minimum": 0,
                     "type": "integer"
                   },
@@ -3586,18 +3586,26 @@
                       "type": "object"
                     },
                     "revision": {
-                      "description": "Latest GET /config or /settings revision; stale/missing => 409.",
+                      "description": "Revision of the loaded /config, /settings or /decoders snapshot; one global CAS. Missing, boolean, noninteger or stale => 409.",
                       "minimum": 0,
                       "type": "integer"
                     },
                     "status": {
                       "type": "string"
+                    },
+                    "warnings": {
+                      "description": "Sanitized post-commit application/cleanup warnings. The revision is committed; these are not rollback or retry instructions.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
                     }
                   },
                   "required": [
                     "status",
                     "revision",
-                    "config"
+                    "config",
+                    "warnings"
                   ],
                   "type": "object"
                 }
@@ -3854,7 +3862,7 @@
                     "type": "integer"
                   },
                   "revision": {
-                    "description": "Latest GET /config or /settings revision; stale/missing => 409.",
+                    "description": "Revision of the loaded /config, /settings or /decoders snapshot; one global CAS. Missing, boolean, noninteger or stale => 409.",
                     "minimum": 0,
                     "type": "integer"
                   },
@@ -3887,18 +3895,26 @@
                       "type": "object"
                     },
                     "revision": {
-                      "description": "Latest GET /config or /settings revision; stale/missing => 409.",
+                      "description": "Revision of the loaded /config, /settings or /decoders snapshot; one global CAS. Missing, boolean, noninteger or stale => 409.",
                       "minimum": 0,
                       "type": "integer"
                     },
                     "status": {
                       "type": "string"
+                    },
+                    "warnings": {
+                      "description": "Sanitized post-commit application/cleanup warnings. The revision is committed; these are not rollback or retry instructions.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
                     }
                   },
                   "required": [
                     "status",
                     "revision",
-                    "config"
+                    "config",
+                    "warnings"
                   ],
                   "type": "object"
                 }
@@ -4032,7 +4048,7 @@
     },
     "/decoders": {
       "get": {
-        "description": "Read built-in decoder names and registered custom definitions.",
+        "description": "Read a consistent decoder catalog with built-in names, custom definitions, and the global configuration revision.",
         "operationId": "get_decoders",
         "responses": {
           "200": {
@@ -4040,6 +4056,61 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
+                  "properties": {
+                    "a_decoders": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "custom": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "custom_a": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "custom_all": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "decoders": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "ens_decoders": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "revision": {
+                      "description": "Revision of the loaded /config, /settings or /decoders snapshot; one global CAS. Missing, boolean, noninteger or stale => 409.",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "revision",
+                    "decoders",
+                    "a_decoders",
+                    "ens_decoders",
+                    "custom",
+                    "custom_a",
+                    "custom_all"
+                  ],
                   "type": "object"
                 }
               }
@@ -4167,7 +4238,7 @@
     },
     "/decoders/custom": {
       "delete": {
-        "description": "GET returns allowed_ops/decoder_types, not registered definitions (use /decoders). Admin POST creates, PUT upserts, DELETE removes by name/decoder_type. These legacy writes do not use config revision and persistence failures may not be surfaced. PUT can unregister the old runtime decoder before replacement fails. Read back /decoders; do not claim durable persistence without separate restart verification.",
+        "description": "GET returns DSL capabilities, not the catalog. Admin POST creates (name conflicts fail), PUT upserts, DELETE removes by name/decoder_type. All mutations require the revision of the loaded catalog, sharing config/settings CAS. Referenced decoder deletion fails 400. Validate and compile before atomic file replace; failure leaves the previous definition callable. Success acknowledges the committed revision and catalog, plus sanitized post-commit warnings. Do not automatically retry 409 or reinterpret warnings as rollback.",
         "operationId": "delete_decoders_custom",
         "parameters": [
           {
@@ -4195,9 +4266,15 @@
                   },
                   "name": {
                     "type": "string"
+                  },
+                  "revision": {
+                    "description": "Revision of the loaded /config, /settings or /decoders snapshot; one global CAS. Missing, boolean, noninteger or stale => 409.",
+                    "minimum": 0,
+                    "type": "integer"
                   }
                 },
                 "required": [
+                  "revision",
                   "name"
                 ],
                 "type": "object"
@@ -4212,6 +4289,104 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
+                  "properties": {
+                    "catalog": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "a_decoders": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "custom": {
+                          "items": {
+                            "additionalProperties": true,
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "custom_a": {
+                          "items": {
+                            "additionalProperties": true,
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "custom_all": {
+                          "items": {
+                            "additionalProperties": true,
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "decoders": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "ens_decoders": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "revision": {
+                          "description": "Revision of the loaded /config, /settings or /decoders snapshot; one global CAS. Missing, boolean, noninteger or stale => 409.",
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "revision",
+                        "decoders",
+                        "a_decoders",
+                        "ens_decoders",
+                        "custom",
+                        "custom_a",
+                        "custom_all"
+                      ],
+                      "type": "object"
+                    },
+                    "decoder_type": {
+                      "enum": [
+                        "TXT",
+                        "A"
+                      ]
+                    },
+                    "registered": {
+                      "type": "string"
+                    },
+                    "removed": {
+                      "type": "string"
+                    },
+                    "revision": {
+                      "description": "Revision of the loaded /config, /settings or /decoders snapshot; one global CAS. Missing, boolean, noninteger or stale => 409.",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "updated": {
+                      "type": "string"
+                    },
+                    "warnings": {
+                      "description": "Sanitized post-commit application/cleanup warnings. The revision is committed; these are not rollback or retry instructions.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "revision",
+                    "catalog",
+                    "warnings",
+                    "decoder_type"
+                  ],
                   "type": "object"
                 }
               }
@@ -4341,7 +4516,7 @@
         ]
       },
       "get": {
-        "description": "GET returns allowed_ops/decoder_types, not registered definitions (use /decoders). Admin POST creates, PUT upserts, DELETE removes by name/decoder_type. These legacy writes do not use config revision and persistence failures may not be surfaced. PUT can unregister the old runtime decoder before replacement fails. Read back /decoders; do not claim durable persistence without separate restart verification.",
+        "description": "GET returns DSL capabilities, not the catalog. Admin POST creates (name conflicts fail), PUT upserts, DELETE removes by name/decoder_type. All mutations require the revision of the loaded catalog, sharing config/settings CAS. Referenced decoder deletion fails 400. Validate and compile before atomic file replace; failure leaves the previous definition callable. Success acknowledges the committed revision and catalog, plus sanitized post-commit warnings. Do not automatically retry 409 or reinterpret warnings as rollback.",
         "operationId": "get_decoders_custom",
         "responses": {
           "200": {
@@ -4474,7 +4649,7 @@
         ]
       },
       "post": {
-        "description": "GET returns allowed_ops/decoder_types, not registered definitions (use /decoders). Admin POST creates, PUT upserts, DELETE removes by name/decoder_type. These legacy writes do not use config revision and persistence failures may not be surfaced. PUT can unregister the old runtime decoder before replacement fails. Read back /decoders; do not claim durable persistence without separate restart verification.",
+        "description": "GET returns DSL capabilities, not the catalog. Admin POST creates (name conflicts fail), PUT upserts, DELETE removes by name/decoder_type. All mutations require the revision of the loaded catalog, sharing config/settings CAS. Referenced decoder deletion fails 400. Validate and compile before atomic file replace; failure leaves the previous definition callable. Success acknowledges the committed revision and catalog, plus sanitized post-commit warnings. Do not automatically retry 409 or reinterpret warnings as rollback.",
         "operationId": "post_decoders_custom",
         "parameters": [
           {
@@ -4503,6 +4678,11 @@
                   "name": {
                     "type": "string"
                   },
+                  "revision": {
+                    "description": "Revision of the loaded /config, /settings or /decoders snapshot; one global CAS. Missing, boolean, noninteger or stale => 409.",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
                   "steps": {
                     "items": {
                       "additionalProperties": true,
@@ -4512,6 +4692,7 @@
                   }
                 },
                 "required": [
+                  "revision",
                   "name",
                   "steps"
                 ],
@@ -4527,6 +4708,104 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
+                  "properties": {
+                    "catalog": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "a_decoders": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "custom": {
+                          "items": {
+                            "additionalProperties": true,
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "custom_a": {
+                          "items": {
+                            "additionalProperties": true,
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "custom_all": {
+                          "items": {
+                            "additionalProperties": true,
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "decoders": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "ens_decoders": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "revision": {
+                          "description": "Revision of the loaded /config, /settings or /decoders snapshot; one global CAS. Missing, boolean, noninteger or stale => 409.",
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "revision",
+                        "decoders",
+                        "a_decoders",
+                        "ens_decoders",
+                        "custom",
+                        "custom_a",
+                        "custom_all"
+                      ],
+                      "type": "object"
+                    },
+                    "decoder_type": {
+                      "enum": [
+                        "TXT",
+                        "A"
+                      ]
+                    },
+                    "registered": {
+                      "type": "string"
+                    },
+                    "removed": {
+                      "type": "string"
+                    },
+                    "revision": {
+                      "description": "Revision of the loaded /config, /settings or /decoders snapshot; one global CAS. Missing, boolean, noninteger or stale => 409.",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "updated": {
+                      "type": "string"
+                    },
+                    "warnings": {
+                      "description": "Sanitized post-commit application/cleanup warnings. The revision is committed; these are not rollback or retry instructions.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "revision",
+                    "catalog",
+                    "warnings",
+                    "decoder_type"
+                  ],
                   "type": "object"
                 }
               }
@@ -4656,7 +4935,7 @@
         ]
       },
       "put": {
-        "description": "GET returns allowed_ops/decoder_types, not registered definitions (use /decoders). Admin POST creates, PUT upserts, DELETE removes by name/decoder_type. These legacy writes do not use config revision and persistence failures may not be surfaced. PUT can unregister the old runtime decoder before replacement fails. Read back /decoders; do not claim durable persistence without separate restart verification.",
+        "description": "GET returns DSL capabilities, not the catalog. Admin POST creates (name conflicts fail), PUT upserts, DELETE removes by name/decoder_type. All mutations require the revision of the loaded catalog, sharing config/settings CAS. Referenced decoder deletion fails 400. Validate and compile before atomic file replace; failure leaves the previous definition callable. Success acknowledges the committed revision and catalog, plus sanitized post-commit warnings. Do not automatically retry 409 or reinterpret warnings as rollback.",
         "operationId": "put_decoders_custom",
         "parameters": [
           {
@@ -4685,6 +4964,11 @@
                   "name": {
                     "type": "string"
                   },
+                  "revision": {
+                    "description": "Revision of the loaded /config, /settings or /decoders snapshot; one global CAS. Missing, boolean, noninteger or stale => 409.",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
                   "steps": {
                     "items": {
                       "additionalProperties": true,
@@ -4694,6 +4978,7 @@
                   }
                 },
                 "required": [
+                  "revision",
                   "name",
                   "steps"
                 ],
@@ -4709,6 +4994,104 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
+                  "properties": {
+                    "catalog": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "a_decoders": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "custom": {
+                          "items": {
+                            "additionalProperties": true,
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "custom_a": {
+                          "items": {
+                            "additionalProperties": true,
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "custom_all": {
+                          "items": {
+                            "additionalProperties": true,
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "decoders": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "ens_decoders": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "revision": {
+                          "description": "Revision of the loaded /config, /settings or /decoders snapshot; one global CAS. Missing, boolean, noninteger or stale => 409.",
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "revision",
+                        "decoders",
+                        "a_decoders",
+                        "ens_decoders",
+                        "custom",
+                        "custom_a",
+                        "custom_all"
+                      ],
+                      "type": "object"
+                    },
+                    "decoder_type": {
+                      "enum": [
+                        "TXT",
+                        "A"
+                      ]
+                    },
+                    "registered": {
+                      "type": "string"
+                    },
+                    "removed": {
+                      "type": "string"
+                    },
+                    "revision": {
+                      "description": "Revision of the loaded /config, /settings or /decoders snapshot; one global CAS. Missing, boolean, noninteger or stale => 409.",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "updated": {
+                      "type": "string"
+                    },
+                    "warnings": {
+                      "description": "Sanitized post-commit application/cleanup warnings. The revision is committed; these are not rollback or retry instructions.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "revision",
+                    "catalog",
+                    "warnings",
+                    "decoder_type"
+                  ],
                   "type": "object"
                 }
               }
@@ -5017,6 +5400,486 @@
         ],
         "summary": "POST /decoders/custom/preview",
         "x-roles": [
+          "admin"
+        ]
+      }
+    },
+    "/delivery-health": {
+      "get": {
+        "description": "Admin/operator-only cached local delivery health, at most 4096 bytes. Observation policy is continue. A 200 response may describe degraded storage, missed notifications or incomplete accounting; it is not a delivery ACK. No provider requests. 503 means the health owner is absent or its cache is invalid. missed_total counts durable destination-item obligations never admitted; missed_unpersisted is the known volatile increment. Incomplete accounting is a lower bound, not zero loss.",
+        "operationId": "get_delivery_health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "accounting_complete": {
+                      "type": "boolean"
+                    },
+                    "acked_total": {
+                      "maximum": 9223372036854775807,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "blocked": {
+                      "maximum": 9223372036854775807,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "capacity": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "max_payload_bytes": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "max_receipts": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "used_payload_bytes": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "used_receipts": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "used_receipts",
+                        "max_receipts",
+                        "used_payload_bytes",
+                        "max_payload_bytes"
+                      ],
+                      "type": "object"
+                    },
+                    "channels": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "misp": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "blocked": {
+                              "maximum": 9223372036854775807,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "enabled": {
+                              "type": "boolean"
+                            },
+                            "last_error": {
+                              "enum": [
+                                null,
+                                "adapter_unapplied",
+                                "attempts_exhausted",
+                                "attribute_limit",
+                                "client_unavailable",
+                                "configuration_unavailable",
+                                "delivery_capacity",
+                                "delivery_storage",
+                                "delivery_unknown",
+                                "destination_disabled",
+                                "destination_invalid",
+                                "history_persistence",
+                                "invalid_payload",
+                                "old_binding_blocked",
+                                "payload_invalid",
+                                "payload_limit",
+                                "provider_auth",
+                                "provider_http",
+                                "provider_protocol",
+                                "provider_rate_limit",
+                                "provider_response",
+                                "provider_timeout",
+                                "provider_tls",
+                                "provider_transient",
+                                "provider_transport",
+                                "provider_unavailable",
+                                "provider_work_limit",
+                                "receipt_persistence",
+                                "recovery_gap",
+                                "removal_disabled",
+                                "response_limit",
+                                "sighting_absent",
+                                "tls_config",
+                                "tls_error",
+                                "tracking_overflow",
+                                "transport_error"
+                              ],
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "last_success_at": {
+                              "maximum": 9223372036854775807,
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "pending": {
+                              "maximum": 9223372036854775807,
+                              "minimum": 0,
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "enabled",
+                            "pending",
+                            "blocked",
+                            "last_success_at",
+                            "last_error"
+                          ],
+                          "type": "object"
+                        },
+                        "teams": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "blocked": {
+                              "maximum": 9223372036854775807,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "enabled": {
+                              "type": "boolean"
+                            },
+                            "last_error": {
+                              "enum": [
+                                null,
+                                "adapter_unapplied",
+                                "attempts_exhausted",
+                                "attribute_limit",
+                                "client_unavailable",
+                                "configuration_unavailable",
+                                "delivery_capacity",
+                                "delivery_storage",
+                                "delivery_unknown",
+                                "destination_disabled",
+                                "destination_invalid",
+                                "history_persistence",
+                                "invalid_payload",
+                                "old_binding_blocked",
+                                "payload_invalid",
+                                "payload_limit",
+                                "provider_auth",
+                                "provider_http",
+                                "provider_protocol",
+                                "provider_rate_limit",
+                                "provider_response",
+                                "provider_timeout",
+                                "provider_tls",
+                                "provider_transient",
+                                "provider_transport",
+                                "provider_unavailable",
+                                "provider_work_limit",
+                                "receipt_persistence",
+                                "recovery_gap",
+                                "removal_disabled",
+                                "response_limit",
+                                "sighting_absent",
+                                "tls_config",
+                                "tls_error",
+                                "tracking_overflow",
+                                "transport_error"
+                              ],
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "last_success_at": {
+                              "maximum": 9223372036854775807,
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "pending": {
+                              "maximum": 9223372036854775807,
+                              "minimum": 0,
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "enabled",
+                            "pending",
+                            "blocked",
+                            "last_success_at",
+                            "last_error"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "teams",
+                        "misp"
+                      ],
+                      "type": "object"
+                    },
+                    "counts_stale": {
+                      "type": "boolean"
+                    },
+                    "coverage": {
+                      "enum": [
+                        "covered",
+                        "gap",
+                        "rebaselining"
+                      ],
+                      "type": "string"
+                    },
+                    "failed_total": {
+                      "maximum": 9223372036854775807,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "last_error": {
+                      "enum": [
+                        null,
+                        "adapter_unapplied",
+                        "attempts_exhausted",
+                        "attribute_limit",
+                        "client_unavailable",
+                        "configuration_unavailable",
+                        "delivery_capacity",
+                        "delivery_storage",
+                        "delivery_unknown",
+                        "destination_disabled",
+                        "destination_invalid",
+                        "history_persistence",
+                        "invalid_payload",
+                        "old_binding_blocked",
+                        "payload_invalid",
+                        "payload_limit",
+                        "provider_auth",
+                        "provider_http",
+                        "provider_protocol",
+                        "provider_rate_limit",
+                        "provider_response",
+                        "provider_timeout",
+                        "provider_tls",
+                        "provider_transient",
+                        "provider_transport",
+                        "provider_unavailable",
+                        "provider_work_limit",
+                        "receipt_persistence",
+                        "recovery_gap",
+                        "removal_disabled",
+                        "response_limit",
+                        "sighting_absent",
+                        "tls_config",
+                        "tls_error",
+                        "tracking_overflow",
+                        "transport_error"
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "missed_total": {
+                      "maximum": 9223372036854775807,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "missed_unpersisted": {
+                      "maximum": 9223372036854775807,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "observation_policy": {
+                      "enum": [
+                        "continue"
+                      ],
+                      "type": "string"
+                    },
+                    "oldest_pending_age_seconds": {
+                      "maximum": 9223372036854775807,
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "pending": {
+                      "maximum": 9223372036854775807,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "retry_wait": {
+                      "maximum": 9223372036854775807,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "status": {
+                      "enum": [
+                        "disabled",
+                        "ok",
+                        "degraded",
+                        "blocked"
+                      ],
+                      "type": "string"
+                    },
+                    "storage_ok": {
+                      "type": "boolean"
+                    },
+                    "tracking_complete": {
+                      "type": "boolean"
+                    },
+                    "worker_running": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "observation_policy",
+                    "storage_ok",
+                    "worker_running",
+                    "coverage",
+                    "accounting_complete",
+                    "missed_total",
+                    "missed_unpersisted",
+                    "failed_total",
+                    "acked_total",
+                    "pending",
+                    "retry_wait",
+                    "blocked",
+                    "oldest_pending_age_seconds",
+                    "capacity",
+                    "channels",
+                    "tracking_complete",
+                    "counts_stale",
+                    "last_error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authentication required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Role, CSRF, origin, host or password-change restriction"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unknown route/resource or expired/inaccessible job"
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Method not allowed"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Revision conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Body too large"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Login or queue capacity limit"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Service/audit unavailable; worker saturation may return an empty body"
+          }
+        },
+        "summary": "GET /delivery-health",
+        "x-roles": [
+          "operator",
           "admin"
         ]
       }
@@ -8362,11 +9225,11 @@
                     "type": "array"
                   },
                   "servers": {
+                    "description": "Configured DNS resolver subset. May be empty for ENS/SNS targets with configured chain providers; DNS targets require at least one configured resolver.",
                     "items": {
                       "type": "string"
                     },
                     "maxItems": 64,
-                    "minItems": 1,
                     "type": "array"
                   }
                 },
@@ -8830,7 +9693,7 @@
                   "additionalProperties": true,
                   "properties": {
                     "revision": {
-                      "description": "Latest GET /config or /settings revision; stale/missing => 409.",
+                      "description": "Revision of the loaded /config, /settings or /decoders snapshot; one global CAS. Missing, boolean, noninteger or stale => 409.",
                       "minimum": 0,
                       "type": "integer"
                     },
@@ -9005,7 +9868,7 @@
                     "type": "array"
                   },
                   "revision": {
-                    "description": "Latest GET /config or /settings revision; stale/missing => 409.",
+                    "description": "Revision of the loaded /config, /settings or /decoders snapshot; one global CAS. Missing, boolean, noninteger or stale => 409.",
                     "minimum": 0,
                     "type": "integer"
                   }
@@ -9032,18 +9895,26 @@
                       "type": "object"
                     },
                     "revision": {
-                      "description": "Latest GET /config or /settings revision; stale/missing => 409.",
+                      "description": "Revision of the loaded /config, /settings or /decoders snapshot; one global CAS. Missing, boolean, noninteger or stale => 409.",
                       "minimum": 0,
                       "type": "integer"
                     },
                     "status": {
                       "type": "string"
+                    },
+                    "warnings": {
+                      "description": "Sanitized post-commit application/cleanup warnings. The revision is committed; these are not rollback or retry instructions.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
                     }
                   },
                   "required": [
                     "status",
                     "revision",
-                    "alerts"
+                    "alerts",
+                    "warnings"
                   ],
                   "type": "object"
                 }
@@ -9204,7 +10075,7 @@
                     "type": "array"
                   },
                   "revision": {
-                    "description": "Latest GET /config or /settings revision; stale/missing => 409.",
+                    "description": "Revision of the loaded /config, /settings or /decoders snapshot; one global CAS. Missing, boolean, noninteger or stale => 409.",
                     "minimum": 0,
                     "type": "integer"
                   }
@@ -9231,18 +10102,26 @@
                       "type": "object"
                     },
                     "revision": {
-                      "description": "Latest GET /config or /settings revision; stale/missing => 409.",
+                      "description": "Revision of the loaded /config, /settings or /decoders snapshot; one global CAS. Missing, boolean, noninteger or stale => 409.",
                       "minimum": 0,
                       "type": "integer"
                     },
                     "status": {
                       "type": "string"
+                    },
+                    "warnings": {
+                      "description": "Sanitized post-commit application/cleanup warnings. The revision is committed; these are not rollback or retry instructions.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
                     }
                   },
                   "required": [
                     "status",
                     "revision",
-                    "alerts"
+                    "alerts",
+                    "warnings"
                   ],
                   "type": "object"
                 }

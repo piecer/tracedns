@@ -13,27 +13,32 @@ import os
 import signal
 import sys
 import threading
-import time
+from copy import deepcopy
 
-from alerts import init_from_alerts as alerts_init_from_dict
-from alerts import init_from_config as alerts_init
+from alerts import init_from_alerts as alerts_init_from_dict  # noqa: F401 - legacy import seam
+from alerts import init_from_config as alerts_init  # noqa: F401 - legacy import seam
 from config_manager import normalize_domains, read_config
 from sns_query import DEFAULT_SOLAR_PROXY_HOSTS
 from history_manager import ensure_history_dir, load_history_files
 from http_server import ThreadingHTTPServer, make_handler
+from monitor.diagnostics import diagnostic_reason
 from monitor.engine import (
     clear_query_failure as _clear_query_failure_impl,
     drop_snapshot_for_failed_target as _drop_snapshot_for_failed_target_impl,
     mark_query_failure as _mark_query_failure_impl,
-    reconcile_removed_ips,
+    reconcile_removed_ips as reconcile_removed_ips,
+    reconcile_scan,
     run_full_cycle,
 )
 from monitor.lifecycle import update_nxdomain_lifecycle as _update_nxdomain_lifecycle_impl
-from monitor.removal_grace import IpRemovalGraceTracker
+from monitor.removal_grace import IpRemovalGraceTracker as IpRemovalGraceTracker
 from monitor.runtime_state import clone_snapshot
 from monitor.state_utils import collect_active_ip_map
 from monitor.stores import bounded_int, ConfigStore
-from txt_decoder import register_custom_decoder
+from monitor.scheduler import MonitorScheduler
+from monitor.signal_stop import SignalStopBridge
+from monitor.targets import active_target_projection
+from monitor.config_service import ConfigError, ConfigService
 
 
 logger = logging.getLogger(__name__)
@@ -152,15 +157,19 @@ def main():
     try:
         security_store = open_security(args)
     except (ValueError, OSError) as exc:
-        logger.error('Security startup failed: %s', exc)
+        logger.error('Security startup failed; reason=%s', diagnostic_reason(exc))
         raise SystemExit(2) from None
 
 
+    def specified(*options):
+        return any(arg == option or arg.startswith(option + '=')
+                   for arg in sys.argv[1:] for option in options)
+
     cli_specified = {
-        'domains': any(o in sys.argv for o in ('-d', '--domains')),
-        'servers': any(o in sys.argv for o in ('-s', '--servers')),
-        'interval': any(o in sys.argv for o in ('-i', '--interval')),
-        'max_workers': any(o in sys.argv for o in ('--max-workers',)),
+        'domains': specified('-d', '--domains'),
+        'servers': specified('-s', '--servers'),
+        'interval': specified('-i', '--interval'),
+        'max_workers': specified('--max-workers'),
     }
 
     # parse CLI domains
@@ -200,93 +209,31 @@ def main():
     max_workers0 = max_workers_arg if cli_specified['max_workers'] else bounded_int(file_cfg.get('max_workers'), max_workers_arg, 1, 64)
 
     # shared config state (mutated by HTTP API)
-    config_lock = threading.Lock()
-    shared_config = {
+    config_lock = threading.RLock()
+    shared_config = deepcopy({k: v for k, v in file_cfg.items() if not k.startswith('_')})
+    shared_config.update({
         '_config_revision': int(file_cfg.get('config_revision') or 0),
+        'config_revision': int(file_cfg.get('config_revision') or 0),
         'domains': domains0,
         'domain_metadata': dict(file_cfg.get('domain_metadata') or {}),
         'servers': servers0,
         'interval': bounded_int(interval0, 60, 1, 86400),
         'max_workers': bounded_int(max_workers0, 8, 1, 64),
         'ens_rpc_url': str(file_cfg.get('ens_rpc_url') or '').strip(),
-        'DEFAULT_SOLAR_PROXY_HOSTS': list(file_cfg.get('DEFAULT_SOLAR_PROXY_HOSTS') or file_cfg.get('DEFAULT_SNS_PROXY_HOSTS') or DEFAULT_SOLAR_PROXY_HOSTS),
-        'DEFAULT_SNS_PROXY_HOSTS': list(file_cfg.get('DEFAULT_SNS_PROXY_HOSTS') or file_cfg.get('DEFAULT_SOLAR_PROXY_HOSTS') or DEFAULT_SOLAR_PROXY_HOSTS),
-    }
-    cfg_store = ConfigStore(shared_config, config_lock)
+        'DEFAULT_SOLAR_PROXY_HOSTS': list(file_cfg.get('DEFAULT_SOLAR_PROXY_HOSTS',
+                                         file_cfg.get('DEFAULT_SNS_PROXY_HOSTS', DEFAULT_SOLAR_PROXY_HOSTS)) or []),
+        'DEFAULT_SNS_PROXY_HOSTS': list(file_cfg.get('DEFAULT_SNS_PROXY_HOSTS',
+                                       file_cfg.get('DEFAULT_SOLAR_PROXY_HOSTS', DEFAULT_SOLAR_PROXY_HOSTS)) or []),
+    })
 
-    # restore custom TXT decoders from file config (if any)
-    file_custom = file_cfg.get('custom_decoders', []) if isinstance(file_cfg, dict) else []
-    shared_config['custom_decoders'] = []
-    for entry in file_custom:
-        try:
-            name = entry.get('name') if isinstance(entry, dict) else None
-            steps = entry.get('steps') if isinstance(entry, dict) else None
-            if name and isinstance(steps, list):
-                ok = register_custom_decoder(name, steps)
-                if ok:
-                    shared_config['custom_decoders'].append({'name': name, 'steps': steps})
-        except Exception:
-            continue
 
-    # restore custom A decoders
-    file_custom_a = file_cfg.get('custom_a_decoders', []) if isinstance(file_cfg, dict) else []
-    shared_config['custom_a_decoders'] = []
-    for entry in file_custom_a:
-        try:
-            name = entry.get('name') if isinstance(entry, dict) else None
-            steps = entry.get('steps') if isinstance(entry, dict) else None
-            if name and isinstance(steps, list):
-                from a_decoder import register_custom_a_decoder
-
-                ok = register_custom_a_decoder(name, steps)
-                if ok:
-                    shared_config['custom_a_decoders'].append({'name': name, 'steps': steps, 'decoder_type': 'A'})
-        except Exception:
-            continue
-
-    # restore alert settings from file config (if any)
-    alerts_cfg = {}
+    # The same compiler and publication owner serve startup and HTTP writes.
+    config_service = ConfigService(shared_config, config_lock, config_path)
     try:
-        alerts_cfg = file_cfg.get('alerts') if isinstance(file_cfg, dict) else None
-        if alerts_cfg:
-            shared_config['alerts'] = alerts_cfg
-            # Apply VT API key to vt_lookup module
-            try:
-                vt_key = alerts_cfg.get('vt_api_key')
-                if vt_key:
-                    from vt_lookup import set_api_key
-
-                    set_api_key(vt_key)
-            except Exception:
-                pass
-            # Apply VT cache TTL
-            try:
-                ttl_days = alerts_cfg.get('vt_cache_ttl_days')
-                if ttl_days not in (None, ''):
-                    from vt_lookup import set_cache_ttl_days
-
-                    set_cache_ttl_days(ttl_days)
-            except Exception:
-                pass
-    except Exception:
-        shared_config['alerts'] = {}
-        alerts_cfg = {}
-
-    # initialize alerting (Teams + MISP)
-    alerting_ready = False
-    if isinstance(alerts_cfg, dict) and alerts_cfg:
-        try:
-            alerting_ready = bool(alerts_init_from_dict(alerts_cfg))
-        except Exception:
-            alerting_ready = False
-    if not alerting_ready:
-        try:
-            alerting_ready = bool(alerts_init('config.ini'))
-        except Exception:
-            try:
-                alerting_ready = bool(alerts_init())
-            except Exception:
-                alerting_ready = False
+        config_service.initialize_decoders()
+    except ConfigError:
+        logger.error('Invalid startup decoder configuration; monitor not started')
+        raise SystemExit(2) from None
 
     # history persistence dir
     history_dir = (config_path + ".history") if config_path else os.path.join(os.path.dirname(os.path.abspath(__file__)), "dns_history")
@@ -295,85 +242,118 @@ def main():
     # in-memory result & history
     history = load_history_files(history_dir)  # { domain: {meta, events, current} }
     current_results = restore_current_results(history)
-    removal_tracker = IpRemovalGraceTracker.from_history_dir(history_dir)
+    from monitor.repository import MonitorStateRepository
+    state_repository = MonitorStateRepository(current_results, history, history_dir,
+                                               shared_config['domains'], startup=True)
+    config_service.state_repository = state_repository
+    config_service.current_results = current_results
+    config_service.history = history
+    config_service.history_dir = history_dir
+    # Required production dependency: never silently run without pinned decoders.
+    from decoder_registry import snapshot_registry
+    cfg_store = ConfigStore(shared_config, config_lock, state_repository=state_repository,
+                            registry_snapshot=snapshot_registry)
+    scheduler = MonitorScheduler(cfg_store)
+    # Legacy tracker remains a helper facade only; the ledger owns grace.
+    removal_tracker = None
+    from monitor.delivery_runtime import DeliveryRuntime
+    delivery = DeliveryRuntime(cfg_store, history_dir=history_dir)
+    config_service.delivery_runtime = delivery
+    # Every post-ledger startup failure shares the same cleanup path.
+    httpd = None
+    stop_housekeeping = None
+    http_thread = None
+    signal_stop = None
+    try:
+        delivery.apply_local_settings(delivery.selected_alerts)
+        initial = cfg_store.snapshot()
+        projection = active_target_projection(initial.domains, initial.servers,
+                                              initial.ens_rpc_url, initial.sns_proxy_hosts)
+        active_ip_map_prev = collect_active_ip_map(current_results, active_providers=projection)
+        handler_class = make_handler(shared_config, config_lock, config_path, history_dir, current_results, history,
+                                     security_store=security_store, public_origin=args.public_origin,
+                                     insecure_http=args.insecure_http,
+                                     allow_insecure_remote_http=args.allow_insecure_remote_http,
+                                     trusted_proxies=args.trusted_proxy, state_repository=state_repository,
+                                     config_service=config_service, delivery_health=delivery.store.health_snapshot)
+        from security.startup import start_housekeeping
+        if args.allow_insecure_remote_http:
+            logger.warning('DANGEROUS: plaintext HTTP is exposed beyond loopback; credentials and sessions are not TLS-protected')
+        httpd = ThreadingHTTPServer((http_host, http_port), handler_class)
+        delivery.worker.start()
+        stop_housekeeping = start_housekeeping(security_store)
+        http_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        http_thread.start()
+        logger.info("HTTP config UI running on http://%s:%s/", http_host, http_port)
 
-    configured_names = {d.get('name', '').strip() for d in normalize_domains(shared_config.get('domains', [])) if isinstance(d, dict) and d.get('name')}
-    active_ip_map_prev = collect_active_ip_map(current_results, configured_names)
+        signal_stop = SignalStopBridge(scheduler.stop)
+        with config_lock:
+            shared_config['_signal_stop'] = signal_stop
+        signal_stop.start((signal.SIGINT, signal.SIGTERM))
 
-    # start HTTP server
-    handler_class = make_handler(shared_config, config_lock, config_path, history_dir, current_results, history,
-                                 security_store=security_store, public_origin=args.public_origin,
-                                 insecure_http=args.insecure_http,
-                                 allow_insecure_remote_http=args.allow_insecure_remote_http,
-                                 trusted_proxies=args.trusted_proxy)
-    from security.startup import start_housekeeping
-    stop_housekeeping = start_housekeeping(security_store)
-    if args.allow_insecure_remote_http:
-        logger.warning('DANGEROUS: plaintext HTTP is exposed beyond loopback; credentials and sessions are not TLS-protected')
-    httpd = ThreadingHTTPServer((http_host, http_port), handler_class)
-    http_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
-    http_thread.start()
-    logger.info("HTTP config UI running on http://%s:%s/", http_host, http_port)
-
-    running = True
-
-    def handle_sigint(signum, frame):
-        nonlocal running
-        running = False
-
-    signal.signal(signal.SIGINT, handle_sigint)
-
-    # Consecutive DNS query failure counters: key=(domain, server, rtype)
-    query_fail_counts = {}
-
-    while running:
-        snap = cfg_store.snapshot()
-        domains = normalize_domains(snap.domains)
-
-        active_ip_map_now = run_full_cycle(
-            domains_raw=domains,
-            servers=snap.servers,
-            current_results=current_results,
-            history=history,
-            history_dir=history_dir,
-            query_fail_counts=query_fail_counts,
-            max_workers=snap.max_workers,
-            force_req=snap.force_req,
-            ens_rpc_url=str(shared_config.get('ens_rpc_url') or '').strip() or None,
-            sns_proxy_hosts=list(shared_config.get('DEFAULT_SNS_PROXY_HOSTS') or shared_config.get('DEFAULT_SOLAR_PROXY_HOSTS') or DEFAULT_SOLAR_PROXY_HOSTS),
-            suppressed_added_ips=removal_tracker.pending_ips(),
-        )
-
-        # reconcile removed IPs only for full scans
-        if not (snap.force_req and 'domains' in (snap.force_req or {})):
-            active_ip_map_prev = reconcile_removed_ips(
-                active_ip_map_prev,
-                active_ip_map_now,
-                context={
-                    'scan_scope': 'full',
-                    'domain_targets': len(domains or []),
-                    'server_targets': len([str(x).strip() for x in (snap.servers or []) if str(x).strip()]),
-                },
-                removal_tracker=removal_tracker,
-            )
-        else:
-            # A forced subset must not start removals, but it can prove that a
-            # pending IP has returned and should no longer be considered new.
-            removal_tracker.cancel_present(active_ip_map_now)
-
-        # sleep ticks
-        for _ in range(max(1, snap.interval)):
-            if not running:
+        query_fail_counts = {}
+        while True:
+            snap = scheduler.next_scan()
+            if snap is None:
                 break
-            time.sleep(1)
+            domains = normalize_domains(snap.domains)
+            active_ip_map_now = run_full_cycle(
+                domains_raw=domains,
+                servers=snap.servers,
+                current_results=current_results,
+                history=history,
+                history_dir=history_dir,
+                query_fail_counts=query_fail_counts,
+                max_workers=snap.max_workers,
+                force_req=snap.force_req,
+                ens_rpc_url=snap.ens_rpc_url,
+                sns_proxy_hosts=snap.sns_proxy_hosts,
+                suppressed_added_ips=None,
+                state_repository=state_repository,
+                target_leases=snap.target_leases,
+                registry_view=snap.registry_view,
+            )
 
-    logger.info("Exiting DNS monitor.")
-    stop_housekeeping.set()
-    httpd.shutdown()
-    httpd.server_close()
-    from http_api.relationship_handlers import shutdown_ip_relationship_jobs
-    shutdown_ip_relationship_jobs(wait=False)
+            accepted, active_ip_map_prev = reconcile_scan(
+                cfg_store, snap, active_ip_map_prev, active_ip_map_now, removal_tracker)
+            scheduler.completed(snap, accepted=accepted)
+    finally:
+        # Each owned resource gets its cleanup even if another cleanup fails.
+        # Keep the primary exception; a failed stop never authorizes store close.
+        primary_error = sys.exc_info()[1]
+        cleanup_errors = []
+
+        def cleanup(action):
+            try:
+                return action()
+            except Exception as exc:
+                cleanup_errors.append(exc)
+                logger.warning('Monitor cleanup failed; reason=cleanup_failed')
+                return None
+
+        cleanup(scheduler.stop)
+        if signal_stop is not None and cleanup(signal_stop.close) is False:
+            logger.warning('Signal stop coordinator is still draining')
+        # This serial runner has returned: no producer remains in admission.
+        delivery_stop = cleanup(delivery.stop)
+        if delivery_stop is not None and not delivery_stop['stopped']:
+            logger.warning('Delivery callback still running; ledger and in-flight claim retained')
+        logger.info("Exiting DNS monitor.")
+        if stop_housekeeping is not None:
+            cleanup(stop_housekeeping.set)
+        if http_thread is not None and http_thread.is_alive():
+            cleanup(httpd.shutdown)
+        if httpd is not None:
+            cleanup(httpd.server_close)
+        if primary_error is None and cleanup_errors:
+            raise cleanup_errors[0]
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        # Embedded callers retain the original exception. The CLI is a public
+        # diagnostic sink, not permission to print credential-bearing traceback.
+        logger.error('Monitor failed; reason=%s', diagnostic_reason(exc))
+        raise SystemExit(2) from None

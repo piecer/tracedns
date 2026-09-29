@@ -11,7 +11,7 @@ import re
 import base64
 
 
-A_DECODE_METHODS = {}
+from decoder_registry import A_METHODS as A_DECODE_METHODS
 
 
 def a_decode_register(name):

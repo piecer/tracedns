@@ -60,8 +60,7 @@ class TestSettingsPersistence(unittest.TestCase):
         )
         handler = FakeHandler(json.dumps({"alerts": {"vt_cache_ttl_days": 30}}).encode())
 
-        with mock.patch("http_api.settings_handlers.read_config", return_value={}), \
-                mock.patch("http_api.settings_handlers.write_config", side_effect=OSError("disk full")):
+        with mock.patch("config_manager.write_config", side_effect=OSError("disk full")):
             handle_settings_post(ctx, handler)
 
         self.assertEqual(handler.status, 500)

@@ -16,6 +16,7 @@ from datetime import datetime
 from collections import Counter
 from typing import List, Tuple
 import requests
+from monitor.delivery_adapters import validated_tls_verify
 
 try:
     from pymisp import PyMISP
@@ -84,6 +85,7 @@ def _apply_alert_values(
     push_event_id=None,
     teams_webhook=None,
     misp_remove_on_absent=None,
+    misp_ca_bundle=None,
 ):
     """Apply alert settings to in-memory runtime (best effort)."""
     global _initialized, _misp_event_id, _teams_webhook, _misp_remove_on_absent
@@ -106,12 +108,35 @@ def _apply_alert_values(
             logger.warning("PyMISP not installed; MISP alerts disabled.")
         else:
             try:
-                misp_obj = PyMISP(murl, mkey, True)
+                misp_obj = PyMISP(murl, mkey, validated_tls_verify(misp_ca_bundle))
                 mispupdate_code.misp = misp_obj
-            except Exception as e:
-                logger.warning("Failed to initialize PyMISP client: %s", e)
+            except Exception:
+                logger.warning("MISP client initialization failed: adapter_unapplied")
 
     _initialized = True
+
+
+def select_alert_configuration(configuration, path='config.ini'):
+    """Pure bootstrap selection for the registry; no PyMISP construction/I/O."""
+    if isinstance(configuration, dict) and 'alerts' in configuration:
+        value = configuration['alerts']
+        return dict(value) if isinstance(value, dict) else {}
+    try:
+        cfg = mispupdate_code.load_ini_config(path)
+        if not cfg.has_section('global'):
+            return {}
+        return {name: cfg.get('global', name, fallback='') for name in (
+            'misp_url', 'api_key', 'push_event_id', 'teams_webhook',
+            'misp_remove_on_absent', 'misp_ca_bundle')}
+    except Exception:
+        return {}
+
+
+def init_from_configuration(configuration, path='config.ini'):
+    """Select by provenance, never fall back on runtime readiness failure."""
+    if isinstance(configuration, dict) and 'alerts' in configuration:
+        return init_from_alerts(configuration['alerts'])
+    return init_from_config(path)
 
 
 def init_from_config(path='config.ini'):
@@ -143,6 +168,7 @@ def init_from_config(path='config.ini'):
         'teams_webhook': cfg.get('global', 'teams_webhook', fallback=''),
         # Default false: keep MISP attributes even when domain-side IP disappears.
         'misp_remove_on_absent': cfg.get('global', 'misp_remove_on_absent', fallback='false'),
+        'misp_ca_bundle': cfg.get('global', 'misp_ca_bundle', fallback=''),
     }
 
     _apply_alert_values(
@@ -151,6 +177,7 @@ def init_from_config(path='config.ini'):
         push_event_id=_cfg.get('push_event_id'),
         teams_webhook=_cfg.get('teams_webhook'),
         misp_remove_on_absent=_cfg.get('misp_remove_on_absent'),
+        misp_ca_bundle=_cfg.get('misp_ca_bundle'),
     )
     return bool(_teams_webhook or _misp_event_id or getattr(mispupdate_code, 'misp', None))
 
@@ -171,6 +198,7 @@ def init_from_alerts(alerts: dict):
         push_event_id=alerts.get('push_event_id'),
         teams_webhook=alerts.get('teams_webhook'),
         misp_remove_on_absent=alerts.get('misp_remove_on_absent', False),
+        misp_ca_bundle=alerts.get('misp_ca_bundle'),
     )
     return bool(_teams_webhook or _misp_event_id or getattr(mispupdate_code, 'misp', None))
 
@@ -182,13 +210,24 @@ def _send_teams(message: str, title: str = 'C2 TXT Alert'):
         'title': title,
         'text': message
     }
+    response = None
     try:
-        response = requests.post(_teams_webhook, json=payload, timeout=10)
-        response.raise_for_status()
+        response = requests.post(_teams_webhook, json=payload, timeout=(3, 10),
+                                 allow_redirects=False, stream=True, verify=True)
+        if type(response.status_code) is not int or not 200 <= response.status_code < 300:
+            return False
+        size = 0
+        for chunk in response.iter_content(chunk_size=65536):
+            size += len(chunk)
+            if size > 2 * 1024 * 1024:
+                return False
         return True
-    except Exception as e:
-        logger.warning("Teams webhook send failed: %s", e)
+    except Exception:
+        logger.warning("Teams webhook send failed: transport_error")
         return False
+    finally:
+        if response is not None:
+            response.close()
 
 
 def _normalize_ip_tuples(ip_tuples):
@@ -229,8 +268,8 @@ def _split_labels(label: str):
     return parts or ['unknown']
 
 
-def _format_local_timestamp():
-    now = datetime.now().astimezone()
+def _format_local_timestamp(created=None):
+    now = (datetime.now() if created is None else datetime.fromtimestamp(created)).astimezone()
     tz_name = str(now.tzname() or '').strip()
     ts = now.strftime('%Y-%m-%d %H:%M:%S')
     offset = now.strftime('%z')
@@ -242,7 +281,8 @@ def _format_local_timestamp():
 def _build_alert_body(action: str, ip_tuples, context=None):
     """Build a structured Teams alert body with local-time operational summary."""
     entries = _normalize_ip_tuples(ip_tuples)
-    ts_local = _format_local_timestamp()
+    created = context.get('created') if isinstance(context, dict) else None
+    ts_local = _format_local_timestamp(created) if created is not None else _format_local_timestamp()
 
     unique_ips = sorted({ip for ip, _label, _stype in entries})
     source_counter = Counter()
@@ -286,72 +326,59 @@ def _build_alert_body(action: str, ip_tuples, context=None):
     return "\n".join(lines)
 
 
-def alert_new_ips(ip_tuples: List[Tuple[str, str]], context=None):
-    """Alert about newly discovered C2 IPs.
+def render_teams_body(action, entries, context=None):
+    """Render a complete chunk; optional context['created'] is persisted epoch time.
 
-    ip_tuples: list of (ip, label/domain[, source_type]) where source_type is TXT/A/ENS
-    Behavior:
-      - Sends a Teams webhook (best-effort)
-      - Calls mispupdate_code.add_unique_ips(event_id, ip_tuples) if event configured
+    Store glue remains render(entries, action, created), calling this function
+    with (action, entries, {'created': created}). Persist the body for retries.
     """
+    from monitor.delivery_types import TeamsPayloadTooLarge, encode_body
+    if action not in ('Added', 'Removed'):
+        raise ValueError('payload_invalid')
+    if len(entries) > 60:
+        raise TeamsPayloadTooLarge('payload_limit')
+    body = {'title': 'C2 IOC Add Alert' if action == 'Added' else 'C2 IOC Remove Alert',
+            'text': _build_alert_body(action, entries, context=context)}
+    if len(encode_body(body)) > 24 * 1024:
+        raise TeamsPayloadTooLarge('payload_limit')
+    return body
+
+
+def _legacy_alert(action, ip_tuples, context):
     if not _initialized:
         init_from_config()
     entries = _normalize_ip_tuples(ip_tuples)
+    outcomes = {'teams': None, 'misp': None}
     if not entries:
-        return
-
-    body = _build_alert_body('Added', entries, context=context)
-
-    # Teams alert (best effort)
-    _send_teams(body, title='C2 IOC Add Alert')
-
-    # Add to MISP event if configured
-    if _misp_event_id and hasattr(mispupdate_code, 'add_unique_ips'):
-        misp_client = getattr(mispupdate_code, 'misp', None)
-        if misp_client is None:
-            logger.warning("MISP event id is set but MISP client is not initialized; skipping MISP push.")
-            return
+        return outcomes
+    if _teams_webhook:
         try:
-            ok = mispupdate_code.add_unique_ips(_misp_event_id, entries)
-            if ok is False:
-                logger.warning("MISP push reported failure for event_id=%s", _misp_event_id)
-        except Exception as e:
-            logger.warning("MISP push failed: %s", e)
+            body = render_teams_body(action, entries, context=context)
+            outcomes['teams'] = _send_teams(body['text'], title=body['title']) is True
+        except Exception:
+            outcomes['teams'] = False
+            logger.warning('Teams send failed: payload_limit')
+    if _misp_event_id and (action == 'Added' or _misp_remove_on_absent):
+        if getattr(mispupdate_code, 'misp', None) is None:
+            outcomes['misp'] = False
+        else:
+            operation = mispupdate_code.add_unique_ips if action == 'Added' else mispupdate_code.remove_ips
+            try:
+                outcomes['misp'] = operation(_misp_event_id, entries) is True
+            except Exception:
+                outcomes['misp'] = False
+                logger.warning('MISP operation failed: provider_error')
+    return outcomes
+
+
+def alert_new_ips(ip_tuples: List[Tuple[str, str]], context=None):
+    """Legacy caller-compatible helper; independent true/false/disabled results."""
+    return _legacy_alert('Added', ip_tuples, context)
 
 
 def alert_removed_ips(ip_tuples: List[Tuple[str, str]], context=None):
-    """Alert about removed C2 IPs.
-
-    ip_tuples: list of (ip, label/domain[, source_type]) where source_type is TXT/A/ENS
-    Behavior:
-      - Sends a Teams webhook (best-effort)
-      - Calls mispupdate_code.remove_ips(event_id, ip_tuples) if event configured
-    """
-    if not _initialized:
-        init_from_config()
-    entries = _normalize_ip_tuples(ip_tuples)
-    if not entries:
-        return
-
-    body = _build_alert_body('Removed', entries, context=context)
-
-    _send_teams(body, title='C2 IOC Remove Alert')
-
-    if not _misp_remove_on_absent:
-        logger.info("MISP delete disabled by config; keeping existing attributes in event.")
-        return
-
-    if _misp_event_id and hasattr(mispupdate_code, 'remove_ips'):
-        misp_client = getattr(mispupdate_code, 'misp', None)
-        if misp_client is None:
-            logger.warning("MISP event id is set but MISP client is not initialized; skipping MISP delete.")
-            return
-        try:
-            ok = mispupdate_code.remove_ips(_misp_event_id, entries)
-            if ok is False:
-                logger.warning("MISP delete reported failure for event_id=%s", _misp_event_id)
-        except Exception as e:
-            logger.warning("MISP delete failed: %s", e)
+    """Legacy caller-compatible helper; a disabled channel is None, not ACK."""
+    return _legacy_alert('Removed', ip_tuples, context)
 
 
 __all__ = ['init_from_config', 'init_from_alerts', 'alert_new_ips', 'alert_removed_ips']

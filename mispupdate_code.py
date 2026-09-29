@@ -124,6 +124,64 @@ def remove_queued_sightings(event_id, ip_values):
     return max(0, removed)
 
 
+def run_observation_hook(hook):
+    """Local-only; caller must durably consume the flag BEFORE invoking."""
+    from monitor.delivery_adapters import valid_id
+    if (not isinstance(hook, dict) or set(hook) != {'kind', 'event_id', 'ip'}
+            or not valid_id(hook['event_id']) or not is_valid_ip(hook['ip'])):
+        return False
+    function = {'enqueue_sightings': enqueue_sightings,
+                'remove_queued_sightings': remove_queued_sightings}.get(hook['kind'])
+    if function is None:
+        return False
+    try:
+        function(hook['event_id'], [hook['ip']])
+        return True
+    except Exception:
+        return False
+
+
+def flush_sightings_step(adapter, progress=None, *, today=None):
+    """One metered HTTP operation, using the existing best-effort queue.
+
+    A fixed day/cursor checkpoint avoids per-IP retry maps. Failures stay queued
+    for the next UTC day; a crash can lose a day's attempt, not the queue item.
+    Caller must re-capture current binding authority and budget each step.
+    """
+    from monitor.delivery_adapters import result
+    if adapter.channel != 'misp' or adapter.error:
+        return result('blocked', adapter.error or 'destination_invalid')
+    today = today or datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')
+    event_id = adapter._event
+    progress = progress or {}
+    with _SIGHTING_BATCH_LOCK:
+        state = _load_sighting_batch_state()
+        event = _ensure_batch_event(state, event_id)
+        if event['last_flush_date'] == today:
+            return result('acked')
+        if event.get('flush_day') != today:
+            event.update(flush_day=today, flush_cursor='')
+        pending = sorted(_normalize_batch_ips(event['pending']))
+        if progress:
+            ip = progress.get('ip')
+            if ip not in pending or progress.get('binding_id') != adapter.binding_id:
+                return result('failed', 'payload_invalid')
+        else:
+            ip = next((ip for ip in pending if ip > event.get('flush_cursor', '')), None)
+            if ip is None:
+                event['last_flush_date'] = today
+                _save_sighting_batch_state(state)
+                return result('acked')
+            # Consume before network. A crashed read remains best effort and
+            # cannot turn restart into an immediate sighting retry storm.
+            event['flush_cursor'] = ip
+            _save_sighting_batch_state(state)
+    outcome = adapter.sighting_step(ip, progress)
+    if outcome['state'] == 'acked':
+        remove_queued_sightings(event_id, [ip])
+    return outcome
+
+
 def flush_sightings_batch(event_id, force=False):
     """Flush queued sightings once per UTC day (or force immediately)."""
     if misp is None:
@@ -193,36 +251,28 @@ def is_valid_ip(ip):
 
 # Function to update sighting for a specific attribute value
 def update_sighting_by_value(event_id, attribute_value, sighting_type='0'):
-    if misp is None:
-        print("MISP client is not initialized; cannot update sighting.")
-        return False
-    if MISPSighting is None:
-        print("PyMISP is not available; cannot update sighting.")
+    """Legacy best-effort helper, never treat an error envelope as success."""
+    from monitor.delivery_adapters import event_attributes, valid_id
+    if misp is None or MISPSighting is None:
         return False
     try:
-        # Search for the attribute by value
-        result = misp.search(controller='attributes', value=attribute_value, type_attribute='ip-src')
-    except Exception as e:
-        print(f"Error searching for attribute: {e}")
+        attributes = event_attributes(misp.get_event(event_id), str(event_id))
+        attribute = next((a for a in attributes if a['type'] == 'ip-src'
+                          and a['value'] == attribute_value), None)
+        if attribute is None:
+            return False
+        sighting = MISPSighting()
+        sighting.value, sighting.event_id, sighting.type = attribute_value, event_id, sighting_type
+        response = misp.add_sighting(sighting, attribute=str(attribute['id']))
+        if not isinstance(response, dict) or 'errors' in response or 'error' in response:
+            return False
+        value = response.get('Sighting')
+        return (isinstance(value, dict) and valid_id(value.get('id'))
+                and str(value.get('event_id')) == str(event_id)
+                and str(value.get('attribute_id')) == str(attribute['id'])
+                and str(value.get('type')) == str(sighting_type))
+    except Exception:
         return False
-
-    if result and 'Attribute' in result:
-        for attribute in result['Attribute']:
-            if attribute['value'] == attribute_value:
-                sighting = MISPSighting()
-                sighting.value = attribute_value
-                sighting.event_id = event_id
-                sighting.type = sighting_type  # '0' = false positive, '1' = seen
-                try:
-                    misp.add_sighting(sighting)
-                    print(f"Sighting updated for attribute with value: {attribute_value}")
-                except Exception as e:
-                    print(f"Error adding sighting: {e}")
-                    return False
-                return True
-
-    print(f"Attribute with value {attribute_value} not found.")
-    return False
 
 # Function to get all existing IP attributes as a set
 def get_existing_ips(attributes):
@@ -234,159 +284,87 @@ def get_existing_ips(attributes):
 
 
 
-# Function to add new IP attributes if they don't already exist
+def _legacy_entries(ip_list):
+    entries = []
+    for item in ip_list or []:
+        if isinstance(item, (tuple, list)) and item:
+            ip = str(item[0])
+            label = str(item[1]) if len(item) > 1 else 'unknown'
+            source = str(item[2]).upper() if len(item) > 2 else 'TXT'
+        else:
+            ip, label, source = str(item), 'unknown', 'TXT'
+        if not is_valid_ip(ip):
+            raise ValueError('payload_invalid')
+        entries.append((ip, label, source))
+    return entries
+
+
 def add_unique_ips(event_id, ip_list):
-    if misp is None:
-        print("MISP client is not initialized; cannot add attributes.")
-        return False
-    if MISPAttribute is None:
-        print("PyMISP is not available; cannot add attributes.")
-        return False
+    """True iff every requested IP is proven present; compatibility only.
 
+    Daily observations enqueue locally; scheduler flushing is separate. This
+    legacy client helper is not the bounded delivery worker transport.
+    """
+    from monitor.delivery_adapters import event_attributes, validated_add
+    if misp is None or MISPAttribute is None:
+        return False
     try:
-        event = misp.get_event(event_id)
-    except Exception as e:
-        print(f"Error retrieving event: {e}")
+        entries = _legacy_entries(ip_list)
+        attributes = event_attributes(misp.get_event(event_id), str(event_id))
+    except Exception:
         return False
-    
-    if event:
-        attributes = event.get('Event', {}).get('Attribute', [])
-        if not isinstance(attributes, list):
-            attributes = []
-        existing_ips = get_existing_ips(attributes)
-        added_count = 0
-        sighting_candidates = []
-        
-        for item in ip_list or []:
-            ip = ''
-            comment = 'unknown'
-            source_type = 'TXT'
-            if isinstance(item, (list, tuple)):
-                if len(item) > 0:
-                    ip = str(item[0] or '').strip()
-                if len(item) > 1:
-                    comment = str(item[1] or '').strip() or 'unknown'
-                if len(item) > 2:
-                    source_type = str(item[2] or '').strip().upper() or 'TXT'
-            else:
-                ip = str(item or '').strip()
-            if not ip:
-                continue
-            if is_valid_ip(ip) == False:
-                continue
-            if ip not in existing_ips:
-                attribute = MISPAttribute()
-                attribute.type = 'ip-src'
-                attribute.value = ip
-                code_prefix = 'NST-2-1' if source_type == 'A' else 'NST-2-2'
-                comment = f"{code_prefix} {comment}".strip()
-                attribute.comment = comment
-                try:
-                    misp.add_attribute(event_id, attribute)
-                    added_count += 1
-                except Exception as e:
-                    print(f"Error adding attribute {ip}: {e}")
-                # Add the IP to the set after adding to avoid re-adding in the same run
-                existing_ips.add(ip)
-            else :  
-                sighting_candidates.append(ip)
-
-        if sighting_candidates:
-            try:
-                queued_total = enqueue_sightings(event_id, sighting_candidates)
-                flushed = flush_sightings_batch(event_id, force=False)
-                print(
-                    f"Sighting queue updated for event {event_id}: "
-                    f"queued_total={queued_total}, flushed_today={bool(flushed)}"
-                )
-            except Exception as e:
-                print(f"Error queuing/flushing sighting batch: {e}")
-                    
-
-        print(f"Added {added_count} new IP addresses to event {event_id}.")
-        return True
-    else:
-        print(f"Event ID {event_id} not found.")
-        return False
+    existing = get_existing_ips(attributes)
+    originally_existing = set(existing)
+    candidates = set()
+    ok = True
+    for ip, label, source in entries:
+        if ip in existing:
+            if ip in originally_existing:
+                candidates.add(ip)
+            continue
+        attribute = MISPAttribute()
+        attribute.type = 'ip-src'
+        attribute.value = ip
+        attribute.comment = f"{'NST-2-1' if source == 'A' else 'NST-2-2'} {label}"
+        try:
+            proven = validated_add(misp.add_attribute(event_id, attribute), str(event_id), ip)
+        except Exception:
+            proven = False
+        if proven:
+            existing.add(ip)
+        else:
+            ok = False
+    if candidates:
+        try:
+            enqueue_sightings(event_id, sorted(candidates))
+        except Exception:
+            pass  # independent best-effort observation, not attribute ACK
+    return ok
 
 
 def remove_ips(event_id, ip_list):
-    """Remove matching ip-src attributes from a MISP event.
-
-    ip_list can be:
-      - [(ip, label), ...]
-      - [ip, ...]
-    """
+    """Compatibility wrapper: validate every delete and re-read absence."""
+    from monitor.delivery_adapters import event_attributes, validated_delete
     if misp is None:
-        print("MISP client is not initialized; cannot remove attributes.")
         return False
-
-    targets = set()
-    for item in ip_list or []:
-        ip = None
-        if isinstance(item, (list, tuple)) and item:
-            ip = item[0]
-        else:
-            ip = item
-        s = str(ip or '').strip()
-        if not s:
-            continue
-        if not is_valid_ip(s):
-            continue
-        targets.add(s)
-
-    if not targets:
-        return True
-
     try:
-        event = misp.get_event(event_id)
-    except Exception as e:
-        print(f"Error retrieving event for delete: {e}")
+        targets = {ip for ip, _, _ in _legacy_entries(ip_list)}
+        if not targets:
+            return True
+        for _ in range(2001):
+            attributes = event_attributes(misp.get_event(event_id), str(event_id))
+            matches = [a for a in attributes if a['type'] == 'ip-src' and a['value'] in targets]
+            if not matches:
+                try:
+                    remove_queued_sightings(event_id, sorted(targets))
+                except Exception:
+                    pass
+                return True
+            if not validated_delete(misp.delete_attribute(str(matches[0]['id']))):
+                return False
+    except Exception:
         return False
-
-    if not event:
-        print(f"Event ID {event_id} not found.")
-        return False
-
-    attributes = event.get('Event', {}).get('Attribute', [])
-    if not isinstance(attributes, list):
-        attributes = []
-
-    to_delete = []
-    for attribute in attributes:
-        try:
-            if attribute.get('type') != 'ip-src':
-                continue
-            value = str(attribute.get('value', '')).strip()
-            if value not in targets:
-                continue
-            attr_id = attribute.get('id') or attribute.get('uuid')
-            if attr_id:
-                to_delete.append((str(attr_id), value))
-        except Exception:
-            continue
-
-    ok = True
-    removed_count = 0
-    removed_values = []
-    for attr_id, value in to_delete:
-        try:
-            misp.delete_attribute(attr_id)
-            removed_count += 1
-            removed_values.append(value)
-            print(f"Removed attribute id={attr_id} value={value}")
-        except Exception as e:
-            ok = False
-            print(f"Error removing attribute {value} ({attr_id}): {e}")
-
-    if removed_values:
-        try:
-            remove_queued_sightings(event_id, removed_values)
-        except Exception as e:
-            print(f"Error removing queued sightings: {e}")
-
-    print(f"Removed {removed_count} IP attributes from event {event_id}.")
-    return ok
+    return False
 
 
 def merge_lists_no_duplicates(lists):

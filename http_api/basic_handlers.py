@@ -2,37 +2,34 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from a_decoder import A_DECODE_METHODS
-from ens_decoder import ENS_DECODE_METHODS, ens_options_signature
+from ens_decoder import ens_options_signature
 from monitor.runtime_state import get_state_version, snapshot_results_inputs
-from txt_decoder import TXT_DECODE_METHODS
 
 from .context import HttpContext
 from .utils import send_json, qs_bool
 
 
 def handle_config(ctx: HttpContext, handler) -> None:
-    with ctx.config_lock:
-        cfg = {
-            'revision': ctx.shared_config.get('_config_revision', 0),
-            'domains': list(ctx.shared_config.get('domains', [])),
-            'domain_metadata': dict(ctx.shared_config.get('domain_metadata') or {}),
-            'servers': list(ctx.shared_config.get('servers', [])),
-            'interval': ctx.shared_config.get('interval'),
-            'max_workers': ctx.shared_config.get('max_workers', 8),
-            'ens_rpc_url': ctx.shared_config.get('ens_rpc_url', ''),
-            'DEFAULT_SNS_PROXY_HOSTS': list(
-                ctx.shared_config.get(
-                    'DEFAULT_SNS_PROXY_HOSTS',
-                    ctx.shared_config.get('DEFAULT_SOLAR_PROXY_HOSTS', []),
-                )
-                or []
-            ),
-        }
-        if 'alerts' in ctx.shared_config:
-            cfg['alerts'] = ctx.shared_config.get('alerts')
+    from monitor.config_service import get_config_service
+    send_json(handler, config_payload(get_config_service(ctx).snapshot()))
+
+
+def config_payload(snapshot):
+    """The existing HTTP projection, not the complete persistent bootstrap file."""
     from .settings_handlers import redacted_config
-    send_json(handler, redacted_config(cfg))
+    cfg = {
+        'revision': snapshot.get('config_revision', 0),
+        'domains': snapshot.get('domains', []),
+        'domain_metadata': snapshot.get('domain_metadata') or {},
+        'servers': snapshot.get('servers', []),
+        'interval': snapshot.get('interval'),
+        'max_workers': snapshot.get('max_workers', 8),
+        'ens_rpc_url': snapshot.get('ens_rpc_url', ''),
+        'DEFAULT_SNS_PROXY_HOSTS': snapshot.get('DEFAULT_SNS_PROXY_HOSTS', snapshot.get('DEFAULT_SOLAR_PROXY_HOSTS', [])) or [],
+    }
+    if 'alerts' in snapshot:
+        cfg['alerts'] = snapshot['alerts']
+    return redacted_config(cfg)
 
 
 def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Dict[str, Any], include_raw: bool) -> Dict[str, Any]:
@@ -248,32 +245,5 @@ def handle_results(ctx: HttpContext, handler, qs: Dict[str, Any]) -> None:
 
 
 def handle_decoders(ctx: HttpContext, handler) -> None:
-    try:
-        names = sorted(list(TXT_DECODE_METHODS.keys()))
-        a_names = sorted(list(A_DECODE_METHODS.keys()))
-        ens_names = sorted(list(ENS_DECODE_METHODS.keys()))
-        txt_custom = list(ctx.shared_config.get('custom_decoders', []) or [])
-        a_custom = list(ctx.shared_config.get('custom_a_decoders', []) or [])
-        custom_all = []
-        for c in txt_custom:
-            item = dict(c) if isinstance(c, dict) else {}
-            if item and 'decoder_type' not in item:
-                item['decoder_type'] = 'TXT'
-            if item:
-                custom_all.append(item)
-        for c in a_custom:
-            item = dict(c) if isinstance(c, dict) else {}
-            if item and 'decoder_type' not in item:
-                item['decoder_type'] = 'A'
-            if item:
-                custom_all.append(item)
-        send_json(handler, {
-            'decoders': names,
-            'custom': txt_custom,
-            'custom_a': a_custom,
-            'custom_all': custom_all,
-            'a_decoders': a_names,
-            'ens_decoders': ens_names,
-        })
-    except Exception as e:
-        send_json(handler, {'error': str(e)}, 500)
+    from monitor.config_service import get_config_service
+    send_json(handler, get_config_service(ctx).catalog())

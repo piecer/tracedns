@@ -14,7 +14,7 @@ from typing import Union
 
 
 # TXT decode method registry
-TXT_DECODE_METHODS = {}
+from decoder_registry import TXT_METHODS as TXT_DECODE_METHODS
 
 
 def txt_decode_register(name):

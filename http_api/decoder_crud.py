@@ -3,45 +3,9 @@ from __future__ import annotations
 import json as _json
 from typing import Callable
 
-from config_manager import read_config, write_config
-
 from .context import HttpContext
 from .request_limits import get_request_body
 from .utils import send_json
-
-
-def _custom_all_payload(ctx: HttpContext) -> list:
-    txt_list = list(ctx.shared_config.get("custom_decoders", []) or [])
-    a_list = list(ctx.shared_config.get("custom_a_decoders", []) or [])
-    all_list = []
-    for c in txt_list:
-        item = dict(c) if isinstance(c, dict) else {}
-        if item and item.get("decoder_type") != "TXT":
-            item["decoder_type"] = "TXT"
-        if item:
-            all_list.append(item)
-    for c in a_list:
-        item = dict(c) if isinstance(c, dict) else {}
-        if item and item.get("decoder_type") != "A":
-            item["decoder_type"] = "A"
-        if item:
-            all_list.append(item)
-    return all_list
-
-
-def _save_config(ctx: HttpContext, list_key: str) -> None:
-    if not ctx.config_path:
-        return
-    try:
-        cfg = read_config(ctx.config_path) or {}
-        cfg["domains"] = cfg.get("domains", ctx.shared_config.get("domains", []))
-        cfg["servers"] = cfg.get("servers", ctx.shared_config.get("servers", []))
-        cfg["interval"] = cfg.get("interval", ctx.shared_config.get("interval"))
-        cfg["custom_decoders"] = ctx.shared_config.get("custom_decoders", [])
-        cfg["custom_a_decoders"] = ctx.shared_config.get("custom_a_decoders", [])
-        write_config(ctx.config_path, cfg)
-    except Exception:
-        pass
 
 
 def _validate_steps(steps: list, decoder_type: str) -> tuple[bool, str]:
@@ -74,126 +38,35 @@ def _validate_steps(steps: list, decoder_type: str) -> tuple[bool, str]:
     return (True, "")
 
 
+def _mutate(ctx, handler, command, success_key):
+    body, too_large = get_request_body(handler, max_length=ctx.max_body_bytes)
+    if too_large:
+        return
+    try:
+        data = _json.loads(body.decode('utf-8')) if body else {}
+    except Exception:
+        return send_json(handler, {'error': 'invalid json'}, 400)
+    if not isinstance(data, dict):
+        return send_json(handler, {'error': 'json object required'}, 400)
+    from monitor.config_service import commit_request
+    result = commit_request(ctx, handler, command, data)
+    if result is not None:
+        result.pop('config', None)
+        result[success_key] = data['name']
+        result['decoder_type'] = str(data.get('decoder_type', 'TXT')).upper()
+        return send_json(handler, result)
+
+
 def handle_decoders_custom_post(ctx: HttpContext, handler) -> None:
-    body, _413 = get_request_body(handler, max_length=ctx.max_body_bytes)
-    if _413:
-        return
-    try:
-        data = _json.loads(body.decode("utf-8")) if body else {}
-    except Exception:
-        return send_json(handler, {"error": "invalid json"}, 400)
-    name = data.get("name")
-    steps = data.get("steps")
-    decoder_type = str(data.get("decoder_type", "TXT")).upper()
-    if decoder_type not in ("TXT", "A"):
-        return send_json(handler, {"error": "decoder_type must be TXT or A"}, 400)
-    if not name or not isinstance(steps, list):
-        return send_json(handler, {"error": "name and steps required"}, 400)
-    ok, err = _validate_steps(steps, decoder_type)
-    if not ok:
-        return send_json(handler, {"error": err}, 400)
-    try:
-        if decoder_type == "TXT":
-            from txt_decoder import register_custom_decoder
-            reg_ok = register_custom_decoder(name, steps)
-            list_key = "custom_decoders"
-        else:
-            from a_decoder import register_custom_a_decoder
-            reg_ok = register_custom_a_decoder(name, steps)
-            list_key = "custom_a_decoders"
-        if not reg_ok:
-            return send_json(handler, {"error": "failed to register (name conflict or invalid steps)"}, 400)
-        with ctx.config_lock:
-            lst = ctx.shared_config.setdefault(list_key, [])
-            exists = any(x.get("name") == name for x in lst)
-            if not exists:
-                lst.append({"name": name, "steps": steps, "decoder_type": decoder_type})
-    except Exception as e:
-        return send_json(handler, {"error": str(e)}, 500)
-    _save_config(ctx, list_key)
-    return send_json(handler, {"status": "ok", "registered": name, "decoder_type": decoder_type})
-
-
-def handle_decoders_custom_delete(ctx: HttpContext, handler) -> None:
-    body, _413 = get_request_body(handler, max_length=ctx.max_body_bytes)
-    if _413:
-        return
-    try:
-        data = _json.loads(body.decode("utf-8")) if body else {}
-    except Exception:
-        return send_json(handler, {"error": "invalid json"}, 400)
-    name = data.get("name")
-    decoder_type = str(data.get("decoder_type", "TXT")).upper()
-    if decoder_type not in ("TXT", "A"):
-        return send_json(handler, {"error": "decoder_type must be TXT or A"}, 400)
-    if not name:
-        return send_json(handler, {"error": "name required"}, 400)
-    try:
-        if decoder_type == "TXT":
-            from txt_decoder import unregister_custom_decoder
-            reg_ok = unregister_custom_decoder(name)
-            list_key = "custom_decoders"
-        else:
-            from a_decoder import unregister_custom_a_decoder
-            reg_ok = unregister_custom_a_decoder(name)
-            list_key = "custom_a_decoders"
-        if not reg_ok:
-            return send_json(handler, {"error": "not removed (builtin or not found)"}, 400)
-        with ctx.config_lock:
-            lst = ctx.shared_config.get(list_key, [])
-            newlst = [x for x in lst if x.get("name") != name]
-            ctx.shared_config[list_key] = newlst
-    except Exception as e:
-        return send_json(handler, {"error": str(e)}, 500)
-    _save_config(ctx, list_key)
-    return send_json(handler, {"status": "ok", "removed": name, "decoder_type": decoder_type})
+    return _mutate(ctx, handler, 'decoder_create', 'registered')
 
 
 def handle_decoders_custom_put(ctx: HttpContext, handler) -> None:
-    body, _413 = get_request_body(handler, max_length=ctx.max_body_bytes)
-    if _413:
-        return
-    try:
-        data = _json.loads(body.decode("utf-8")) if body else {}
-    except Exception:
-        return send_json(handler, {"error": "invalid json"}, 400)
-    name = data.get("name")
-    steps = data.get("steps")
-    decoder_type = str(data.get("decoder_type", "TXT")).upper()
-    if decoder_type not in ("TXT", "A"):
-        return send_json(handler, {"error": "decoder_type must be TXT or A"}, 400)
-    if not name or not isinstance(steps, list):
-        return send_json(handler, {"error": "name and steps required"}, 400)
-    ok, err = _validate_steps(steps, decoder_type)
-    if not ok:
-        return send_json(handler, {"error": err}, 400)
-    try:
-        if decoder_type == "TXT":
-            from txt_decoder import unregister_custom_decoder, register_custom_decoder
-            unregister_custom_decoder(name)
-            reg_ok = register_custom_decoder(name, steps)
-            list_key = "custom_decoders"
-        else:
-            from a_decoder import unregister_custom_a_decoder, register_custom_a_decoder
-            unregister_custom_a_decoder(name)
-            reg_ok = register_custom_a_decoder(name, steps)
-            list_key = "custom_a_decoders"
-        if not reg_ok:
-            return send_json(handler, {"error": "failed to register updated decoder"}, 400)
-        with ctx.config_lock:
-            lst = ctx.shared_config.setdefault(list_key, [])
-            replaced = False
-            for i, x in enumerate(lst):
-                if x.get("name") == name:
-                    lst[i] = {"name": name, "steps": steps, "decoder_type": decoder_type}
-                    replaced = True
-                    break
-            if not replaced:
-                lst.append({"name": name, "steps": steps, "decoder_type": decoder_type})
-    except Exception as e:
-        return send_json(handler, {"error": str(e)}, 500)
-    _save_config(ctx, list_key)
-    return send_json(handler, {"status": "ok", "updated": name, "decoder_type": decoder_type})
+    return _mutate(ctx, handler, 'decoder_upsert', 'updated')
+
+
+def handle_decoders_custom_delete(ctx: HttpContext, handler) -> None:
+    return _mutate(ctx, handler, 'decoder_delete', 'removed')
 
 
 def handle_decoders_custom_preview(ctx: HttpContext, handler) -> None:

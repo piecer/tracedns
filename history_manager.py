@@ -6,7 +6,10 @@ import os
 import json
 import sys
 import logging
+import tempfile
 from urllib.parse import quote, unquote
+
+from monitor.diagnostics import diagnostic_reason
 
 logger = logging.getLogger(__name__)
 MAX_HISTORY_EVENTS = 1000
@@ -36,7 +39,7 @@ def ensure_history_dir(path):
     try:
         os.makedirs(path, exist_ok=True)
     except Exception as e:
-        logger.warning("cannot create history dir %s: %s", path, e)
+        logger.warning('Cannot create history directory; reason=%s', diagnostic_reason(e))
 
 
 def load_history_files(history_dir):
@@ -86,7 +89,7 @@ def load_history_files(history_dir):
     return h
 
 
-def persist_history_entry(history_dir, domain, history_obj):
+def persist_history_entry(history_dir, domain, history_obj, *, commit=None, detailed=False):
     """
     도메인의 히스토리를 파일에 저장합니다.
     history_obj는 dict 형태 ({'meta':..., 'events':..., 'current':...})를 기대.
@@ -97,6 +100,12 @@ def persist_history_entry(history_dir, domain, history_obj):
         domain (str): 도메인명
         history_obj (dict or list): 저장할 히스토리 객체
     """
+    tmp_fn = None
+    replaced = False
+
+    def outcome(status):
+        return status if detailed else status == 'saved'
+
     try:
         ensure_history_dir(history_dir)
         fn = history_file_path(history_dir, domain)
@@ -113,10 +122,33 @@ def persist_history_entry(history_dir, domain, history_obj):
             to_write = {'meta': meta, 'events': events, 'current': current}
         else:
             to_write = {'meta': {}, 'events': [], 'current': {}}
-        # Atomic write to avoid partially-written JSON when multiple threads/processes run.
-        tmp_fn = fn + ".tmp"
-        with open(tmp_fn, 'w', encoding='utf-8') as f:
+        # Preparation is private; the owner fences the final replace against
+        # concurrent target revocation without holding its lock during encoding.
+        with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=history_dir,
+                                         prefix='.history-', suffix='.tmp', delete=False) as f:
+            tmp_fn = f.name
             json.dump(to_write, f, indent=2, ensure_ascii=False)
-        os.replace(tmp_fn, fn)
-    except Exception as e:
-        logger.warning("cannot persist history for %s: %s", domain, e)
+            f.flush()
+            os.fsync(f.fileno())
+        if commit is not None:
+            replaced = bool(commit(tmp_fn, fn))
+            if not replaced:
+                return outcome('failed')
+        else:
+            os.replace(tmp_fn, fn)
+            replaced = True
+        directory = os.open(history_dir, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        return outcome('saved')
+    except Exception:
+        logger.warning('History persistence %s', 'uncertain' if replaced else 'failed')
+        return outcome('uncertain' if replaced else 'failed')
+    finally:
+        if tmp_fn is not None:
+            try:
+                os.unlink(tmp_fn)
+            except OSError:
+                pass

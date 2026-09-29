@@ -27,6 +27,18 @@ def audit_force(job, outcome):
                     request_id=job['request_id'], source_ip=job['source_ip'], job_id=job['job_id'])
 
 
+def finish_force(job, outcome):
+    """One terminal audit attempt per admitted in-process request."""
+    if job.get('_terminal_outcome') is not None:
+        return
+    job['_terminal_outcome'] = outcome
+    if job.get('actor'):
+        try:
+            audit_force(job, outcome)
+        except Exception:
+            logging.getLogger(__name__).error('Forced resolve audit completion failed')
+
+
 def audited_force(function):
     @wraps(function)
     def run(**kwargs):
@@ -38,9 +50,6 @@ def audited_force(function):
             outcome = 'failure'
             raise
         finally:
-            if job.get('actor'):
-                try:
-                    audit_force(job, outcome)
-                except Exception:
-                    logging.getLogger(__name__).error('Forced resolve audit completion failed')
+            if job:
+                finish_force(job, outcome)
     return run

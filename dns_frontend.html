@@ -35,6 +35,14 @@
   <button id="menuIPs">All IPs</button>
   <button id="menuValidIPs">Valid IPs</button>
 </nav>
+<section id="deliveryHealth" class="delivery-health" aria-labelledby="deliveryHeading" hidden>
+  <h2 id="deliveryHeading">Notification delivery</h2>
+  <p id="deliveryStatus" role="status" aria-live="polite" aria-atomic="true">Unknown — waiting for health.</p>
+  <p>Observation continues independently of notification delivery.</p>
+  <div id="deliveryDetails">Unknown — no successful health read yet.</div>
+  <p id="deliveryChecked">Last successful health read: unknown</p>
+  <p class="hint">Enqueued is not ACKed. At-least-once attempts can duplicate delivery; an ACK is destination acceptance, not human receipt.</p>
+</section>
 <div class="overview-grid" id="overviewGrid">
   <div class="metric-card">
     <span class="metric-label">Configured Domains</span>
@@ -136,6 +144,7 @@
       <button id="previewCustom">👁️ Preview</button>
       <button id="registerCustom">✔️ Register</button>
       <button id="clearCustom">🗑️ Clear</button>
+      <button id="reloadCustom">Reload catalog</button>
     </div>
     <div id="customPreviewResult" style="background:#fff7e6;padding:15px;margin-top:15px;white-space:pre-wrap;font-family:monospace;border-radius:8px;border:2px solid #ffeaa7;"></div>
     <h5 style="margin-top:15px;color:#1b5970;">Registered Custom Decoders</h5>
@@ -152,6 +161,10 @@
     <label for="misp_key_front">MISP API Key
       <input id="misp_key_front" type="password" placeholder="Your MISP API key" />
     </label>
+    <label for="misp_ca_bundle_front">MISP private CA bundle (absolute PEM path)
+      <input id="misp_ca_bundle_front" type="password" autocomplete="off" spellcheck="false" aria-describedby="mispCaHelp" />
+    </label>
+    <p id="mispCaHelp" class="hint">Path on the server, not a file upload. Leave blank to preserve the configured bundle; use Clear saved value to return to system trust. TLS verification always remains enabled. The saved path is never returned.</p>
     <label for="push_event_id_front">Push Event ID (MISP)
       <input id="push_event_id_front" type="text" placeholder="12345" />
     </label>

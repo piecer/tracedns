@@ -20,3 +20,6 @@ class HttpContext:
     results_cache: Dict[str, Any] = field(default_factory=dict)
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
     read_model: Any = None
+    state_repository: Any = None
+    config_service: Any = None
+    delivery_health: Any = None

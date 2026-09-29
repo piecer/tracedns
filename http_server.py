@@ -18,15 +18,16 @@ def purge_removed_domains_state(current_results, history, history_dir, removed_d
     if not removed:
         return
     removed_any = False
+    missing = object()
     with state_lock():
         for domain in removed:
             try:
-                if isinstance(current_results, dict) and current_results.pop(domain, None) is not None:
+                if isinstance(current_results, dict) and current_results.pop(domain, missing) is not missing:
                     removed_any = True
             except Exception:
                 pass
             try:
-                if isinstance(history, dict) and history.pop(domain, None) is not None:
+                if isinstance(history, dict) and history.pop(domain, missing) is not missing:
                     removed_any = True
             except Exception:
                 pass
@@ -91,10 +92,15 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
         super().server_close()
         if not self._background_closed:
             self._background_closed = True
-            deadline = time.monotonic() + 1.0
+            deadline = time.monotonic() + 3.0
+            jobs = getattr(self.RequestHandlerClass, 'relationship_jobs', None)
+            services = sorted(self._background_services, key=lambda service: service is not jobs)
             self.background_shutdown = [
-                service.close(timeout=max(0.0, deadline - time.monotonic()))
-                for service in self._background_services
+                service.close(timeout=min(
+                    3.0 if service is jobs else 1.0,
+                    max(0.0, deadline - time.monotonic()),
+                ))
+                for service in services
             ]
 
     def process_request(self, request, client_address):
@@ -123,7 +129,8 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
 def make_handler(shared_config, config_lock, config_path, history_dir, current_results, history, max_body_bytes=None,
                  *, security_store=None, public_origin='', insecure_http=False,
-                 allow_insecure_remote_http=False, trusted_proxies=()):
+                 allow_insecure_remote_http=False, trusted_proxies=(), state_repository=None, config_service=None,
+                 delivery_health=None):
     """Create configured HTTP request handler class bound to runtime state.
 
     ``max_body_bytes`` defaults to ``resolve_max_body_length()`` when omitted.
@@ -132,6 +139,13 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
     from http_api.enrichment import BackgroundEnrichment
     from http_api.read_source import create_read_model
     from http_api_handlers import get_ip_report
+    from http_api.relationship_handlers import RelationshipJobService
+    relationship_jobs = RelationshipJobService()
+    from monitor.repository import MonitorStateRepository
+    if state_repository is None:
+        with config_lock:
+            state_repository = MonitorStateRepository(current_results, history, history_dir,
+                                                      shared_config.get('domains') or [])
     enrichment = BackgroundEnrichment(get_ip_report)
     read_model = create_read_model(shared_config, config_lock, current_results, history)
 
@@ -151,8 +165,13 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
         max_body_bytes=max_body_bytes,
         background_enrichment=enrichment,
         read_model=read_model,
+        state_repository=state_repository,
+        relationship_jobs=relationship_jobs,
+        config_service=config_service,
+        delivery_health=delivery_health,
     )
-    handler.background_services = (enrichment, read_model)
+    handler.relationship_jobs = relationship_jobs
+    handler.background_services = (enrichment, read_model, relationship_jobs)
     from security.http import HttpSecurity, secure_handler
     service = HttpSecurity(security_store, public_origin, insecure_http, trusted_proxies,
                            allow_insecure_remote_http)

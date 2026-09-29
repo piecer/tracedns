@@ -114,17 +114,43 @@ with TraceDNSClient(os.environ['TRACEDNS_BASE_URL']) as api:
 | 분석 상태/결과 | GET `/ip-relationship-jobs/{job_id}` | result=1로 결과 포함 |
 | 분석 취소 | POST `/ip-relationship-jobs/{job_id}/cancel` | 빈 객체; running이면 보통 409 |
 | 동기 분석 호환 | POST `/ip-relationship-analysis` | 긴 요청 대신 비동기 권장; misp_event_id 연동은 jobs에서 사용 |
-| 디코더 카탈로그 | GET `/decoders` | 내장 이름 및 custom/custom_a/custom_all 정의 |
+| 디코더 카탈로그 | GET `/decoders` | 내장 이름 및 custom/custom_a/custom_all 정의 + 전역 revision |
 | DSL 허용 연산 | GET `/decoders/custom` | allowed_ops, decoder_types |
-| 디코더 변경 | POST/PUT/DELETE `/decoders/custom` | admin, name/decoder_type/steps; DELETE는 steps 불필요 |
+| 디코더 변경 | POST/PUT/DELETE `/decoders/custom` | admin, revision/name/decoder_type/steps; DELETE는 steps 불필요 |
 | 디코더 미리보기 | POST `/decoders/custom/preview` | admin, steps/sample/decoder_type |
 | MISP 검색 | GET/POST `/misp/search` | value, 외부 조회 |
 | MISP 이벤트 IP | POST `/misp/event-ips` | event_id, 외부 조회 |
+| 알림 전달 상태 | GET `/delivery-health` | admin/operator, 로컬 캐시만 읽음, 최대 4 KiB, 아래 의미 참조 |
 | 내 정보 | GET `/auth/me`, `/auth/activity`, `/auth/sessions` | 감사 결과는 events,total,limit,offset |
 | 내 계정 작업 | POST `/auth/password`, `/auth/logout`, `/auth/sessions/revoke` | revoke에서 session_id 생략 시 자신의 모든 세션 철회 |
 | 계정 관리 | GET/POST `/admin/users` | admin, 생성 시 username/password/role |
 | 사용자 변경 | POST `/admin/users/{user_id}/update`, `/reset`, `/revoke` | role/active 변경, 비밀번호 재설정, 전체 세션 철회 |
 | 감사 조회/출력 | GET `/admin/audit`, POST `/admin/audit/export` | admin; export는 한 페이지의 JSONL |
+
+MISP 검색은 TLS 인증서 검증을 사용하며 자동 리디렉션을 따르지 않는다.
+상위 서버의 비-2xx 응답, 연결/TLS 오류, JSON 파싱 오류는 500 오류 응답이며,
+상위 응답 본문·연결 예외·설정 URL·검색값을 오류 진단에 노출하지 않는다.
+정상 검색 결과의 query/attributes는 기존 계약대로 반환한다.
+
+MISP 사설 CA는 `alerts.misp_ca_bundle`에 서버 로컬의 절대 PEM 파일 경로로 지정한다.
+설정 저장 전에 파일 크기(최대 2 MiB)와 CA 파싱을 검증하며, 잘못된 값은 설정/리비전을
+변경하지 않고 400으로 거부한다. 미지정은 기본 인증서 검증이며 `false`로 끌 수 없다.
+경로는 설정/구성 응답에서 비공개이고 `configured.misp_ca_bundle`로 설정 여부만 표시한다.
+빈 문자열 저장은 기존 경로를 보존한다. 기본 신뢰 저장소로 돌아가려면 settings 요청의
+`clear_fields`에 `misp_ca_bundle`을 넣는다. 검색은 전달 어댑터와 동일한 CA 검증 함수를
+사용한다. 저장 후 파일이 없어지거나 유효하지 않으면 검색은 외부 요청 없이 실패하며,
+검증을 끈 재시도는 하지 않는다. 테스트의 전송 인자 검증은 실제 사설 CA TLS 연결 검증과 다르다.
+
+`/delivery-health`와 `/api/v1/delivery-health`는 같은 닫힌 응답 스키마를 사용한다.
+HTTP 200은 상태 조회 성공일 뿐 알림 전달 성공이 아니다. `observation_policy=continue`는
+알림 수용 한도와 무관하게 관측을 계속한다는 정책이다. `missed_total`은 저장된 미수용
+목적지별 알림 항목 수, `missed_unpersisted`는 아직 저장하지 못한 알려진 증가분이다.
+`accounting_complete=false`이면 이 수치는 하한이며 누락이 없다는 뜻이 아니다.
+`failed_total`은 수용 후 최종 실패한 항목, `acked_total`은 목적지 ACK를 확인한 항목이다.
+저장소 장애라도 유효한 캐시가 있으면 degraded 상태를 반환하며, 소유자가 없거나
+캐시 계약이 깨졌으면 503으로 응답한다. 내부 식별자·주소·IOC·예외 문구는 노출하지 않는다.
+현재 단계의 HTTP 경계 검증과 실제 outbox/bootstrap 연결 완료 여부는
+`ARCHITECTURE_HARDENING_PLAN.md` 및 `DELIVERY_CONTRACT.md`의 수락 상태를 구분해 확인한다.
 
 ## 웹 화면의 비동기 VT 조회
 
@@ -194,6 +220,8 @@ Secret 응답은 빈 문자열 + configured 플래그다. 빈 쓰기는 기존 �
 관계 분석 생성은 202와 `{"status":"queued","job_id":"…"}`를 반환한다.
 상태 GET은 200이어도 실패/진행 중일 수 있다. 1–2초 간격, 제한된 총 시간으로 polling하고
 completed에서 result=1로 결과를 가져온다. failed/cancelled/error/audit_status도 확인한다.
+결과 게시와 감사 저장은 별도 완료 단계이므로 completed에서도 audit_status=pending일 수 있다.
+감사 저장 확인이 필요하면 같은 총 시간 제한 안에서 recorded 또는 failed까지 확인한다.
 작업 결과는 메모리 기반이며 재시작/만료/용량 정책으로 사라진다. 404는 완료의 증거가 아니다.
 취소는 future.cancel 기반이다. 실행 중이거나 이미 끝났으면 cancelled=false와 409다.
 
@@ -229,12 +257,50 @@ VT 기본값은 `/ips`만 off, `/domain-analysis`·precheck·IP 분석은 on이�
 - idempotency-key 지원 없음. timeout/5xx 후 변경 또는 enqueue가 되었을 수 있으므로
   설정/감사를 먼저 조회한다. 무조건 재전송하지 않는다.
 
+## 설정과 디코더의 직렬화된 커밋
+
+`/config`, `/settings`, 디코더 POST/PUT/DELETE는 legacy와 `/api/v1`에서 동일한
+전역 revision을 사용한다. 인증된 쓰기는 로드한 문서의 **정수 revision**을 전달해야 한다.
+누락·문자열·boolean·이전 revision은 409이며 현재 revision을 반환한다. 미리보기는
+revision 없이 실행할 수 있고 설정을 변경하지 않는다.
+
+`GET /decoders`는 정의와 이름, revision을 일관된 스냅샷으로 반환한다.
+POST는 같은 종류의 이름 충돌을 400으로 거부하고 PUT은 upsert를 유지한다.
+설정된 대상이 참조하는 커스텀 디코더는 삭제할 수 없다(400). 전체 `/config` 쓰기로
+대상과 디코더를 함께 제거하는 것은 가능하다. 같은 이름을 TXT와 A에 각각 사용할 수 있다.
+
+예시(실제 로드한 revision으로 대체):
+
+```json
+{"revision": 7, "name": "example_decoder", "decoder_type": "TXT", "steps": [{"op": "ascii"}]}
+```
+
+DELETE는 `revision`, `name`, 선택적 `decoder_type`만 필요하다. 성공 응답은 기존
+`registered`/`updated`/`removed` 필드와 함께 `revision`, `catalog`, `warnings`를 반환한다.
+UI는 이 커밋된 catalog를 사용하며 성공 후 GET이 실패해도 저장 상태를 잃지 않는다.
+409에서는 초안을 유지하고 자동 재시도하지 않는다. **Reload catalog** 후 변경 내용을
+검토해야 한다. 디코더 저장은 다른 미저장 도메인/알림 폼의 revision을 갱신하거나
+도메인 초안을 다시 로드하지 않는다.
+
+한 ConfigService가 후보 구성과 TXT/A 함수를 검증·컴파일한 뒤 전체 설정 파일을
+원자적으로 교체한다. 검증·컴파일·쓰기 실패는 이전 revision, 파일, 함수와 상태를 유지한다.
+파일 교체가 커밋 지점이며 파일과 RAM의 분산 트랜잭션은 아니다. 프로세스 재시작은
+커밋된 파일에서 복구한다. 파일 fsync는 수행하지만 디렉터리 fsync에 의한 전원 장애
+내구성까지 보장하지 않는다. 설정 파일 경로가 없는 임시/임베디드 서버는 메모리만 갱신한다.
+알려지지 않은 공개 설정 키도 보존하고 `_` 런타임 필드는 저장하지 않는다.
+외부에서 직접 수정한 파일은 재시작 전까지 다시 병합하지 않는다.
+
+성공 후 선택적 VT/알림 적용이나 이력 정리 실패는 200과 커밋된 revision을 유지하고
+`warnings`에 정제된 코드를 반환한다. 예: `alerts_runtime_apply_failed`,
+`vt_api_key_apply_failed`, `vt_cache_ttl_apply_failed`, `history_cleanup_pending`.
+경고는 롤백이 아니므로 이전 revision으로 다시 저장하지 않는다. 선택적 연동은 writer
+순서를 유지하지만 config/state lock 밖에서 실행된다. 이력 정리가 미완료인 대상의 재사용은
+정리 완료까지 차단된다. 쓰기 실패의 HTTP 500은 기존 보안 경계의 일반 오류
+`Service unavailable` + `request_id`를 사용하며 내부 경로나 자격증명을 노출하지 않는다.
+운영 서버의 재시작이나 외부 연동 시험은 별도 승인이 필요하다.
+
 ## 기존 구현의 한계
 
-- 디코더 CRUD는 revision 충돌 검사가 없고 파일 저장 실패가 성공 응답에 드러나지 않을 수 있다.
-  PUT은 upsert이며 새 등록 실패 전에 기존 런타임 정의를 제거할 수 있다. 미리보기와 원본 보관,
-  성공/실패 후 `/decoders` 재조회를 수행하되 런타임 조회만으로 재시작 후 영속성을 주장하지 않는다.
-  이 REST 정리는 디코더 저장 엔진의 트랜잭션 동작을 변경하지 않는다.
 - domain-precheck의 `vt_lookup_budget`는 디코더 후보 분석만 제한한다. 초기 선택 IP의 VT
   조회까지 제한하는 전역 quota가 아니다. SNS precheck는 기존 `DEFAULT_SOLAR_PROXY_HOSTS`
   경로를 사용하므로 config의 `DEFAULT_SNS_PROXY_HOSTS` 변경 반영을 가정하지 않는다.

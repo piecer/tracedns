@@ -41,6 +41,7 @@ from http_api.settings_handlers import handle_settings_get as _handle_settings_g
 from http_api.settings_handlers import handle_settings_post as _handle_settings_post_basic
 from http_api.relationship_handlers import (
     RelationshipJobCapacityError,
+    RelationshipJobStoppedError,
     RelationshipRequestError,
     cancel_ip_relationship_job as _cancel_ip_relationship_job,
     ensure_ip_relationship_job_capacity as _ensure_ip_relationship_job_capacity,
@@ -116,6 +117,10 @@ def attach_api_handlers(
     max_body_bytes: int | None = None,
     background_enrichment=None,
     read_model=None,
+    state_repository=None,
+    relationship_jobs=None,
+    config_service=None,
+    delivery_health=None,
 ):
     cache_lock = threading.RLock()
     if max_body_bytes is None:
@@ -133,7 +138,12 @@ def attach_api_handlers(
         results_cache={},
         max_body_bytes=max_body_bytes,
         read_model=read_model,
+        state_repository=state_repository,
+        config_service=config_service,
+        delivery_health=delivery_health,
     )
+    from monitor.config_service import get_config_service
+    get_config_service(ctx)
     ips_cache = {'version': 0, 'rows': []}
 
     # Expose shared_config on the handler instance for specialized endpoints
@@ -2009,26 +2019,26 @@ def attach_api_handlers(
             payload['type'] = ['ip-src', 'ip-dst', 'ip-src|port', 'ip-dst|port']
         url = misp_url.rstrip('/') + '/attributes/restSearch'
         try:
-            print(f"[misp] search url={url} value={value} type={payload.get('type')}")
+            from monitor.delivery_adapters import validated_tls_verify
+            verify = validated_tls_verify(alerts_cfg.get('misp_ca_bundle'))
             resp = _requests.post(
                 url,
                 json=payload,
                 headers={'Authorization': api_key, 'Accept': 'application/json', 'Content-Type': 'application/json'},
-                verify=False,
+                verify=verify,
+                allow_redirects=False,
                 timeout=20
             )
-            print(f"[misp] response status={resp.status_code} bytes={len(resp.content or b'')} ")
-        except Exception as e:
-            print(f"[misp] search failed: {e}")
-            return self._send_json({'error': f'misp search failed: {e}'}, 500)
+        except Exception:
+            return self._send_json({'error': 'misp search transport failed'}, 500)
 
-        if not resp.ok:
-            return self._send_json({'error': f'misp search failed ({resp.status_code})', 'detail': resp.text[:500]}, 500)
+        if not 200 <= resp.status_code < 300:
+            return self._send_json({'error': 'misp search upstream rejected request'}, 500)
 
         try:
             result = resp.json()
         except Exception:
-            return self._send_json({'error': 'misp search returned non-json', 'detail': resp.text[:500]}, 500)
+            return self._send_json({'error': 'misp search returned non-json'}, 500)
 
         attrs = []
         if isinstance(result, dict):
@@ -2268,6 +2278,9 @@ def attach_api_handlers(
     
         if parsed.path == '/config':
             return self._handle_config()
+        if parsed.path == '/delivery-health':
+            from http_api.delivery_health import handle_delivery_health
+            return handle_delivery_health(ctx, self)
         if parsed.path == '/results':
             return self._handle_results(qs)
         if parsed.path == '/decoders':
@@ -2297,7 +2310,7 @@ def attach_api_handlers(
             parts = [p for p in parsed.path.split('/') if p]
             if len(parts) >= 2:
                 include_result = bool(qs.get('result', ['0'])[0] in ('1', 'true', 'yes', 'on'))
-                payload, status = _get_ip_relationship_job(parts[1], include_result=include_result,
+                payload, status = _get_ip_relationship_job(parts[1], service=relationship_jobs, include_result=include_result,
                                                           principal=getattr(self, 'principal', None))
                 return self._send_json(payload, status)
         if parsed.path == '/misp/search':
@@ -2357,9 +2370,11 @@ def attach_api_handlers(
                 return self._send_json({'error': 'invalid json'}, 400)
             try:
                 _validate_relationship_request(data)
-                _ensure_ip_relationship_job_capacity(principal=getattr(self, 'principal', None))
+                _ensure_ip_relationship_job_capacity(service=relationship_jobs, principal=getattr(self, 'principal', None))
             except RelationshipRequestError as exc:
                 return self._send_json(exc.payload, exc.status_code)
+            except RelationshipJobStoppedError as exc:
+                return self._send_json({'error': str(exc)}, 503)
             except RelationshipJobCapacityError as exc:
                 return self._send_json({'error': str(exc)}, 429)
             misp_context = None
@@ -2390,16 +2405,19 @@ def attach_api_handlers(
                     security_store=getattr(self, 'security_store', None),
                     request_id=getattr(self, 'request_id', ''),
                     source_ip=getattr(self, 'source_ip', ''),
+                    service=relationship_jobs,
                 )
             except RelationshipRequestError as exc:
                 return self._send_json(exc.payload, exc.status_code)
+            except RelationshipJobStoppedError as exc:
+                return self._send_json({'error': str(exc)}, 503)
             except RelationshipJobCapacityError as exc:
                 return self._send_json({'error': str(exc)}, 429)
             return self._send_json(job, 202)
         if parsed.path.startswith('/ip-relationship-jobs/'):
             parts = [p for p in parsed.path.split('/') if p]
             if len(parts) >= 3 and parts[2] == 'cancel':
-                payload, status = _cancel_ip_relationship_job(parts[1], principal=getattr(self, 'principal', None))
+                payload, status = _cancel_ip_relationship_job(parts[1], service=relationship_jobs, principal=getattr(self, 'principal', None))
                 return self._send_json(payload, status)
         if parsed.path == '/ip-relationship-analysis':
             body, body_error = get_request_body(self, max_length=self.max_body_bytes)

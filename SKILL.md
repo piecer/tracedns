@@ -149,11 +149,14 @@ each request, before the next request or logout. CLI output contains only the pa
   it is not a hard stop. Save completed results promptly.
 - `/ips?since=` is relative age in seconds; audit since/until are UTC epoch seconds.
 - `/verify` is an unimplemented legacy endpoint and is intentionally NOT in v1.
-- Legacy decoder CRUD has no revision checks and can report success despite a disk
-  save failure. PUT is an upsert and may unregister the old runtime decoder before a
-  failed replacement. Preview first, preserve the prior definition, and read back
-  `/decoders` even after a failed PUT. Runtime readback alone does not prove persistence;
-  never restart the server just to check unless the user authorizes that interruption.
+- Decoder CRUD shares the config/settings revision on legacy and v1 routes. Send
+  the revision loaded with `/decoders`; preserve the draft and require review on 409.
+  Preview needs no revision. POST conflicts fail; PUT upserts; referenced decoder
+  deletion fails. Validation/compile/write failures preserve the previous callable.
+  Success returns committed revision/catalog and sanitized post-commit `warnings`;
+  warnings are not rollback. Do not rebase another dirty form or automatically retry.
+  Never restart the server to verify persistence without authorization; in-memory
+  fixture servers without a config path do not promise disk persistence.
 - Precheck HTTP 200 does not mean successful DNS; inspect `by_server` errors and `can_add`.
   Its `vt_lookup_budget` bounds only candidate-decoder enrichment, not the initial lookup.
   Relationship `pairs[].score` is legacy similarity; ranking uses `relationship_strength`.

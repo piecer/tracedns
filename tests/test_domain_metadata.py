@@ -95,17 +95,18 @@ def test_failed_save_and_stale_revision_do_not_change_metadata(tmp_path):
     from unittest.mock import patch
 
     ctx = context(domains=[])
+    ctx.config_path = str(tmp_path / 'config.json')
     save(ctx, [{'name': 'one.test', 'type': 'A'}])
-    before = deepcopy(ctx.shared_config)
+    before = deepcopy({k: v for k, v in ctx.shared_config.items() if k != '_config_service'})
     h = request({'revision': 0, 'domains': []})
     handle_config_post(ctx, h)
     assert h.status == 409
-    assert ctx.shared_config == before
+    assert {k: v for k, v in ctx.shared_config.items() if k != '_config_service'} == before
     ctx.config_path = str(tmp_path / 'config.json')
     with patch('config_manager.write_config', side_effect=OSError('disk full')):
         h = save(ctx, [{'name': 'one.test', 'type': 'AAAA'}])
     assert h.status == 500
-    assert ctx.shared_config == before
+    assert {k: v for k, v in ctx.shared_config.items() if k != '_config_service'} == before
 
 
 def test_reload_of_persisted_configuration_keeps_dates(tmp_path):
