@@ -7,6 +7,8 @@ ENS decoding logic can be selected per-domain and extended over time.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import ipaddress
 import re
@@ -167,8 +169,22 @@ def _decode_ipv6_segment(
     return sorted(out)
 
 
-def decode_ens_endpoints(record: str, decoded_ips: List[str], suffix_is_port: Any = True) -> List[str]:
-    """Attach a bracketed ENS record's shared TCP port to decoded IPv4s."""
+def decode_ens_endpoints(
+    record: str,
+    decoded_ips: List[str],
+    suffix_is_port: Any = True,
+    *,
+    method: str | None = None,
+    ens_options=None,
+) -> List[str]:
+    """Recover authenticated endpoints or attach a legacy bracketed suffix port."""
+    if str(method or '').strip() == 'sha256_hmac_xor':
+        options = parse_ens_options(ens_options, strict=False)
+        endpoint = _decode_sha256_hmac_xor_endpoint(
+            record, key_hex=options.get('key_hex'), marker=options.get('marker', '1488:'),
+        )
+        # Never promote an unauthenticated outer suffix, even on decode failure.
+        return [endpoint] if endpoint and endpoint.rsplit(':', 1)[0] in (decoded_ips or []) else []
     if not _parse_bool(suffix_is_port, default=True):
         return []
     match = _COMMON_PORT_RE.search(str(record or ''))
@@ -261,6 +277,54 @@ def decode_ens_ipv6_5to8_xor(record: str, xor_byte=None, **kwargs) -> List[str]:
         record,
         lambda src: bytes([(b ^ xb) & 0xFF for b in src]),
     )
+
+
+def _decode_sha256_hmac_xor_endpoint(record: str, key_hex=None, marker='1488:') -> str | None:
+    """Authenticate a bounded ENS record before recovering a literal IPv4:port.
+
+    The key is raw malware configuration bytes, not a precomputed digest.
+    Missing/malformed options and unauthenticated records fail closed.
+    """
+    if not isinstance(record, str) or len(record) > 4096:
+        return None
+    if not isinstance(marker, str) or not 1 <= len(marker) <= 64:
+        return None
+    if not isinstance(key_hex, str) or not re.fullmatch(r'(?:[0-9a-fA-F]{2}){1,256}', key_hex):
+        return None
+    index = record.find(marker)
+    if index < 0:
+        return None
+    token = re.split(r'[ \t\r\n"]', record[index + len(marker):].strip(), maxsplit=1)[0]
+    if not re.fullmatch(r'(?:[0-9a-fA-F]{2}){17,}', token):
+        return None
+    raw = bytes.fromhex(token)
+    nonce, ciphertext, tag = raw[:8], raw[8:-8], raw[-8:]
+    key = hashlib.sha256(bytes.fromhex(key_hex)).digest()
+    expected_tag = hmac.new(key, nonce + ciphertext, hashlib.sha256).digest()[:8]
+    if not hmac.compare_digest(tag, expected_tag):
+        return None
+    plaintext = bytearray()
+    for offset in range(0, len(ciphertext), 32):
+        counter = (offset // 32).to_bytes(4, 'big')
+        block = hashlib.sha256(key + nonce + counter).digest()
+        plaintext.extend(a ^ b for a, b in zip(ciphertext[offset:offset + 32], block))
+    try:
+        endpoint = plaintext.decode('ascii')
+        host, separator, port = endpoint.rpartition(':')
+        if not separator or not re.fullmatch(r'[0-9]{1,5}', port) or not 1 <= int(port) <= 65535:
+            return None
+        ipaddress.IPv4Address(host)
+    except (UnicodeDecodeError, ValueError):
+        return None
+    # Preserve the authenticated spelling, including any leading port zeroes.
+    return endpoint
+
+
+@ens_decode_register('sha256_hmac_xor')
+def decode_ens_sha256_hmac_xor(record: str, key_hex=None, marker='1488:', **kwargs) -> List[str]:
+    """Recover an IPv4 from nonce || XOR ciphertext || truncated HMAC-SHA256."""
+    endpoint = _decode_sha256_hmac_xor_endpoint(record, key_hex=key_hex, marker=marker)
+    return [endpoint.rsplit(':', 1)[0]] if endpoint else []
 
 
 @ens_decode_register('ROL3210_decode')

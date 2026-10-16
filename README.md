@@ -208,6 +208,7 @@ Notable ENS methods:
 - `ipv6_5to8_xor`: take IPv6 bytes 5:8 and XOR each byte into an IPv4.
 - `ROL3210_decode`: apply the board-supplied nibble-swap/rotate/key transform. It uses IPv6 bytes 5:8 by default for the existing betavpn `network` cluster.
 - `ipv6_last4_xor32`: decode the final four IPv6 bytes with a configurable 32-bit XOR key. Set `plain_ipv4=true` to include plain IPv4 literals and `suffix_is_port=false` when trailing metadata must not be promoted to endpoints.
+- `sha256_hmac_xor`: authenticate an encrypted ENS record with truncated HMAC-SHA256, then recover its IPv4 and port using a SHA-256 XOR stream. Requires `ens_options.key_hex` (raw key bytes as hex); `marker` defaults to `1488:`. Failed authentication yields no managed IPs/endpoints. See [configuration, limits and preserved evidence](docs/ens/sha256-hmac-xor-decoder.md).
 - `betavpn_network_full`: compatibility alias for the same transform, kept for cluster-specific traceability and older configs.
 
 Exact decoder corpora are preserved under `docs/ens/` for traceability and regression testing. For ENS records written to an off-name nodehash, configure `ens_node` (and optionally `ens_resolver`) alongside `ens_text_key` and `ens_decode` so TraceDNS calls `text(bytes32,string)` for the transaction node rather than only `namehash(name)`. Example: `ens_text_key=node`, `ens_decode=ROL3210_decode`, `ens_node=0x07ddacfa58713a8822dfda2b6cf229f38a9bb1a6261cb92abf72a36a0010559d`, `ens_resolver=0xF29100983E058B709F3D539b0c765937B804AC15`.

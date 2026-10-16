@@ -752,6 +752,8 @@ def attach_api_handlers(
                                 raw_value,
                                 managed_ips,
                                 suffix_is_port=ens_options.get('suffix_is_port', True),
+                                method=ens_decode,
+                                ens_options=ens_options,
                             )
                             qstatus = 'ok'
                         except EnsQueryError as e:

@@ -1,0 +1,24 @@
+{
+  "runtime_method_name": "sha256_hmac_xor",
+  "ens_name": "chillpedophile.eth",
+  "text_key": "name",
+  "sample_sha256": "fa97cce05ae92289e3f5604abd290dd3e0088da843e67f78a503cac9d6f74b89",
+  "decoder_options": {
+    "key_hex": "6b39236d503224764c38406e5135217852372a775a345e74593126754a365f62",
+    "marker": "1488:"
+  },
+  "observation": {
+    "chain_id": 1,
+    "block_number": 26203772,
+    "block_hash": "0x5fb491da54437467cba2e41723398244c907d85f3668a2edbd06931910431c6c",
+    "observed_utc": "2026-10-16T08:03:19.519577+00:00",
+    "resolver": "0xf29100983e058b709f3d539b0c765937b804ac15",
+    "note": "Historical read-only chain observation, not a hard-coded current C2 or proof of server liveness."
+  },
+  "raw_record": "1488:6b7c8007f715b7fc038420de47eb42742ce8580c83589ac0d0031b61af8ba06d9ea04f",
+  "decoded_ipv4": "136.85.228.108",
+  "decoded_endpoint": "136.85.228.108:4433",
+  "nonce_hex": "6b7c8007f715b7fc",
+  "ciphertext_hex": "038420de47eb42742ce8580c83589ac0d0031b",
+  "tag_hex": "61af8ba06d9ea04f"
+}
