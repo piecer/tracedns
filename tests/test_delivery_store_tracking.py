@@ -30,7 +30,7 @@ def test_cursor_overflow_reenrolls_without_old_delta_replay(tmp_path):
     store.close(clean=True)
 
 
-def test_recent_suppression_is_not_ack_or_loss(tmp_path):
+def test_recent_and_reappearance_suppression_are_not_ack_or_loss(tmp_path):
     store = store_at(tmp_path)
     store.bootstrap({}, {}, AUTH)
     store.record_domain(obs(["1.1.1.1"], observed_at=10), AUTH, BINDINGS)
@@ -40,7 +40,9 @@ def test_recent_suppression_is_not_ack_or_loss(tmp_path):
     assert result["missed_receipts"] == 0
     assert store.health_snapshot()["acked_total"] == 0
     store.record_domain(obs([], observed_at=40), AUTH, BINDINGS)
-    assert store.record_domain(obs(["1.1.1.1"], observed_at=71), AUTH, BINDINGS)["admitted_receipts"] == 1
+    assert store.record_domain(obs(["1.1.1.1"], observed_at=71), AUTH, BINDINGS)["admitted_receipts"] == 0
+    store.record_domain(obs([], observed_at=80), AUTH, BINDINGS)
+    assert store.record_domain(obs(["1.1.1.1"], observed_at=86480), AUTH, BINDINGS)["admitted_receipts"] == 1
     store.close(clean=True)
 
 

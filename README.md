@@ -180,8 +180,24 @@ Custom decoders use a constrained, validated list of steps (no arbitrary code ex
   across restarts, sends the removal alert only if the IP remains absent for
   the full period, and suppresses a new-IP alert when it returns during that
   window.
-
-
+- Reappearance suppression is also retained independently for each target and
+  provider/decoder configuration: when an observed IP leaves that target's
+  managed-IP set, its return is suppressed for 24 hours from that disappearance,
+  even if another query fails or the observation comes from a forced subset.
+  Repeated empty observations do not extend the deadline; a return followed by
+  another disappearance starts a new window. This is not a 24-hour cooldown from
+  the last alert. Previously unseen IPs remain eligible for normal alerts.
+- Suppression is persisted in `<config-path>.history/delivery.sqlite`
+  (`dns_config.json.history/delivery.sqlite` by default) and survives clean or
+  unclean restart. It does not authorize
+  removal: only a valid complete full scan can start or expire removal grace.
+  Existing databases gain the suppression table on startup without resetting
+  pending notifications or removal timers; already-lost disappearance timestamps
+  cannot be reconstructed retroactively.
+- Independent suppression is bounded to 8,192 target/configuration/IP entries
+  and 2 MiB of encoded metadata. Overflow preserves existing entries and exposes
+  incomplete tracking in delivery health; observation continues, but suppression
+  cannot be guaranteed for entries that could not be retained.
 
 ## ENS Text Record Decoder Helper
 

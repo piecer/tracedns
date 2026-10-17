@@ -50,6 +50,7 @@ DEFAULT_LIMITS = {
     "cursor_targets": 4096, "cursor_members": 16384, "cursor_bytes": 4 * 1024 * 1024,
     "target_ips": 4096, "baseline_items": 8192, "baseline_bytes": 2 * 1024 * 1024,
     "grace_items": 8192, "grace_bytes": 2 * 1024 * 1024,
+    "reappearance_items": 8192, "reappearance_bytes": 2 * 1024 * 1024,
     "recent_items": 4096, "recent_bytes": 1024 * 1024,
     "terminal_items": 256, "terminal_bytes": 128 * 1024,
     "batch_items": 60, "batch_bytes": 24 * 1024, "pages": 16384,

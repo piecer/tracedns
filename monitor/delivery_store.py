@@ -163,6 +163,12 @@ class DeliveryStore:
         # candidate order and bounded membership lookup in SQL, not hydration.
         self._execute("CREATE INDEX IF NOT EXISTS receipt_claim ON receipt(channel,binding,id)")
         self._execute("CREATE INDEX IF NOT EXISTS receipt_members ON receipt(batch_id,id)")
+        # Additive schema-1 state: suppression is not proof of global absence.
+        # Existing receipts, cursors and removal deadlines are left untouched.
+        self._execute("CREATE TABLE IF NOT EXISTS reappearance (target TEXT NOT NULL, "
+                      "signature TEXT NOT NULL, ip TEXT NOT NULL, expires REAL NOT NULL, "
+                      "bytes INTEGER NOT NULL, PRIMARY KEY(target,signature,ip))")
+        self._execute("CREATE INDEX IF NOT EXISTS reappearance_expiry ON reappearance(expires)")
 
     def _release(self):
         if self._db is not None:
@@ -206,7 +212,9 @@ class DeliveryStore:
             for ip in set(observation["managed_ips"]) - set(observation.get("before_ips", [])):
                 key = encode([observation["target"], observation["projection_signature"], ip, "Added"])
                 if not self._one("SELECT 1 FROM grace WHERE ip=?", (ip,)) and not self._one(
-                        "SELECT 1 FROM recent WHERE key=? AND expires>?", (key, observation["observed_at"])):
+                        "SELECT 1 FROM recent WHERE key=? AND expires>?", (key, observation["observed_at"])) and not self._one(
+                        "SELECT 1 FROM reappearance WHERE target=? AND signature=? AND ip=? AND expires>?",
+                        (observation["target"], observation["projection_signature"], ip, observation["observed_at"])):
                     count += 1
             return count
         except sqlite3.Error:
@@ -255,8 +263,10 @@ class DeliveryStore:
 
     def retire_target_cursor(self, incarnation):
         with self._lock:
-            ok, _, _ = self._transaction(uuid.uuid4().hex,
-                lambda: self._execute("DELETE FROM cursor WHERE incarnation=?", (incarnation,)))
+            def apply():
+                self._execute("DELETE FROM cursor WHERE incarnation=?", (incarnation,))
+                self._prune_reappearance()
+            ok, _, _ = self._transaction(uuid.uuid4().hex, apply)
             if not ok:
                 self.enter_gap("delivery_storage", {})
             return {"ledger_committed": ok}
@@ -281,6 +291,7 @@ class DeliveryStore:
                     if row is None or row["signature"] != value["signature"]:
                         self._execute("DELETE FROM cursor WHERE target=?", (target,))
                         self._put_cursor(target, sorted(set(value["ips"])), value["signature"], uuid.uuid4().hex)
+                self._prune_reappearance()
                 self._control["revision"] = authority["revision"]
                 self._control["signature"] = authority["signature"]
             ok, _, _ = self._transaction(uuid.uuid4().hex, apply)
@@ -449,6 +460,7 @@ class DeliveryStore:
                     # but do not attach its prior incarnation to new authority.
                     self._execute("UPDATE cursor SET incarnation=lower(hex(randomblob(16)))")
                 self._prune_cursors(active_projection)
+                self._prune_reappearance()
                 self._recover_claims()
                 self._control["enrolled"] = True
                 self._control["clean"] = False
@@ -495,6 +507,32 @@ class DeliveryStore:
         return {"outcome": outcome, "admitted_receipts": admitted, "missed_receipts": missed,
                 "ledger_committed": committed, "accounting_complete": self._control["accounting_complete"]}
 
+    def _prune_reappearance(self):
+        self._execute("DELETE FROM reappearance WHERE NOT EXISTS (SELECT 1 FROM cursor "
+                      "WHERE cursor.target=reappearance.target AND cursor.signature=reappearance.signature)")
+
+    def _remember_disappearance(self, observation, missing):
+        """Retain a bounded per-target hold, never start a removal deadline."""
+        now = observation["observed_at"]
+        target, signature = observation["target"], observation["projection_signature"]
+        self._execute("DELETE FROM reappearance WHERE expires<=?", (now,))
+        self._execute("DELETE FROM reappearance WHERE target=? AND signature<>?", (target, signature))
+        if not missing:
+            return
+        count, used = self._one("SELECT COUNT(*),COALESCE(SUM(bytes),0) FROM reappearance")
+        expires = now + 86400
+        for ip in sorted(missing):
+            if self._one("SELECT 1 FROM reappearance WHERE target=? AND signature=? AND ip=?",
+                         (target, signature, ip)):
+                continue
+            needed = size([target, signature, ip, expires])
+            if count >= self.limits["reappearance_items"] or used + needed > self.limits["reappearance_bytes"]:
+                self._tracking_loss()
+                continue
+            self._execute("INSERT INTO reappearance VALUES(?,?,?,?,?)", (target, signature, ip, expires, needed))
+            count += 1
+            used += needed
+
     def record_domain(self, observation, authority, bindings):
         with self._lock:
             if not authority.get("valid"):
@@ -536,9 +574,17 @@ class DeliveryStore:
                 for entry in entries:
                     key = encode([observation["target"], observation["projection_signature"], entry[0], "Added"])
                     if self._one("SELECT 1 FROM recent WHERE key=?", (key,)) or self._one(
-                            "SELECT 1 FROM grace WHERE ip=?", (entry[0],)):
+                            "SELECT 1 FROM grace WHERE ip=?", (entry[0],)) or self._one(
+                            "SELECT 1 FROM reappearance WHERE target=? AND signature=? AND ip=? AND expires>?",
+                            (observation["target"], observation["projection_signature"], entry[0], observation["observed_at"])):
                         continue
                     eligible.append(entry)
+                # Consume holds only after testing additions; a later disappearance
+                # starts its own window rather than extending this one forever.
+                for ip in ips:
+                    self._execute("DELETE FROM reappearance WHERE target=? AND signature=? AND ip=?",
+                                  (observation["target"], observation["projection_signature"], ip))
+                self._remember_disappearance(observation, before - set(ips))
                 recent_n, recent_bytes = self._one("SELECT COUNT(*),COALESCE(SUM(bytes),0) FROM recent")
                 needed_bytes = sum(size([observation["target"], observation["projection_signature"], e[0], "Added"]) for e in eligible)
                 recent_full = recent_n + len(eligible) > self.limits["recent_items"] or recent_bytes + needed_bytes > self.limits["recent_bytes"]
@@ -905,6 +951,12 @@ class DeliveryStore:
         self._execute("DELETE FROM cursor")
         for target, value in projection.items():
             self._put_cursor(target, sorted(set(value["ips"])), value["signature"], uuid.uuid4().hex)
+            # GAP observations cannot consume holds until recovery commits.
+            # These positives end their old window; still-absent IPs retain it.
+            for ip in value["ips"]:
+                self._execute("DELETE FROM reappearance WHERE target=? AND signature=? AND ip=?",
+                              (target, value["signature"], ip))
+        self._prune_reappearance()
 
     def recover_gap(self, authority, current_projection, full_result, loss_checkpoint=None):
         with self._lock:

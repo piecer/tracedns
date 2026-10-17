@@ -55,6 +55,7 @@ Create a constant-size owner-only `delivery.initialized` sentinel containing sch
 | Notification detector cursors | **4,096 targets**, **16,384 target/IP memberships**, **4 MiB** serialized projections, at most **4,096 IPs for one target**. Only managed-IP sets and compact authority/projection identifiers; no raw provider snapshots. |
 | Last completed full baseline | **8,192 distinct IPs**, **2 MiB**, including labels. Stored independently of domain cursor movement. |
 | Pending removal grace | **8,192 IPs**, **2 MiB**, including original `missing_since`, labels and optional conservative recovery hold. |
+| Independent reappearance suppression | **8,192 target/configuration/IP entries**, **2 MiB** encoded metadata. Deadline is first disappearance + **86,400 seconds**; repeated absence does not refresh it. Expire and consume returned entries before capacity admission; overflow preserves existing holds and marks tracking/accounting incomplete. |
 | Recent 60-second duplicate suppression | **4,096 keys**, **1 MiB**. Expire before evaluating capacity. Suppression is not an ACK and never extends a retry's life. |
 | Terminal diagnostics | At most **256** sanitized summaries, at most **7 days**, at most **128 KiB**; discard payloads only after receipts terminal. Fixed cumulative counters survive summary pruning. |
 | Control / counters | **64 KiB** logical reserve, constant number of rows and closed reason/channel enums. Queue fullness cannot consume this reserve. This is NOT a guarantee of disk space for a later filesystem write. |
@@ -74,6 +75,7 @@ The spool allowance is a deployment resource budget, not protection against file
 - `cursor`: target incarnation, source/projection signature, last consumed managed-IP set, last source-operation UUID, tracking state. This is the **notification detector**, not canonical observation storage.
 - `baseline`: the last valid completed-full active IP/label map. Do not derive it from `cursor`, which may be ahead because a full cycle crashed halfway.
 - `grace`: IP, labels, `missing_since`, optional `not_before`, per-expiry identity.
+- `reappearance`: target, projection signature, IP, expiry and encoded byte count. Durable addition suppression only, never global removal evidence. Added idempotently to schema-1 ledgers without changing the epoch or existing rows.
 - `receipt`: immutable source-operation UUID/item/action/channel/binding, compact payload, creation sequence, state, attempt count, due time, current attempt token, bounded MISP phase/progress, operation count. **No cascading foreign key to cursor/target.**
 - `batch`: Teams immutable membership/body and claim state; at most one open partial builder for the current cycle/binding/action. Member receipts remain the capacity unit.
 - `recent`: the bounded 60-second suppression keys.
@@ -121,6 +123,24 @@ For an oversized completed-full baseline or insufficient grace storage, retain e
 ## 5. Full reconciliation, grace and GAP recovery
 
 ### Normal full and force rules
+
+- Domain admission retains disappeared members in `reappearance` in the same
+  transaction as its cursor and receipt/loss decisions. Evaluate returning
+  members against the unexpired holds before consuming them. Repeated absence
+  never slides the deadline; a new disappearance after a return starts another
+  24-hour window. Existing global `grace` suppression still applies independently.
+- Partial full scans and forced subsets may advance a domain cursor and its
+  suppression holds, but cannot establish global absence. An unrelated failed
+  query must not turn a returning IP into a new addition merely because no full
+  reconciliation could create `grace`. A previously unseen IP remains eligible;
+  suppression is keyed by target and provider/decoder projection, not every
+  occurrence of an IP across unrelated targets.
+- Persist suppression through clean/unclean restart and same-authority recovery,
+  without extending its expiry or turning it into a removal deadline. Retire
+  holds with their target or changed projection. Failed writes roll back holds,
+  cursors and receipts together; known suppressed returns do not inflate missed
+  delivery counters in GAP. Missing pre-upgrade disappearance timestamps cannot
+  be inferred from the last full baseline or backfilled at migration.
 
 - First-feature startup seeds `baseline` from the configured active projection before any queries. Import `ip_removal_grace_state` once, preserving every representable original `missing_since`; record import completion transactionally. Leave the old file untouched and disable its production writer only after successful import. Oversized/corrupt import means visible incomplete removal coverage, not silent empty migration or stopping DNS observation.
 - `reconcile_full` runs only under Stage-2's existing entire-generation/all-original-leases gate. A stale full cannot advance baseline, start/expire grace or clear pending state. A configuration-invalid completion schedules the existing fresh full scan as today.

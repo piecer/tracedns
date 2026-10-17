@@ -34,6 +34,7 @@ EXPECTED_DEFAULTS = {
     'cursor_targets': 4096, 'cursor_members': 16384, 'cursor_bytes': 4194304,
     'target_ips': 4096, 'baseline_items': 8192, 'baseline_bytes': 2097152,
     'grace_items': 8192, 'grace_bytes': 2097152,
+    'reappearance_items': 8192, 'reappearance_bytes': 2097152,
     'recent_items': 4096, 'recent_bytes': 1048576,
     'terminal_items': 256, 'terminal_bytes': 131072,
     'batch_items': 60, 'batch_bytes': 24576, 'pages': 16384,
