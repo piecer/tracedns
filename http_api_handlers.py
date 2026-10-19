@@ -98,6 +98,7 @@ ALLOWED_STATIC_FILES = {
     "dns_frontend.css",
     "dns_frontend.js",
     "delivery_diagnostics.js",
+    "teams_test.js",
     "country_centroids.json",
     "cytoscape.min.js",
     "world_countries_110m.geojson",
@@ -2368,6 +2369,9 @@ def attach_api_handlers(
         """Handle POST requests (simple routing)."""
         parsed = urlparse(self.path)
 
+        if parsed.path == '/teams/test':
+            from http_api.teams_test import handle_teams_test
+            return handle_teams_test(ctx, self)
         if parsed.path == '/domain-precheck':
             return self._handle_domain_precheck()
         if parsed.path == '/ip-list-analysis':

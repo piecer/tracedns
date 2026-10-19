@@ -11967,6 +11967,993 @@
           "admin"
         ]
       }
+    },
+    "/teams/test": {
+      "post": {
+        "description": "Admin-only explicit real Teams test using saved, applied settings at the supplied revision; no draft credentials or message. One in-flight request and a 30-second cooldown after an admitted send. No queued alert replay, ledger/diagnostic-history change, or automatic retry. Accepted means provider acceptance, not human receipt. Timeout/transport failure can mean unknown delivery. See docs/TEAMS_TEST.md.",
+        "operationId": "post_teams_test",
+        "parameters": [
+          {
+            "description": "Exact server public origin, scheme + authority; no path.",
+            "in": "header",
+            "name": "Origin",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "revision": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "revision"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "diagnostic": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "attribute_count": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "attribute_limit": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "http_status": {
+                          "maximum": 599,
+                          "minimum": 100,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "operation": {
+                          "enum": [
+                            "unknown",
+                            "teams_send",
+                            "misp_read",
+                            "misp_add",
+                            "misp_delete",
+                            "misp_sighting_read",
+                            "misp_sighting_add"
+                          ],
+                          "type": "string"
+                        },
+                        "response_bytes": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "response_limit": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "tls_kind": {
+                          "enum": [
+                            null,
+                            "certificate_verify",
+                            "ssl_failure"
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "tls_verify": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "operation",
+                        "http_status",
+                        "response_bytes",
+                        "response_limit",
+                        "attribute_count",
+                        "attribute_limit",
+                        "tls_kind",
+                        "tls_verify"
+                      ],
+                      "type": "object"
+                    },
+                    "reason": {
+                      "enum": [
+                        null,
+                        "adapter_unapplied",
+                        "attempts_exhausted",
+                        "attribute_limit",
+                        "client_unavailable",
+                        "configuration_changed",
+                        "configuration_unavailable",
+                        "delivery_capacity",
+                        "delivery_storage",
+                        "delivery_unknown",
+                        "destination_disabled",
+                        "destination_invalid",
+                        "history_persistence",
+                        "invalid_payload",
+                        "old_binding_blocked",
+                        "payload_invalid",
+                        "payload_limit",
+                        "provider_auth",
+                        "provider_http",
+                        "provider_protocol",
+                        "provider_rate_limit",
+                        "provider_response",
+                        "provider_timeout",
+                        "provider_tls",
+                        "provider_transient",
+                        "provider_transport",
+                        "provider_unavailable",
+                        "provider_work_limit",
+                        "receipt_persistence",
+                        "recovery_gap",
+                        "removal_disabled",
+                        "response_limit",
+                        "runtime_unavailable",
+                        "sighting_absent",
+                        "test_cooldown",
+                        "test_in_progress",
+                        "tls_config",
+                        "tls_error",
+                        "tracking_overflow",
+                        "transport_error"
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "retry_after": {
+                      "maximum": 30,
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "enum": [
+                        "accepted",
+                        "failed",
+                        "not_sent"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "reason",
+                    "retry_after",
+                    "diagnostic"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authentication required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Role, CSRF, origin, host or password-change restriction"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unknown route/resource or expired/inaccessible job"
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Method not allowed"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "diagnostic": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "attribute_count": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "attribute_limit": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "http_status": {
+                          "maximum": 599,
+                          "minimum": 100,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "operation": {
+                          "enum": [
+                            "unknown",
+                            "teams_send",
+                            "misp_read",
+                            "misp_add",
+                            "misp_delete",
+                            "misp_sighting_read",
+                            "misp_sighting_add"
+                          ],
+                          "type": "string"
+                        },
+                        "response_bytes": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "response_limit": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "tls_kind": {
+                          "enum": [
+                            null,
+                            "certificate_verify",
+                            "ssl_failure"
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "tls_verify": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "operation",
+                        "http_status",
+                        "response_bytes",
+                        "response_limit",
+                        "attribute_count",
+                        "attribute_limit",
+                        "tls_kind",
+                        "tls_verify"
+                      ],
+                      "type": "object"
+                    },
+                    "reason": {
+                      "enum": [
+                        null,
+                        "adapter_unapplied",
+                        "attempts_exhausted",
+                        "attribute_limit",
+                        "client_unavailable",
+                        "configuration_changed",
+                        "configuration_unavailable",
+                        "delivery_capacity",
+                        "delivery_storage",
+                        "delivery_unknown",
+                        "destination_disabled",
+                        "destination_invalid",
+                        "history_persistence",
+                        "invalid_payload",
+                        "old_binding_blocked",
+                        "payload_invalid",
+                        "payload_limit",
+                        "provider_auth",
+                        "provider_http",
+                        "provider_protocol",
+                        "provider_rate_limit",
+                        "provider_response",
+                        "provider_timeout",
+                        "provider_tls",
+                        "provider_transient",
+                        "provider_transport",
+                        "provider_unavailable",
+                        "provider_work_limit",
+                        "receipt_persistence",
+                        "recovery_gap",
+                        "removal_disabled",
+                        "response_limit",
+                        "runtime_unavailable",
+                        "sighting_absent",
+                        "test_cooldown",
+                        "test_in_progress",
+                        "tls_config",
+                        "tls_error",
+                        "tracking_overflow",
+                        "transport_error"
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "retry_after": {
+                      "maximum": 30,
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "enum": [
+                        "accepted",
+                        "failed",
+                        "not_sent"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "reason",
+                    "retry_after",
+                    "diagnostic"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Not sent: saved/applied configuration conflict; reload settings"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Body too large"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "diagnostic": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "attribute_count": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "attribute_limit": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "http_status": {
+                          "maximum": 599,
+                          "minimum": 100,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "operation": {
+                          "enum": [
+                            "unknown",
+                            "teams_send",
+                            "misp_read",
+                            "misp_add",
+                            "misp_delete",
+                            "misp_sighting_read",
+                            "misp_sighting_add"
+                          ],
+                          "type": "string"
+                        },
+                        "response_bytes": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "response_limit": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "tls_kind": {
+                          "enum": [
+                            null,
+                            "certificate_verify",
+                            "ssl_failure"
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "tls_verify": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "operation",
+                        "http_status",
+                        "response_bytes",
+                        "response_limit",
+                        "attribute_count",
+                        "attribute_limit",
+                        "tls_kind",
+                        "tls_verify"
+                      ],
+                      "type": "object"
+                    },
+                    "reason": {
+                      "enum": [
+                        null,
+                        "adapter_unapplied",
+                        "attempts_exhausted",
+                        "attribute_limit",
+                        "client_unavailable",
+                        "configuration_changed",
+                        "configuration_unavailable",
+                        "delivery_capacity",
+                        "delivery_storage",
+                        "delivery_unknown",
+                        "destination_disabled",
+                        "destination_invalid",
+                        "history_persistence",
+                        "invalid_payload",
+                        "old_binding_blocked",
+                        "payload_invalid",
+                        "payload_limit",
+                        "provider_auth",
+                        "provider_http",
+                        "provider_protocol",
+                        "provider_rate_limit",
+                        "provider_response",
+                        "provider_timeout",
+                        "provider_tls",
+                        "provider_transient",
+                        "provider_transport",
+                        "provider_unavailable",
+                        "provider_work_limit",
+                        "receipt_persistence",
+                        "recovery_gap",
+                        "removal_disabled",
+                        "response_limit",
+                        "runtime_unavailable",
+                        "sighting_absent",
+                        "test_cooldown",
+                        "test_in_progress",
+                        "tls_config",
+                        "tls_error",
+                        "tracking_overflow",
+                        "transport_error"
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "retry_after": {
+                      "maximum": 30,
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "enum": [
+                        "accepted",
+                        "failed",
+                        "not_sent"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "reason",
+                    "retry_after",
+                    "diagnostic"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Not sent: test in progress or cooldown; no automatic retry",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds, only when retry_after is present; do not automatically resend.",
+                "schema": {
+                  "maximum": 30,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "diagnostic": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "attribute_count": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "attribute_limit": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "http_status": {
+                          "maximum": 599,
+                          "minimum": 100,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "operation": {
+                          "enum": [
+                            "unknown",
+                            "teams_send",
+                            "misp_read",
+                            "misp_add",
+                            "misp_delete",
+                            "misp_sighting_read",
+                            "misp_sighting_add"
+                          ],
+                          "type": "string"
+                        },
+                        "response_bytes": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "response_limit": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "tls_kind": {
+                          "enum": [
+                            null,
+                            "certificate_verify",
+                            "ssl_failure"
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "tls_verify": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "operation",
+                        "http_status",
+                        "response_bytes",
+                        "response_limit",
+                        "attribute_count",
+                        "attribute_limit",
+                        "tls_kind",
+                        "tls_verify"
+                      ],
+                      "type": "object"
+                    },
+                    "reason": {
+                      "enum": [
+                        null,
+                        "adapter_unapplied",
+                        "attempts_exhausted",
+                        "attribute_limit",
+                        "client_unavailable",
+                        "configuration_changed",
+                        "configuration_unavailable",
+                        "delivery_capacity",
+                        "delivery_storage",
+                        "delivery_unknown",
+                        "destination_disabled",
+                        "destination_invalid",
+                        "history_persistence",
+                        "invalid_payload",
+                        "old_binding_blocked",
+                        "payload_invalid",
+                        "payload_limit",
+                        "provider_auth",
+                        "provider_http",
+                        "provider_protocol",
+                        "provider_rate_limit",
+                        "provider_response",
+                        "provider_timeout",
+                        "provider_tls",
+                        "provider_transient",
+                        "provider_transport",
+                        "provider_unavailable",
+                        "provider_work_limit",
+                        "receipt_persistence",
+                        "recovery_gap",
+                        "removal_disabled",
+                        "response_limit",
+                        "runtime_unavailable",
+                        "sighting_absent",
+                        "test_cooldown",
+                        "test_in_progress",
+                        "tls_config",
+                        "tls_error",
+                        "tracking_overflow",
+                        "transport_error"
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "retry_after": {
+                      "maximum": 30,
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "enum": [
+                        "accepted",
+                        "failed",
+                        "not_sent"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "reason",
+                    "retry_after",
+                    "diagnostic"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Send failed or delivery unknown; check Teams before another test"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "diagnostic": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "attribute_count": {
+                              "maximum": 9223372036854775807,
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "attribute_limit": {
+                              "maximum": 9223372036854775807,
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "http_status": {
+                              "maximum": 599,
+                              "minimum": 100,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "operation": {
+                              "enum": [
+                                "unknown",
+                                "teams_send",
+                                "misp_read",
+                                "misp_add",
+                                "misp_delete",
+                                "misp_sighting_read",
+                                "misp_sighting_add"
+                              ],
+                              "type": "string"
+                            },
+                            "response_bytes": {
+                              "maximum": 9223372036854775807,
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "response_limit": {
+                              "maximum": 9223372036854775807,
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "tls_kind": {
+                              "enum": [
+                                null,
+                                "certificate_verify",
+                                "ssl_failure"
+                              ],
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "tls_verify": {
+                              "type": [
+                                "boolean",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "operation",
+                            "http_status",
+                            "response_bytes",
+                            "response_limit",
+                            "attribute_count",
+                            "attribute_limit",
+                            "tls_kind",
+                            "tls_verify"
+                          ],
+                          "type": "object"
+                        },
+                        "reason": {
+                          "enum": [
+                            null,
+                            "adapter_unapplied",
+                            "attempts_exhausted",
+                            "attribute_limit",
+                            "client_unavailable",
+                            "configuration_changed",
+                            "configuration_unavailable",
+                            "delivery_capacity",
+                            "delivery_storage",
+                            "delivery_unknown",
+                            "destination_disabled",
+                            "destination_invalid",
+                            "history_persistence",
+                            "invalid_payload",
+                            "old_binding_blocked",
+                            "payload_invalid",
+                            "payload_limit",
+                            "provider_auth",
+                            "provider_http",
+                            "provider_protocol",
+                            "provider_rate_limit",
+                            "provider_response",
+                            "provider_timeout",
+                            "provider_tls",
+                            "provider_transient",
+                            "provider_transport",
+                            "provider_unavailable",
+                            "provider_work_limit",
+                            "receipt_persistence",
+                            "recovery_gap",
+                            "removal_disabled",
+                            "response_limit",
+                            "runtime_unavailable",
+                            "sighting_absent",
+                            "test_cooldown",
+                            "test_in_progress",
+                            "tls_config",
+                            "tls_error",
+                            "tracking_overflow",
+                            "transport_error"
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "retry_after": {
+                          "maximum": 30,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "enum": [
+                            "accepted",
+                            "failed",
+                            "not_sent"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "reason",
+                        "retry_after",
+                        "diagnostic"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Runtime unavailable; security/audit or worker capacity may also be unavailable; worker saturation may return an empty body"
+          }
+        },
+        "security": [
+          {
+            "csrf": [],
+            "session": []
+          }
+        ],
+        "summary": "POST /teams/test",
+        "x-roles": [
+          "admin"
+        ]
+      }
     }
   },
   "security": [

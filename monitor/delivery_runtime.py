@@ -3,10 +3,14 @@ from copy import deepcopy
 import hashlib
 import hmac
 import json
+import math
+import threading
 import time
 
 from alerts import render_teams_body, select_alert_configuration
 from .delivery_adapters import DestinationRegistry
+from .delivery_diagnostics import normalize_diagnostic
+from .delivery_types import provider_result
 from .delivery_store import DeliveryStore
 from .delivery_worker import DeliveryWorker
 from .state_utils import collect_domain_managed_ips
@@ -38,6 +42,9 @@ class DeliveryRuntime:
         self._channel = 0
         self._sighting_progress = {}
         self._stopping = False
+        self._teams_test_gate = threading.Lock()
+        self._teams_test_clock = time.monotonic
+        self._teams_test_next = 0.0
         self.history_persistence = 'saved'
         self._restore_dht_checkpoints()
         with self.config.lock, self.repository._coord:
@@ -204,6 +211,51 @@ class DeliveryRuntime:
                 warnings.append(code)
         return warnings
 
+    @staticmethod
+    def _teams_test_result(status, reason=None, *, retry_after=None, diagnostic=None):
+        return {'status': status, 'reason': reason, 'retry_after': retry_after,
+                'diagnostic': normalize_diagnostic(diagnostic)}
+
+    def test_teams(self, expected_revision):
+        """One explicit send using saved settings; never enqueue or retry alerts."""
+        reply = self._teams_test_result
+        if type(expected_revision) is not int or not 0 <= expected_revision < 2**53:
+            return reply('not_sent', 'configuration_changed')
+        if not self._teams_test_gate.acquire(blocking=False):
+            return reply('not_sent', 'test_in_progress', retry_after=30)
+        admitted = False
+        try:
+            with self.config.lock:
+                if self.stopping or self.registry is None:
+                    return reply('not_sent', 'runtime_unavailable')
+                if expected_revision != self.revision():
+                    return reply('not_sent', 'configuration_changed')
+                if self._pending_bindings is not None:
+                    return reply('not_sent', 'adapter_unapplied')
+                descriptor = self.registry.descriptors()['teams']
+                adapter = self.registry.capture('teams', descriptor['binding_id'], 'Added',
+                                                revision=self.revision())
+                if not adapter.enabled:
+                    return reply('not_sent', 'destination_disabled')
+                if not adapter.ready or adapter.error:
+                    return reply('not_sent', adapter.error or 'configuration_unavailable')
+                remaining = self._teams_test_next - self._teams_test_clock()
+                if remaining > 0:
+                    return reply('not_sent', 'test_cooldown', retry_after=min(30, math.ceil(remaining)))
+                admitted = True
+            # Immutable admission snapshot; no config, repository or SQL lock during I/O.
+            # Keep the gate until the actual call returns, even if the browser disconnects.
+            try:
+                outcome = provider_result(adapter.send_test())
+            except Exception:
+                return reply('failed', 'transport_error')
+            return reply('accepted' if outcome['state'] == 'acked' else 'failed',
+                         outcome['reason'], diagnostic=outcome.get('diagnostic'))
+        finally:
+            if admitted:
+                self._teams_test_next = self._teams_test_clock() + 30
+            self._teams_test_gate.release()
+
     def claim_admission(self, now):
         with self.config.lock:
             if self.stopping:
@@ -298,9 +350,14 @@ class DeliveryRuntime:
         with self.config.lock, self.repository._coord:
             self.stopping = True
         self.store.seal_cycle(None)
-        result = self.worker.stop(join_seconds=join_seconds)
-        if result['stopped']:
-            result['closed'] = self.store.close(clean=True)
-        else:
-            result['closed'] = False
+        deadline = time.monotonic() + min(3.0, max(0.0, join_seconds))
+        result = self.worker.stop(join_seconds=max(0, deadline - time.monotonic()))
+        probe_stopped = self._teams_test_gate.acquire(timeout=max(0, deadline - time.monotonic()))
+        try:
+            result['stopped'] = result['stopped'] and probe_stopped
+            result['in_flight_preserved'] = not result['stopped']
+            result['closed'] = self.store.close(clean=True) if result['stopped'] else False
+        finally:
+            if probe_stopped:
+                self._teams_test_gate.release()
         return result

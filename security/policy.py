@@ -6,7 +6,7 @@ READ = {'/config', '/results', '/decoders', '/decoders/custom', '/history', '/ip
 OPERATE = {'/resolve', '/ip', '/analyze', '/verify', '/domain-precheck', '/ip-list-analysis',
            '/ip-relationship-jobs', '/ip-relationship-analysis', '/misp/search', '/misp/event-ips'}
 PAGES = {'/', '/dns_frontend.html', '/dns_dashboard.html', '/dns_frontend.js', '/dns_frontend.css',
-         '/delivery_diagnostics.js', '/auth_frontend.js', '/security_ui.js', '/account.html', '/audit.html',
+         '/teams_test.js', '/delivery_diagnostics.js', '/auth_frontend.js', '/security_ui.js', '/account.html', '/audit.html',
          '/country_centroids.json', '/cytoscape.min.js', '/world_countries_110m.geojson'}
 SELF_GET = {'/auth/me', '/auth/csrf', '/auth/activity', '/auth/sessions'}
 SELF_POST = {'/auth/logout', '/auth/password', '/auth/sessions/revoke'}
@@ -48,7 +48,7 @@ def allowed(role, method, path, qs=None, body=None):
         return False
     if path in ('/settings', '/settings.html', '/accounts.html') and method == 'GET':
         return True
-    if path == '/settings' and method == 'POST':
+    if path in ('/settings', '/teams/test') and method == 'POST':
         return True
     if path == '/decoders/custom' and method in ('POST', 'PUT', 'DELETE'):
         return True

@@ -91,6 +91,16 @@ with TraceDNSClient(os.environ['TRACEDNS_BASE_URL']) as api:
 로컬 개발만 `--allow-loopback-http` 또는 `allow_loopback_http=True`로 HTTP를 허용한다.
 서버가 LAN plaintext 모드여도 이 클라이언트는 원격 HTTP를 허용하지 않는다.
 
+## 실제 Teams 테스트
+
+Admin만 `POST /api/v1/teams/test` (동일한 legacy 경로: `/teams/test`)를 호출할 수 있다.
+저장·적용된 설정의 revision만 `{"revision": 7}`로 보내며 draft webhook/message는
+허용하지 않는다. 실제 외부 전송이므로 명시적 사용자 동작만 사용하고 자동 재시도하지 않는다.
+성공 200은 provider 수락이지 사람의 확인이 아니다. 502는 실패/전달 여부 불명,
+429는 진행 중/cooldown, 409는 설정 재확인 필요, 503은 runtime 사용 불가다.
+Timeout/transport error 후에는 전송됐을 수도 있으므로 Teams를 확인한다.
+상세 계약·폐쇄 응답 스키마·UI 안내는 `docs/TEAMS_TEST.md`를 참고한다.
+
 ## 엔드포인트
 
 모두 `/api/v1` 상대 경로. 세부 요청/응답/권한 조건은 OpenAPI의 description과 schema 참고.

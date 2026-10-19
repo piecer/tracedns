@@ -6,7 +6,10 @@ is supported. The endpoint reads `DeliveryStore.diagnostics_snapshot()` only:
 no delivery-ledger SQL, disk read, provider request, probe, replay, configuration
 change or queue mutation is initiated by this read. Normal authentication and
 audit processing still apply. Existing `/delivery-health` fields and behavior are
-unchanged.
+unchanged. The separate admin-only **Send real Teams test** button in Alert
+integrations does perform an explicit outbound send; see `TEAMS_TEST.md`.
+Its result does not change this cached diagnostic history or normal delivery
+counters, and does not replay failed alerts.
 
 ## Reading the evidence
 

@@ -8,6 +8,7 @@ import copy
 from http_api.rest import PATTERNS, PREFIX, ROUTES
 from http_api.delivery_health import HEALTH_SCHEMA
 from http_api.delivery_diagnostics import DIAGNOSTICS_SCHEMA
+from http_api.teams_test import REQUEST_SCHEMA as TEAMS_TEST_REQUEST, RESULT_SCHEMA as TEAMS_TEST_RESULT
 
 STRING = {'type': 'string'}
 INTEGER = {'type': 'integer'}
@@ -89,6 +90,7 @@ CONFIG = obj({
 DECODER = obj({'revision': REVISION, 'name': STRING, 'decoder_type': {'enum': ['TXT', 'A'], 'default': 'TXT'},
                'steps': {'type': 'array', 'items': OBJECT}}, ('revision', 'name', 'steps'))
 BODIES = {
+    '/teams/test': TEAMS_TEST_REQUEST,
     '/auth/login': obj({'username': STRING, 'password': {'type': 'string', 'writeOnly': True}}, ('username', 'password')),
     '/auth/logout': obj({}),
     '/auth/password': obj({key: {'type': 'string', 'writeOnly': True} for key in ('current_password', 'new_password')},
@@ -157,6 +159,7 @@ for _path in PREPARED_PATHS:
 QUERIES['/ips']['valid_only'] = {'type': 'boolean', 'default': False, 'description': 'Filter before prepared pagination.'}
 QUERIES['/ips']['limit']['description'] = 'Legacy: max 5000/default 500. Prepared: max 200/default 100, further reduced by byte budget.'
 DESCRIPTIONS = {
+    '/teams/test': 'Admin-only explicit real Teams test using saved, applied settings at the supplied revision; no draft credentials or message. One in-flight request and a 30-second cooldown after an admitted send. No queued alert replay, ledger/diagnostic-history change, or automatic retry. Accepted means provider acceptance, not human receipt. Timeout/transport failure can mean unknown delivery. See docs/TEAMS_TEST.md.',
     '/delivery-diagnostics': 'Admin/operator-only cached diagnostics (version 1), at most 32768 bytes. No ledger or provider reads. Recent failures retain at most ten terminal failure groups, not cumulative counts; items is each group size. Details may be unknown. Observed response bytes and attribute counts are lower bounds on truncated reads. storage_error is the latest volatile process incident, not necessarily active. Failed items are not automatically replayed. 503 means missing or invalid cache.',
     '/delivery-health': 'Admin/operator-only cached local delivery health, at most 4096 bytes. Observation policy is continue. A 200 response may describe degraded storage, missed notifications or incomplete accounting; it is not a delivery ACK. No provider requests. 503 means the health owner is absent or its cache is invalid. missed_total counts durable destination-item obligations never admitted; missed_unpersisted is the known volatile increment. Incomplete accounting is a lower bound, not zero loss.',
     '/': 'Discover the versioned API. No process start/stop or arbitrary shell execution API is provided.',
@@ -237,6 +240,7 @@ READ_RESPONSES = {
        for path in ('/auth/activity', '/admin/audit')},
 }
 WRITE_RESPONSES = {
+    '/teams/test': TEAMS_TEST_RESULT,
     '/auth/login': obj({'user': USER, 'csrf_token': STRING}, ('user', 'csrf_token')),
     '/config': obj({'status': STRING, 'revision': REVISION, 'config': OBJECT, 'warnings': WARNINGS}, ('status', 'revision', 'config', 'warnings')),
     '/settings': obj({'status': STRING, 'revision': REVISION, 'alerts': OBJECT, 'warnings': WARNINGS}, ('status', 'revision', 'alerts', 'warnings')),
@@ -251,7 +255,7 @@ WRITE_RESPONSES = {
 
 
 def roles(path, method):
-    if path.startswith('/admin/') or path == '/settings' or (path.startswith('/decoders/custom') and method != 'GET'):
+    if path.startswith('/admin/') or path in ('/settings', '/teams/test') or (path.startswith('/decoders/custom') and method != 'GET'):
         return ['admin']
     if path.startswith('/auth/') or path in ('/', '/openapi.json'):
         return ['viewer', 'operator', 'admin']
@@ -297,6 +301,20 @@ def openapi_document():
                     'content': {'application/json': {'schema': obj({'snapshot': OBJECT}, ('snapshot',))}}}
                 operation['responses']['422'] = {'description': 'A complete entry cannot fit the prepared response budget; use explicit legacy JSON download.',
                     'content': {'application/json': {'schema': {'$ref': '#/components/schemas/Error'}}}}
+            if path == '/teams/test':
+                for status, text in (('409', 'Not sent: saved/applied configuration conflict; reload settings'),
+                                     ('429', 'Not sent: test in progress or cooldown; no automatic retry'),
+                                     ('502', 'Send failed or delivery unknown; check Teams before another test'),
+                                     ('503', 'Runtime unavailable; security/audit or worker capacity may also be unavailable')):
+                    schema = TEAMS_TEST_RESULT if status != '503' else {
+                        'anyOf': [TEAMS_TEST_RESULT, {'$ref': '#/components/schemas/Error'}]}
+                    operation['responses'][status] = {
+                        'description': text,
+                        'content': {'application/json': {'schema': schema}}}
+                operation['responses']['503']['description'] += '; worker saturation may return an empty body'
+                operation['responses']['429']['headers'] = {'Retry-After': {
+                    'description': 'Seconds, only when retry_after is present; do not automatically resend.',
+                    'schema': {'type': 'integer', 'minimum': 0, 'maximum': 30}}}
             if path.endswith('/cancel'):
                 operation['responses']['409']['description'] = 'Already running or already finished; cancelled=false'
                 operation['responses']['409']['content']['application/json']['schema'] = OBJECT

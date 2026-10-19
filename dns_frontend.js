@@ -2809,6 +2809,8 @@ function setAlertSettingsStatus(message, kind){
 }
 
 async function loadAlertSettings(){
+  alertRevision = null;
+  if(window.TraceTeamsTest) window.TraceTeamsTest.settingsChanged();
   try{
     if(window.TraceAuth && (await window.TraceAuth.ready).role !== 'admin') return;
     const r = await fetch('/settings');
@@ -2838,6 +2840,7 @@ async function loadAlertSettings(){
       botnetEventEl.value = String(alerts.push_event_id);
     }
     setAlertSettingsStatus('Loaded', 'ok');
+    if(window.TraceTeamsTest) window.TraceTeamsTest.settingsChanged();
   }catch(e){
     setAlertSettingsStatus('Load failed', 'err');
   }
@@ -3284,6 +3287,7 @@ document.getElementById('settingsTabCustom').onclick = ()=> showSettingsTab('cus
 document.getElementById('settingsTabAlerts').onclick = ()=> showSettingsTab('alerts');
 document.getElementById('loadAlertSettingsBtn').onclick = ()=> loadAlertSettings();
 document.getElementById('saveAlertSettingsBtn').onclick = ()=> saveAlertSettings();
+if(window.TraceTeamsTest) window.TraceTeamsTest.bind(() => alertRevision);
 
 function collectDomainsFromUI(excludedRow){
   const rows = document.querySelectorAll('#domainTable tbody tr');

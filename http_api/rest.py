@@ -9,6 +9,7 @@ ROUTES = {
     '/openapi.json': {'GET': 'GET'},
     '/config': {'GET': 'GET', 'POST': 'POST', 'PATCH': 'POST'},
     '/settings': {'GET': 'GET', 'POST': 'POST', 'PATCH': 'POST'},
+    '/teams/test': {'POST': 'POST'},
     '/delivery-health': {'GET': 'GET'},
     '/delivery-diagnostics': {'GET': 'GET'},
     '/results': {'GET': 'GET'},

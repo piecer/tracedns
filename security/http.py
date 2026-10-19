@@ -127,7 +127,7 @@ class HttpSecurity:
                     data = json.loads(raw) if raw else {}
                     if not isinstance(data, dict):
                         raise ValueError()
-                except (ValueError, UnicodeError):
+                except (ValueError, UnicodeError, RecursionError):
                     raise SecurityError('JSON object required', 400) from None
                 handler.rfile = io.BytesIO(raw)
                 if handler.headers.get('Origin') != handler.expected_origin:

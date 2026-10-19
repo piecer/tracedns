@@ -350,6 +350,18 @@ class BoundDestinationAdapter:
                                     body=body, verify=self._verify, diagnostic=diagnostic)
         return error or result('acked', calls=1, diagnostic=diagnostic)
 
+    def send_test(self):
+        """One explicit benign Teams POST; no alert claim or automatic retry."""
+        if self.channel != 'teams' or not self.enabled or not self.ready or self.error:
+            return result('blocked', self.error or 'configuration_unavailable')
+        body = {'title': 'TraceDNS Teams delivery test',
+                'text': 'This is a manual test message from TraceDNS. '
+                        'No DNS alert or IOC change is being reported.'}
+        diagnostic = dict(normalize_diagnostic(), operation='teams_send')
+        error, _ = provider_request(self._transport, 'POST', self._endpoint,
+                                    body=body, verify=self._verify, diagnostic=diagnostic)
+        return error or result('acked', calls=1, diagnostic=diagnostic)
+
     def _misp_step(self, claim):
         try:
             entries = claim['payload']['entries']

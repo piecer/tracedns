@@ -169,6 +169,9 @@
     <label for="teams_webhook_front">Teams Webhook URL
       <input id="teams_webhook_front" type="text" placeholder="https://outlook.webhook.office.com/webhookb2/..." />
     </label>
+    <button id="teamsTestBtn" type="button" data-access="admin" disabled hidden aria-describedby="teamsTestHelp">Send real Teams test</button>
+    <p id="teamsTestHelp" class="hint">Sends one real message using saved, applied settings only. Unsaved edits are ignored; save and load settings first to test changes. Does not retry queued alerts.</p>
+    <p id="teamsTestStatus" role="status" aria-live="polite"></p>
     <label for="misp_url_front">MISP URL
       <input id="misp_url_front" type="text" placeholder="https://misp.example.com" />
     </label>
@@ -606,6 +609,7 @@
 </div>
 </div>
 
+<script src="/teams_test.js"></script>
 <script src="/dns_frontend.js"></script>
 <script src="/delivery_diagnostics.js"></script>
 

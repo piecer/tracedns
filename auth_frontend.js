@@ -110,6 +110,11 @@
       authBlocked = true; csrf = ''; auth.user = null;
       location.replace('/login.html');
     }
+    // Manual test outcomes have a closed, secret-free body even on these
+    // statuses. Preserve it for the test UI; all authentication, CSRF and
+    // cancellation handling above still applies, with no retry here.
+    if (method === 'POST' && ['/teams/test','/api/v1/teams/test'].includes(url.pathname) &&
+        [409,429,502,503].includes(response.status)) return response;
     if (!response.ok) {
       const message = response.status === 409 ? 'Conflict: reload this page before saving again.' : response.status === 403 ? 'Permission denied for this action.' : response.status === 401 ? 'Sign-in failed or session expired.' : `Request failed (${response.status}).`;
       auth.message(message); throw new Error(message);
