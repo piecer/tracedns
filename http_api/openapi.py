@@ -7,6 +7,7 @@ import copy
 
 from http_api.rest import PATTERNS, PREFIX, ROUTES
 from http_api.delivery_health import HEALTH_SCHEMA
+from http_api.delivery_diagnostics import DIAGNOSTICS_SCHEMA
 
 STRING = {'type': 'string'}
 INTEGER = {'type': 'integer'}
@@ -136,6 +137,7 @@ for _path in PREPARED_PATHS:
 QUERIES['/ips']['valid_only'] = {'type': 'boolean', 'default': False, 'description': 'Filter before prepared pagination.'}
 QUERIES['/ips']['limit']['description'] = 'Legacy: max 5000/default 500. Prepared: max 200/default 100, further reduced by byte budget.'
 DESCRIPTIONS = {
+    '/delivery-diagnostics': 'Admin/operator-only cached diagnostics (version 1), at most 32768 bytes. No ledger or provider reads. Recent failures retain at most ten terminal failure groups, not cumulative counts; items is each group size. Details may be unknown. Observed response bytes and attribute counts are lower bounds on truncated reads. storage_error is the latest volatile process incident, not necessarily active. Failed items are not automatically replayed. 503 means missing or invalid cache.',
     '/delivery-health': 'Admin/operator-only cached local delivery health, at most 4096 bytes. Observation policy is continue. A 200 response may describe degraded storage, missed notifications or incomplete accounting; it is not a delivery ACK. No provider requests. 503 means the health owner is absent or its cache is invalid. missed_total counts durable destination-item obligations never admitted; missed_unpersisted is the known volatile increment. Incomplete accounting is a lower bound, not zero loss.',
     '/': 'Discover the versioned API. No process start/stop or arbitrary shell execution API is provided.',
     '/openapi.json': 'Read this OpenAPI document. Requires an authenticated account.',
@@ -193,6 +195,7 @@ DECODER_CATALOG = obj({
 WARNINGS = {'type': 'array', 'items': STRING, 'description': 'Sanitized post-commit application/cleanup warnings. The revision is committed; these are not rollback or retry instructions.'}
 READ_RESPONSES = {
     '/delivery-health': HEALTH_SCHEMA,
+    '/delivery-diagnostics': DIAGNOSTICS_SCHEMA,
     '/decoders': DECODER_CATALOG,
     '/auth/csrf': obj({'csrf_token': STRING}, ('csrf_token',)),
     '/auth/me': obj({'user': USER, 'csrf_token': STRING, 'audit_available': BOOLEAN}, ('user', 'csrf_token')),
@@ -232,7 +235,7 @@ def roles(path, method):
         return ['admin']
     if path.startswith('/auth/') or path in ('/', '/openapi.json'):
         return ['viewer', 'operator', 'admin']
-    if method != 'GET' or path == '/delivery-health' or path.startswith(('/ip-relationship-', '/misp/')):
+    if method != 'GET' or path in ('/delivery-health', '/delivery-diagnostics') or path.startswith(('/ip-relationship-', '/misp/')):
         return ['operator', 'admin']
     return ['viewer', 'operator', 'admin']
 

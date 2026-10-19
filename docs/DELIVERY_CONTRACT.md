@@ -281,6 +281,8 @@ Lock rule: config -> repository coordination -> delivery store for short ledger 
 
 ## 9. Public health contract
 
+Separate read-only troubleshooting is documented in [Delivery diagnostics](DELIVERY_DIAGNOSTICS.md). Its version-1 cached endpoint does not extend or change the legacy health wire schema. Retained failure groups are not cumulative counts; failed items are not automatically replayed.
+
 Authenticated **GET `/delivery-health` and `/api/v1/delivery-health`**, admin/operator only; preserve existing authentication/authorization and versioned routing conventions. Both use the same closed schema and cached local snapshot. A store failure still permits HTTP **200** with degraded/unknown cached health; use 503 only when even the health owner is absent. Health transport success is not delivery success. Do not make local observability disappear exactly when SQLite is unavailable.
 
 ```json

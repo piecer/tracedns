@@ -109,9 +109,8 @@ class DeliveryWorker:
                         self._wake.clear()
                         try:
                             self.run_pass()
-                        except Exception:
-                            self.store.enter_gap("delivery_storage", {})
-                            self.store.fence_claims()
+                        except Exception as error:
+                            self.store.worker_failed(error)
                             break
                         if not self._stop.is_set():
                             self._wake.wait(.25)

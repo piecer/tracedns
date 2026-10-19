@@ -121,6 +121,7 @@ with TraceDNSClient(os.environ['TRACEDNS_BASE_URL']) as api:
 | MISP 검색 | GET/POST `/misp/search` | value, 외부 조회 |
 | MISP 이벤트 IP | POST `/misp/event-ips` | event_id, 외부 조회 |
 | 알림 전달 상태 | GET `/delivery-health` | admin/operator, 로컬 캐시만 읽음, 최대 4 KiB, 아래 의미 참조 |
+| 알림 전달 진단 | GET `/delivery-diagnostics` | admin/operator, 별도 읽기 전용 캐시, 최대 32 KiB; [진단 의미/운영 확인](DELIVERY_DIAGNOSTICS.md) |
 | 내 정보 | GET `/auth/me`, `/auth/activity`, `/auth/sessions` | 감사 결과는 events,total,limit,offset |
 | 내 계정 작업 | POST `/auth/password`, `/auth/logout`, `/auth/sessions/revoke` | revoke에서 session_id 생략 시 자신의 모든 세션 철회 |
 | 계정 관리 | GET/POST `/admin/users` | admin, 생성 시 username/password/role |

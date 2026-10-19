@@ -1,6 +1,8 @@
 """Closed local delivery constants (no provider credentials or URLs)."""
 import json
 
+from monitor.delivery_diagnostics import normalize_diagnostic, valid_diagnostic
+
 
 class TeamsPayloadTooLarge(ValueError):
     """A complete rendered candidate exceeds the Teams item/wire budget."""
@@ -26,7 +28,8 @@ def stable_reason(value):
 def provider_result(value):
     """Do not let malformed transport envelopes authorize an ACK."""
     required = {"state", "reason", "progress", "retry_after", "provider_calls", "observation_hook"}
-    valid = (type(value) is dict and set(value) == required and
+    valid = (type(value) is dict and set(value) in (required, required | {"diagnostic"}) and
+             ("diagnostic" not in value or valid_diagnostic(value["diagnostic"])) and
              value["state"] in ("acked", "continue", "retry", "blocked", "failed") and
              type(value["provider_calls"]) is int and value["provider_calls"] in (0, 1) and
              type(value["progress"]) is dict)
@@ -39,7 +42,10 @@ def provider_result(value):
     if not valid:
         return {"state": "failed", "reason": "invalid_payload", "progress": {},
                 "retry_after": None, "provider_calls": 1, "observation_hook": None}
-    return {**value, "reason": stable_reason(value["reason"])}
+    accepted = {**value, "reason": stable_reason(value["reason"])}
+    if "diagnostic" in value:
+        accepted["diagnostic"] = normalize_diagnostic(value["diagnostic"])
+    return accepted
 
 
 MAX_COUNTER = (1 << 63) - 1

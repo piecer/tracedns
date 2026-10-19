@@ -6,6 +6,7 @@ coordination, then calls us. A cursor or caller mapping never grants a lease.
 from __future__ import annotations
 
 import copy
+import errno
 import json
 import os
 from pathlib import Path
@@ -15,7 +16,7 @@ import time
 import uuid
 
 from monitor.delivery_types import CHANNELS, DEFAULT_LIMITS, MAX_COUNTER, encode, size, valid_binding, provider_result as normalize_result
-from monitor.delivery_types import TeamsPayloadTooLarge, encode_body
+from monitor.delivery_types import TeamsPayloadTooLarge, encode_body, stable_reason
 
 
 class DeliveryStore:
@@ -63,9 +64,18 @@ class DeliveryStore:
                              "last_success_at": None, "last_error": None} for c in CHANNELS},
             "tracking_complete": True, "counts_stale": False, "last_error": None,
         }
+        self._storage_error = None
+        self._diagnostics = {
+            'version': 1, 'observed_at': max(0, min(MAX_COUNTER, int(self._clock()))),
+            'channels': {c: {'latest_result': None, 'latest_failure': None,
+                             'blocked_by_reason': []} for c in CHANNELS},
+            'recent_failures': [],
+        }
+        self._storage_stage = 'open_owner'
         try:
             self._open()
-        except (OSError, sqlite3.Error, ValueError, KeyError, TypeError, ImportError):
+        except (OSError, sqlite3.Error, ValueError, KeyError, TypeError, ImportError) as error:
+            self._note_storage_error(error, self._storage_stage)
             self._release()
             self.enter_gap("delivery_storage", {})
 
@@ -92,6 +102,7 @@ class DeliveryStore:
         fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         self._owner = os.fdopen(fd, "a+b")
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self._storage_stage = 'open_db'
         sentinel = self.path.with_name("delivery.initialized")
         established = sentinel.exists()
         existed = self.path.exists()
@@ -110,6 +121,7 @@ class DeliveryStore:
                        "cache_size=-2048", "max_page_count=" + str(self.limits["pages"])):
             self._execute("PRAGMA " + pragma)
         if existed:
+            self._storage_stage = 'open_validate'
             if self._one("PRAGMA quick_check")[0] != "ok":
                 raise ValueError("invalid ledger")
             row = self._one("SELECT data FROM control WHERE id=1")
@@ -337,16 +349,20 @@ class DeliveryStore:
         before = copy.deepcopy(self._control)
         committed = False
         result = None
+        stage = 'transaction_begin'
         try:
             self._execute("BEGIN IMMEDIATE")
+            stage = 'transaction_body'
             result = fn()
             self._control["last_transaction"] = operation
             self._save_control()
             self._fault("before_commit")
+            stage = 'transaction_commit'
             self._db.commit()
             committed = True
             self._fault("after_commit")
-        except (sqlite3.Error, OSError, ValueError):
+        except (sqlite3.Error, OSError, ValueError) as error:
+            self._note_storage_error(error, stage)
             try:
                 self._db.rollback()
             except sqlite3.Error:
@@ -359,7 +375,8 @@ class DeliveryStore:
                     return True, result, False
                 self._control = before
                 return False, None, False
-            except (sqlite3.Error, OSError, ValueError, TypeError):
+            except (sqlite3.Error, OSError, ValueError, TypeError) as error:
+                self._note_storage_error(error, 'transaction_readback')
                 self._control = before
                 self._unresolved = {"operation": operation, "losses": {}}
                 self._claims_halted = True
@@ -371,7 +388,8 @@ class DeliveryStore:
     def _safe_refresh(self):
         try:
             self._refresh()
-        except (sqlite3.Error, OSError, ValueError):
+        except (sqlite3.Error, OSError, ValueError) as error:
+            self._note_storage_error(error, 'health_refresh')
             self._health = {**self._health, "counts_stale": True, "storage_ok": False,
                             "status": "degraded", "last_error": "delivery_storage"}
 
@@ -406,6 +424,7 @@ class DeliveryStore:
             health["last_error"] = "history_persistence"
             health["status"] = "degraded"
         self._health = health
+        self._publish_diagnostics()
 
     def note_history_failure(self):
         """Sticky process diagnostic, not a ledger gap or raw-history receipt.
@@ -692,9 +711,10 @@ class DeliveryStore:
                                   "due=? WHERE id=? OR batch_id=?",
                                   (self._clock() + 30 * 2 ** max(0, row["attempt"] - 1), row["id"], row["id"]))
 
-    def _terminal(self, row, state, reason, now):
+    def _terminal(self, row, state, reason, now, diagnostic=None):
         count = self._one("SELECT COUNT(*) FROM receipt WHERE id=? OR batch_id=?", (row["id"], row["id"]))[0]
         self._increment("acked_total" if state == "acked" else "failed_total", count)
+        self._record_diagnostic(row, state, reason, now, diagnostic, count)
         summary_bytes = size([row["channel"], state, reason, now])
         self._execute("INSERT INTO terminal(channel,state,reason,at,bytes) VALUES(?,?,?,?,?)",
                       (row["channel"], state, reason, now, summary_bytes))
@@ -798,15 +818,19 @@ class DeliveryStore:
                 state = provider_result["state"]
                 reason = provider_result["reason"]
                 self._control["error_" + row["channel"]] = reason
+                diagnostic = provider_result.get('diagnostic')
                 if state == "acked":
-                    self._terminal(row, "acked", None, now)
+                    self._terminal(row, "acked", None, now, diagnostic)
                 elif state == "failed" or (state == "retry" and row["attempt"] >= 8):
-                    self._terminal(row, "failed", "attempts_exhausted" if state == "retry" else reason, now)
+                    self._terminal(row, "failed", "attempts_exhausted" if state == "retry" else reason, now, diagnostic)
                 else:
                     progress = encode(provider_result["progress"])
                     if len(progress.encode()) > 2048:
-                        self._terminal(row, "failed", "invalid_payload", now)
+                        self._terminal(row, "failed", "invalid_payload", now, diagnostic)
                         return {"applied": True}
+                    count = self._one("SELECT COUNT(*) FROM receipt WHERE id=? OR batch_id=?",
+                                      (row['id'], row['id']))[0]
+                    self._record_diagnostic(row, state, reason, now, diagnostic, count)
                     retry_after = provider_result.get("retry_after") or 0
                     delay = max(30 * 2 ** max(0, row["attempt"] - 1), min(3600, max(30, retry_after)))
                     next_state = {"continue": "pending", "retry": "retry_wait", "blocked": "blocked_config"}[state]
@@ -1058,6 +1082,117 @@ class DeliveryStore:
     def health_snapshot(self):
         # Copy-on-publish: no connection or store lock on the HTTP read path.
         return copy.deepcopy(self._health)
+
+    @staticmethod
+    def _diagnostic_record(value):
+        # Persisted control state is not a license to publish future fields.
+        if type(value) is not dict:
+            return None
+        from monitor.delivery_diagnostics import normalize_diagnostic
+        counts = ('at', 'attempt', 'items')
+        if any(type(value.get(k)) is not int or not 0 <= value[k] <= MAX_COUNTER for k in counts):
+            return None
+        if value.get('channel') not in CHANNELS or value.get('state') not in (
+                'acked', 'continue', 'retry', 'blocked', 'failed'):
+            return None
+        raw_reason = value.get('reason')
+        reason = stable_reason(raw_reason) if raw_reason is None or (
+            type(raw_reason) is str and len(raw_reason) <= 64) else 'delivery_unknown'
+        return {**{k: value[k] for k in counts}, 'channel': value['channel'],
+                'state': value['state'], 'reason': reason,
+                'diagnostic': normalize_diagnostic(value.get('diagnostic'))}
+
+    def _record_diagnostic(self, row, state, reason, now, detail, items):
+        record = self._diagnostic_record({
+            'at': max(0, min(MAX_COUNTER, int(now))), 'channel': row['channel'],
+            'state': state, 'reason': reason, 'attempt': row['attempt'],
+            'items': items, 'diagnostic': detail})
+        if record is None:
+            return
+        saved = self._control.setdefault('delivery_diagnostics', {})
+        saved.setdefault('latest_result', {})[row['channel']] = record
+        if state == 'failed':
+            saved.setdefault('latest_failure', {})[row['channel']] = record
+            saved['recent_failures'] = [record, *saved.get('recent_failures', [])[:9]]
+
+    def _publish_diagnostics(self):
+        saved = self._control.get('delivery_diagnostics')
+        if type(saved) is not dict:
+            saved = {}
+        channels = {}
+        for channel in CHANNELS:
+            grouped = {}
+            cursor = self._db.execute("SELECT error,COUNT(*) FROM receipt WHERE channel=? "
+                                      "AND state='blocked_config' GROUP BY error", (channel,))
+            try:
+                for reason, count in cursor:
+                    reason = stable_reason(reason) or 'delivery_unknown'
+                    grouped[reason] = grouped.get(reason, 0) + count
+            finally:
+                cursor.close()
+            data = {'blocked_by_reason': [{'reason': r, 'count': n} for r, n in sorted(grouped.items())]}
+            for key in ('latest_result', 'latest_failure'):
+                by_channel = saved.get(key)
+                data[key] = self._diagnostic_record(by_channel.get(channel)) if type(by_channel) is dict else None
+            channels[channel] = data
+        recent = saved.get('recent_failures')
+        recent = recent[:10] if type(recent) is list else []
+        self._diagnostics = {
+            'version': 1, 'observed_at': max(0, min(MAX_COUNTER, int(self._clock()))),
+            'channels': channels,
+            'recent_failures': [r for value in recent if (r := self._diagnostic_record(value)) is not None],
+        }
+
+    def _note_storage_error(self, error, stage):
+        """Fixed classes only: exception text can contain credentials and paths."""
+        code = 'unknown'
+        if stage == 'worker':
+            code = 'worker_exception'
+        elif isinstance(error, sqlite3.Error):
+            number = getattr(error, 'sqlite_errorcode', None)
+            primary = number & 255 if type(number) is int else -1
+            code = {5: 'sqlite_busy', 6: 'sqlite_busy', 8: 'sqlite_readonly',
+                    10: 'sqlite_io', 11: 'sqlite_corrupt', 13: 'sqlite_full',
+                    26: 'sqlite_corrupt'}.get(primary, 'sqlite_error')
+            # Python 3.10 has no sqlite_errorcode. Match only exact driver
+            # phrases; never publish the message or interpolate any suffix.
+            message = error.args[0] if len(error.args) == 1 else None
+            if primary == -1 and type(message) is str and len(message) <= 128:
+                code = {'database is locked': 'sqlite_busy',
+                        'database table is locked': 'sqlite_busy',
+                        'database or disk is full': 'sqlite_full',
+                        'attempt to write a readonly database': 'sqlite_readonly',
+                        'database disk image is malformed': 'sqlite_corrupt',
+                        'file is not a database': 'sqlite_corrupt',
+                        'disk I/O error': 'sqlite_io'}.get(message, 'sqlite_error')
+        elif isinstance(error, OSError):
+            if stage == 'open_owner' and error.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                code = 'owner_lock'
+            elif error.errno in (errno.EACCES, errno.EPERM):
+                code = 'permission_denied'
+            elif error.errno == errno.ENOSPC:
+                code = 'disk_full'
+            else:
+                code = 'os_error'
+        elif isinstance(error, (ValueError, KeyError, TypeError, ImportError)):
+            code = 'invalid_state'
+        self._storage_error = {'at': max(0, min(MAX_COUNTER, int(self._clock()))),
+                               'stage': stage, 'code': code}
+
+    def worker_failed(self, error):
+        with self._lock:
+            self._note_storage_error(error, 'worker')
+            self.enter_gap('delivery_storage', {})
+            self.fence_claims()
+
+    def diagnostics_snapshot(self):
+        """Read only published memory; never lock SQLite or contact providers."""
+        health = self._health
+        snapshot = copy.deepcopy(self._diagnostics)
+        snapshot.update({key: health[key] for key in (
+            'counts_stale', 'storage_ok', 'worker_running', 'coverage')})
+        snapshot['storage_error'] = copy.deepcopy(self._storage_error)
+        return snapshot
 
     def close(self, *, clean):
         with self._lock:

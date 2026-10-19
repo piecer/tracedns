@@ -23,3 +23,4 @@ class HttpContext:
     state_repository: Any = None
     config_service: Any = None
     delivery_health: Any = None
+    delivery_diagnostics: Any = None

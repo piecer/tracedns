@@ -6,7 +6,7 @@ READ = {'/config', '/results', '/decoders', '/decoders/custom', '/history', '/ip
 OPERATE = {'/resolve', '/ip', '/analyze', '/verify', '/domain-precheck', '/ip-list-analysis',
            '/ip-relationship-jobs', '/ip-relationship-analysis', '/misp/search', '/misp/event-ips'}
 PAGES = {'/', '/dns_frontend.html', '/dns_dashboard.html', '/dns_frontend.js', '/dns_frontend.css',
-         '/auth_frontend.js', '/security_ui.js', '/account.html', '/audit.html',
+         '/delivery_diagnostics.js', '/auth_frontend.js', '/security_ui.js', '/account.html', '/audit.html',
          '/country_centroids.json', '/cytoscape.min.js', '/world_countries_110m.geojson'}
 SELF_GET = {'/auth/me', '/auth/csrf', '/auth/activity', '/auth/sessions'}
 SELF_POST = {'/auth/logout', '/auth/password', '/auth/sessions/revoke'}
@@ -33,7 +33,7 @@ def allowed(role, method, path, qs=None, body=None):
         return True
     if method == 'GET' and path in READ:
         return role != 'viewer' or not external_read(path, qs)
-    if method == 'GET' and path == '/delivery-health':
+    if method == 'GET' and path in ('/delivery-health', '/delivery-diagnostics'):
         return role in ('admin', 'operator')
     if re.fullmatch(r'/ip-relationship-jobs/[a-f0-9]{32}', path) and method == 'GET':
         return role in ('admin', 'operator')

@@ -16,14 +16,21 @@ import threading
 
 import requests
 
-from monitor.delivery_types import encode_body
+from monitor.delivery_diagnostics import normalize_diagnostic, valid_diagnostic
+from monitor.delivery_types import MAX_COUNTER, encode_body, provider_result
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
-def result(state, reason=None, *, progress=None, calls=0, retry_after=None, hook=None):
-    return {'state': state, 'reason': reason, 'progress': progress or {},
-            'retry_after': retry_after, 'provider_calls': calls, 'observation_hook': hook}
+def result(state, reason=None, *, progress=None, calls=0, retry_after=None, hook=None,
+           diagnostic=None):
+    outcome = {'state': state, 'reason': reason, 'progress': progress or {},
+               'retry_after': retry_after, 'provider_calls': calls, 'observation_hook': hook}
+    if diagnostic is not None:
+        if not valid_diagnostic(diagnostic):
+            return provider_result(dict(outcome, diagnostic=diagnostic))
+        outcome['diagnostic'] = normalize_diagnostic(diagnostic)
+    return outcome
 
 
 def strict_json(raw):
@@ -61,7 +68,32 @@ class RequestsTransport:
             return session.request(method, url, **kwargs)
 
 
-def provider_request(transport, method, endpoint, *, body=None, key='', verify=True):
+def _tls_kind(error):
+    """Inspect bounded exception links, never strings (URLs may occur in args)."""
+    pending, seen = [error], set()
+    for _ in range(32):
+        if not pending:
+            break
+        current = pending.pop()
+        if not isinstance(current, BaseException) or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, ssl.SSLCertVerificationError):
+            return 'certificate_verify'
+        links = (current.__cause__, current.__context__, getattr(current, 'reason', None),
+                 *current.args[:4])
+        pending.extend(item for item in links if isinstance(item, BaseException))
+    return 'ssl_failure'
+
+
+def provider_request(transport, method, endpoint, *, body=None, key='', verify=True,
+                     diagnostic=None):
+    # Caller-owned collector preserves successful HTTP evidence through parsing.
+    if diagnostic is None:
+        diagnostic = normalize_diagnostic()
+    diagnostic['response_limit'] = MAX_RESPONSE_BYTES
+    diagnostic['tls_verify'] = (verify if type(verify) is bool else
+                                True if type(verify) is str and verify else None)
     response = None
     try:
         headers = {'Accept': 'application/json', 'Content-Type': 'application/json'}
@@ -71,33 +103,38 @@ def provider_request(transport, method, endpoint, *, body=None, key='', verify=T
             method, endpoint, data=encode_body(body) if body is not None else None,
             headers=headers, timeout=(3, 10), allow_redirects=False, stream=True, verify=verify)
         status = response.status_code
+        diagnostic['http_status'] = status if type(status) is int and 100 <= status <= 599 else None
+        diagnostic['response_bytes'] = 0
         if type(status) is not int:
-            return result('retry', 'provider_protocol', calls=1), None
+            return result('retry', 'provider_protocol', calls=1, diagnostic=diagnostic), None
         retry_after = None
         try:
             retry_after = max(30, min(3600, int(response.headers.get('Retry-After', ''))))
         except (TypeError, ValueError):
             pass
         if status in (401, 403):
-            return result('blocked', 'provider_auth', calls=1), None
+            return result('blocked', 'provider_auth', calls=1, diagnostic=diagnostic), None
         if status == 429 or 500 <= status <= 599:
-            return result('retry', 'provider_transient', calls=1, retry_after=retry_after), None
+            return result('retry', 'provider_transient', calls=1, retry_after=retry_after, diagnostic=diagnostic), None
         if not 200 <= status <= 299:
-            return result('failed', 'provider_http', calls=1), None
+            return result('failed', 'provider_http', calls=1, diagnostic=diagnostic), None
         chunks = bytearray()
         for chunk in response.iter_content(chunk_size=65536):
+            # Include the rejected chunk, but never consume the rest to count it.
+            diagnostic['response_bytes'] = min(MAX_COUNTER, len(chunks) + len(chunk))
             if len(chunks) + len(chunk) > MAX_RESPONSE_BYTES:
-                return result('failed', 'response_limit', calls=1), None
+                return result('failed', 'response_limit', calls=1, diagnostic=diagnostic), None
             chunks.extend(chunk)
         length = response.headers.get('Content-Length')
         if length is not None and not response.headers.get('Content-Encoding'):
             if not str(length).isdigit() or int(length) != len(chunks):
-                return result('retry', 'provider_protocol', calls=1), None
+                return result('retry', 'provider_protocol', calls=1, diagnostic=diagnostic), None
         return None, bytes(chunks)
-    except requests.exceptions.SSLError:
-        return result('blocked', 'tls_error', calls=1), None
+    except requests.exceptions.SSLError as error:
+        diagnostic['tls_kind'] = _tls_kind(error)
+        return result('blocked', 'tls_error', calls=1, diagnostic=diagnostic), None
     except Exception:
-        return result('retry', 'transport_error', calls=1), None
+        return result('retry', 'transport_error', calls=1, diagnostic=diagnostic), None
     finally:
         if response is not None:
             try:
@@ -166,6 +203,14 @@ def valid_attribute(attribute, event_id):
             and attribute.get('deleted', False) in (False, 0, '0'))
 
 
+class AttributeLimitError(ValueError):
+    """Keep the historic ValueError reason while carrying bounded count evidence."""
+    def __init__(self, observed):
+        super().__init__('attribute_limit')
+        self.diagnostic = dict(normalize_diagnostic(),
+                               attribute_count=min(MAX_COUNTER, observed), attribute_limit=2000)
+
+
 def event_attributes(envelope, event_id):
     """Reject incomplete/unsupported event projections, never infer absence."""
     if not isinstance(envelope, dict) or 'errors' in envelope or 'error' in envelope:
@@ -182,7 +227,8 @@ def event_attributes(envelope, event_id):
     if not isinstance(objects, list):
         raise ValueError('provider_protocol')
     if len(attributes) > 2000 or len(objects) > 2000:
-        raise ValueError('attribute_limit')
+        # Object count is not an attribute count. Report only attributes observed.
+        raise AttributeLimitError(len(attributes))
     attributes = list(attributes)
     for obj in objects:
         if (not isinstance(obj, dict) or not valid_id(obj.get('id'))
@@ -190,7 +236,7 @@ def event_attributes(envelope, event_id):
                 or not isinstance(obj.get('Attribute'), list)):
             raise ValueError('provider_protocol')
         if len(attributes) + len(obj['Attribute']) > 2000:
-            raise ValueError('attribute_limit')
+            raise AttributeLimitError(len(attributes) + len(obj['Attribute']))
         attributes.extend(obj['Attribute'])
     if 'attribute_count' in event and str(event['attribute_count']) != str(len(attributes)):
         raise ValueError('provider_protocol')
@@ -299,9 +345,10 @@ class BoundDestinationAdapter:
                 return result('failed', 'payload_limit')
         except (KeyError, TypeError, ValueError):
             return result('failed', 'payload_invalid')
+        diagnostic = dict(normalize_diagnostic(), operation='teams_send')
         error, _ = provider_request(self._transport, 'POST', self._endpoint,
-                                    body=body, verify=self._verify)
-        return error or result('acked', calls=1)
+                                    body=body, verify=self._verify, diagnostic=diagnostic)
+        return error or result('acked', calls=1, diagnostic=diagnostic)
 
     def _misp_step(self, claim):
         try:
@@ -335,40 +382,45 @@ class BoundDestinationAdapter:
         elif phase == 'delete':
             method, path = 'POST', f"attributes/delete/{progress['attribute_id']}"
             body = {}
+        operation = {'read': 'misp_read', 'add': 'misp_add', 'delete': 'misp_delete'}[phase]
+        diagnostic = dict(normalize_diagnostic(), operation=operation)
         error, raw = provider_request(self._transport, method, self._endpoint.rstrip('/') + '/' + path,
-                                      body=body, key=self._key, verify=self._verify)
+                                      body=body, key=self._key, verify=self._verify, diagnostic=diagnostic)
         if error:
             return error  # retries deliberately reset to authoritative read
         try:
             envelope = strict_json(raw)
         except (ValueError, TypeError, UnicodeError):
-            return result('retry', 'provider_protocol', calls=1)
+            return result('retry', 'provider_protocol', calls=1, diagnostic=diagnostic)
         if phase == 'add':
             if validated_add(envelope, self._event, ip):
-                return result('acked', calls=1)
-            return result('retry', 'provider_protocol', calls=1)
+                return result('acked', calls=1, diagnostic=diagnostic)
+            return result('retry', 'provider_protocol', calls=1, diagnostic=diagnostic)
         if phase == 'delete':
             if validated_delete(envelope):
-                return result('continue', progress={'phase': 'read'}, calls=1)
-            return result('retry', 'provider_protocol', calls=1)
+                return result('continue', progress={'phase': 'read'}, calls=1, diagnostic=diagnostic)
+            return result('retry', 'provider_protocol', calls=1, diagnostic=diagnostic)
         try:
             attributes = event_attributes(envelope, self._event)
         except ValueError as error:
+            if isinstance(error, AttributeLimitError):
+                diagnostic.update({key: error.diagnostic[key]
+                                   for key in ('attribute_count', 'attribute_limit')})
             reason = str(error)
-            return result('failed' if reason == 'attribute_limit' else 'retry', reason, calls=1)
+            return result('failed' if reason == 'attribute_limit' else 'retry', reason, calls=1, diagnostic=diagnostic)
         matches = [a for a in attributes if a['type'] == 'ip-src' and a['value'] == ip]
         if claim['action'] == 'Removed':
             if matches:
-                return result('continue', calls=1, progress={
+                return result('continue', calls=1, diagnostic=diagnostic, progress={
                     'phase': 'delete', 'attribute_id': str(matches[0]['id'])})
-            return result('acked', calls=1, hook={
+            return result('acked', calls=1, diagnostic=diagnostic, hook={
                 'kind': 'remove_queued_sightings', 'event_id': self._event, 'ip': ip})
         if not matches:
-            return result('continue', calls=1, progress={'phase': 'add'})
+            return result('continue', calls=1, diagnostic=diagnostic, progress={'phase': 'add'})
         hook = None
         if claim['attempt'] == 1 and not claim['observation_hook_consumed']:
             hook = {'kind': 'enqueue_sightings', 'event_id': self._event, 'ip': ip}
-        return result('acked', calls=1, hook=hook)
+        return result('acked', calls=1, diagnostic=diagnostic, hook=hook)
 
     def sighting_step(self, ip, progress=None):
         """Separate best-effort work; never invoked by execute_step retries."""
@@ -390,8 +442,10 @@ class BoundDestinationAdapter:
         if progress:
             method, path = 'POST', f"sightings/add/{progress['attribute_id']}"
             body = {'event_id': self._event, 'value': ip, 'type': '0'}
+        operation = 'misp_sighting_add' if progress else 'misp_sighting_read'
+        diagnostic = dict(normalize_diagnostic(), operation=operation)
         error, raw = provider_request(self._transport, method, self._endpoint.rstrip('/') + '/' + path,
-                                      body=body, key=self._key, verify=self._verify)
+                                      body=body, key=self._key, verify=self._verify, diagnostic=diagnostic)
         if error:
             return error
         try:
@@ -400,8 +454,8 @@ class BoundDestinationAdapter:
                 attributes = event_attributes(envelope, self._event)
                 match = next((a for a in attributes if a['type'] == 'ip-src' and a['value'] == ip), None)
                 if not match:
-                    return result('failed', 'sighting_absent', calls=1)
-                return result('continue', calls=1, progress={'phase': 'sighting', 'ip': ip,
+                    return result('failed', 'sighting_absent', calls=1, diagnostic=diagnostic)
+                return result('continue', calls=1, diagnostic=diagnostic, progress={'phase': 'sighting', 'ip': ip,
                     'attribute_id': str(match['id']), 'binding_id': self.binding_id})
             sighting = envelope.get('Sighting')
             if (not isinstance(sighting, dict) or 'errors' in envelope or 'error' in envelope
@@ -410,9 +464,12 @@ class BoundDestinationAdapter:
                     or str(sighting.get('attribute_id')) != str(progress['attribute_id'])
                     or str(sighting.get('type')) != '0'):
                 raise ValueError
-            return result('acked', calls=1)
-        except (ValueError, TypeError, AttributeError):
-            return result('retry', 'provider_protocol', calls=1)
+            return result('acked', calls=1, diagnostic=diagnostic)
+        except (ValueError, TypeError, AttributeError) as error:
+            if isinstance(error, AttributeLimitError):
+                diagnostic.update({key: error.diagnostic[key]
+                                   for key in ('attribute_count', 'attribute_limit')})
+            return result('retry', 'provider_protocol', calls=1, diagnostic=diagnostic)
 
     def descriptor(self):
         return {k: getattr(self, k) for k in (

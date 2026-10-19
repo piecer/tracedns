@@ -237,10 +237,10 @@ def test_read_responses_match_documented_schemas(app):
             continue  # exercised by the real worker test
         query = '?domain=example.org' if path == '/history' else '?ip=192.0.2.1' if path == '/ip' else ''
         status, body = client.call('GET', '/api/v1' + path + query)
-        if path == '/delivery-health':
+        if path in ('/delivery-health', '/delivery-diagnostics'):
             # This fixture intentionally has no delivery owner. Healthy and
-            # degraded cache schemas are exercised by test_delivery_health_http.
-            assert status == 503 and 'missed_total' not in body
+            # degraded cache schemas are exercised by the dedicated HTTP tests.
+            assert status == 503 and 'missed_total' not in body and 'version' not in body
             continue
         assert status == 200, (path, status, body)
         Draft7Validator.check_schema(schema)

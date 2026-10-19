@@ -43,6 +43,20 @@
   <p id="deliveryChecked">Last successful health read: unknown</p>
   <p class="hint">Enqueued is not ACKed. At-least-once attempts can duplicate delivery; an ACK is destination acceptance, not human receipt.</p>
 </section>
+<section id="deliveryDiagnostics" class="delivery-health" data-access="operator" aria-labelledby="diagnosticsHeading">
+  <h2 id="diagnosticsHeading">Delivery diagnostics</h2>
+  <p>Read-only cached evidence. No provider probes, retry, replay or queue changes.</p>
+  <div class="diagnostics-actions">
+    <button id="diagnosticsRead" type="button">Read diagnostics</button>
+    <button id="diagnosticsCancel" type="button" disabled>Cancel read</button>
+    <button id="diagnosticsDownload" type="button" disabled>Download sanitized JSON</button>
+  </div>
+  <p id="diagnosticsStatus" role="status" aria-live="polite" aria-atomic="true">Unknown — read diagnostics explicitly.</p>
+  <details>
+    <summary>Diagnostic evidence and next checks</summary>
+    <div id="diagnosticsDetails">Unknown — no successful diagnostics read yet.</div>
+  </details>
+</section>
 <div class="overview-grid" id="overviewGrid">
   <div class="metric-card">
     <span class="metric-label">Configured Domains</span>
@@ -585,6 +599,7 @@
 </div>
 
 <script src="/dns_frontend.js"></script>
+<script src="/delivery_diagnostics.js"></script>
 
 </body>
 </html>

@@ -1,0 +1,55 @@
+// Actual authenticated page, production-generated diagnostic bytes, fake provider.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const {chromium, expect} = require('@playwright/test');
+(async () => {
+  const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+  const base = `http://127.0.0.1:${input.port}`;
+  const browser = await chromium.launch({headless:true});
+  try {
+    const context = await browser.newContext({viewport:{width:1280, height:900}, acceptDownloads:true});
+    const page = await context.newPage();
+    const errors = [], reads = [];
+    page.on('pageerror', e => errors.push(e.message));
+    page.on('request', r => { if(r.url() === base + '/delivery-diagnostics') reads.push(r.method()); });
+    await page.goto(base + '/login.html');
+    await page.fill('#username', 'root');
+    await page.fill('#password', 'test-password-123');
+    await page.click('#login-submit');
+    await expect(page).not.toHaveURL(/login\.html/);
+    await expect(page.locator('#diagnosticsRead')).toBeVisible();
+    assert.deepEqual(reads, []);
+    await page.locator('#diagnosticsRead').click();
+    await expect(page.locator('#diagnosticsStatus')).toContainText('Cached counts at observation');
+    await page.locator('#deliveryDiagnostics summary').click();
+    const detail = page.locator('#diagnosticsDetails');
+    await expect(detail).toContainText('misp latest result: misp acked');
+    await expect(detail).toContainText('misp latest terminal failure: misp failed · attribute_limit');
+    await expect(detail).toContainText('HTTP: 200');
+    await expect(detail).toContainText('attributes: 2001 / cap 2000');
+    await expect(detail).toContainText('tls_error: 1 blocked items');
+    await expect(detail).toContainText('response_limit');
+    assert.deepEqual(reads, ['GET']);
+    const downloadPromise = page.waitForEvent('download');
+    await page.locator('#diagnosticsDownload').click();
+    const download = await downloadPromise;
+    assert.equal(download.suggestedFilename(), 'delivery-diagnostics.json');
+    const exported = JSON.parse(fs.readFileSync(await download.path(), 'utf8'));
+    assert.deepEqual(exported, input.expected);
+    const ax = await page.locator('#deliveryDiagnostics').ariaSnapshot();
+    assert.ok(ax.includes('button "Refresh diagnostics"'));
+    assert.ok(ax.includes('button "Download sanitized JSON"'));
+    const screenshot = path.join(input.out, 'delivery-diagnostics-browser.png');
+    await page.locator('#deliveryDiagnostics').screenshot({path:screenshot});
+    await page.setViewportSize({width:390, height:844});
+    const fits = await page.locator('#deliveryDiagnostics').evaluate(el => el.scrollWidth <= el.clientWidth + 1);
+    assert.equal(fits, true, 'diagnostics evidence overflows narrow viewport');
+    await page.locator('#diagnosticsRead').focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#diagnosticsStatus')).toContainText('Cached counts at observation');
+    assert.deepEqual(reads, ['GET', 'GET']);
+    assert.deepEqual(errors, []);
+    console.log(JSON.stringify({browser_verified:true, screenshot, diagnostics_reads:reads.length}));
+  } finally { await browser.close(); }
+})().catch(error => { console.error(error); process.exitCode=1; });

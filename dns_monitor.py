@@ -275,7 +275,8 @@ def main():
                                      insecure_http=args.insecure_http,
                                      allow_insecure_remote_http=args.allow_insecure_remote_http,
                                      trusted_proxies=args.trusted_proxy, state_repository=state_repository,
-                                     config_service=config_service, delivery_health=delivery.store.health_snapshot)
+                                     config_service=config_service, delivery_health=delivery.store.health_snapshot,
+                                     delivery_diagnostics=delivery.store.diagnostics_snapshot)
         from security.startup import start_housekeeping
         if args.allow_insecure_remote_http:
             logger.warning('DANGEROUS: plaintext HTTP is exposed beyond loopback; credentials and sessions are not TLS-protected')

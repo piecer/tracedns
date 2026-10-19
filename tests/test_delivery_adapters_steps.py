@@ -50,7 +50,11 @@ def setup(transport, channel='teams'):
 
 
 def closed(result):
-    assert set(result) == {'state', 'reason', 'progress', 'retry_after', 'provider_calls', 'observation_hook'}
+    from monitor.delivery_diagnostics import valid_diagnostic
+    required = {'state', 'reason', 'progress', 'retry_after', 'provider_calls', 'observation_hook'}
+    assert set(result) in (required, required | {'diagnostic'})
+    if 'diagnostic' in result:
+        assert valid_diagnostic(result['diagnostic'])
     assert result['provider_calls'] in (0, 1)
     assert 'SECRET' not in json.dumps(result)
 

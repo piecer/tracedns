@@ -130,7 +130,7 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 def make_handler(shared_config, config_lock, config_path, history_dir, current_results, history, max_body_bytes=None,
                  *, security_store=None, public_origin='', insecure_http=False,
                  allow_insecure_remote_http=False, trusted_proxies=(), state_repository=None, config_service=None,
-                 delivery_health=None):
+                 delivery_health=None, delivery_diagnostics=None):
     """Create configured HTTP request handler class bound to runtime state.
 
     ``max_body_bytes`` defaults to ``resolve_max_body_length()`` when omitted.
@@ -169,6 +169,7 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
         relationship_jobs=relationship_jobs,
         config_service=config_service,
         delivery_health=delivery_health,
+        delivery_diagnostics=delivery_diagnostics,
     )
     handler.relationship_jobs = relationship_jobs
     handler.background_services = (enrichment, read_model, relationship_jobs)

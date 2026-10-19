@@ -97,6 +97,7 @@ ALLOWED_STATIC_FILES = {
     "settings.html",
     "dns_frontend.css",
     "dns_frontend.js",
+    "delivery_diagnostics.js",
     "country_centroids.json",
     "cytoscape.min.js",
     "world_countries_110m.geojson",
@@ -121,6 +122,7 @@ def attach_api_handlers(
     relationship_jobs=None,
     config_service=None,
     delivery_health=None,
+    delivery_diagnostics=None,
 ):
     cache_lock = threading.RLock()
     if max_body_bytes is None:
@@ -141,6 +143,7 @@ def attach_api_handlers(
         state_repository=state_repository,
         config_service=config_service,
         delivery_health=delivery_health,
+        delivery_diagnostics=delivery_diagnostics,
     )
     from monitor.config_service import get_config_service
     get_config_service(ctx)
@@ -2280,6 +2283,9 @@ def attach_api_handlers(
     
         if parsed.path == '/config':
             return self._handle_config()
+        if parsed.path == '/delivery-diagnostics':
+            from http_api.delivery_diagnostics import handle_delivery_diagnostics
+            return handle_delivery_diagnostics(ctx, self)
         if parsed.path == '/delivery-health':
             from http_api.delivery_health import handle_delivery_health
             return handle_delivery_health(ctx, self)
