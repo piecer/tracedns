@@ -1,6 +1,8 @@
 requests==2.31.0
 argon2-cffi>=23.1,<26
 dnspython==2.3.0
+cryptography>=43,<51  # Ed25519 verification for read-only BEP44 DHT tracking
+PyNaCl==1.6.2  # libsodium point validation rejects unauthenticating low-order DHT keys
 PyMISP==2.4.140
 
 # Optional packages (useful for local development / testing)

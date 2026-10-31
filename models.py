@@ -10,12 +10,13 @@ We intentionally avoid pydantic to keep dependencies minimal.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
+from copy import deepcopy
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from config_manager import domain_identity
 
 
-RecordType = str  # 'A' | 'TXT' | 'ENS' | 'SNS' | 'MIXED'
+RecordType = str  # 'A' | 'TXT' | 'ENS' | 'SNS' | 'DHT' | 'MIXED'
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,8 @@ class DomainSpec:
     ens_options: Optional[Dict[str, Any]] = None
     sns_decode: Optional[str] = None
     sns_options: Optional[Dict[str, Any]] = None
+    dht_public_key: Optional[str] = None
+    dht_options: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -53,10 +56,13 @@ class Snapshot:
     sns_decode: Optional[str] = None
     sns_options: Optional[Dict[str, Any]] = None
     decoded_endpoints: List[str] = field(default_factory=list)
+    dht_public_key: Optional[str] = None
+    dht_options: Optional[Dict[str, Any]] = None
+    dht_record: Optional[Dict[str, Any]] = None
 
     def managed_ips(self) -> Set[str]:
         r = str(self.type or '').upper()
-        if r in ('TXT', 'ENS', 'SNS'):
+        if r in ('TXT', 'ENS', 'SNS', 'DHT'):
             return {str(x).strip() for x in (self.decoded_ips or []) if str(x or '').strip()}
         if r == 'A':
             # A-type with post-process enabled stores transformed IPs in values.
@@ -96,6 +102,9 @@ class Snapshot:
             out['sns_decode'] = self.sns_decode
         if isinstance(self.sns_options, dict) and self.sns_options:
             out['sns_options'] = self.sns_options
+        for key in ('dht_public_key', 'dht_options', 'dht_record'):
+            if d.get(key) is not None:
+                out[key] = d[key]
         return out
 
     @staticmethod
@@ -120,6 +129,9 @@ class Snapshot:
             ens_options=obj.get('ens_options') if isinstance(obj.get('ens_options'), dict) else None,
             sns_decode=obj.get('sns_decode'),
             sns_options=obj.get('sns_options') if isinstance(obj.get('sns_options'), dict) else None,
+            dht_public_key=obj.get('dht_public_key'),
+            dht_options=deepcopy(obj.get('dht_options')),
+            dht_record=deepcopy(obj.get('dht_record')),
         )
         return snap
 
@@ -211,6 +223,8 @@ class SnapshotChange:
             (self.prev.values or []) != (self.new.values or [])
             or (self.prev.decoded_ips or []) != (self.new.decoded_ips or [])
             or (self.prev.decoded_endpoints or []) != (self.new.decoded_endpoints or [])
+            or self.prev.dht_record != self.new.dht_record
+            or self.prev.dht_public_key != self.new.dht_public_key
             or str(self.prev.type).upper() != str(self.new.type).upper()
         )
 
@@ -241,6 +255,8 @@ def coerce_domains(domains: List[Any]) -> List[DomainSpec]:
                     ens_options=d.get('ens_options') if isinstance(d.get('ens_options'), dict) else None,
                     sns_decode=d.get('sns_decode'),
                     sns_options=d.get('sns_options') if isinstance(d.get('sns_options'), dict) else None,
+                    dht_public_key=d.get('dht_public_key'),
+                    dht_options=deepcopy(d.get('dht_options')),
                 )
             )
         else:
@@ -258,6 +274,7 @@ def coerce_domains(domains: List[Any]) -> List[DomainSpec]:
             'ens_text_key': ds.ens_text_key,
             'ens_node': ds.ens_node,
             'ens_resolver': ds.ens_resolver,
+            'dht_public_key': ds.dht_public_key,
         })
         if ident in seen:
             continue

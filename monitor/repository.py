@@ -132,6 +132,8 @@ class MonitorStateRepository:
                     pass
                 except OSError:
                     continue
+                if self.delivery_runtime is not None and not self.delivery_runtime.store.retire_dht(name):
+                    continue
                 self._pending_cleanup.discard(name)
             return ['history_cleanup_pending'] if self._pending_cleanup else []
 
@@ -168,11 +170,29 @@ class MonitorStateRepository:
             return (lease.target.version, deepcopy(lease.current), deepcopy(lease.history),
                     deepcopy(lease.target.failures))
 
-    def accept_observation(self, lease, version, current, history, failures, observation):
+    def begin_dht(self, lease, version, history):
+        from .dht_support import checkpoint
+        runtime = self.delivery_runtime
+        with runtime.config.lock, self._coord:
+            if runtime.stopping or not self.valid(lease) or lease.target.version != version:
+                return None
+            return runtime.store.begin_dht(lease.name, checkpoint(history), lambda: runtime.stopping)
+
+    def accept_observation(self, lease, version, current, history, failures, observation, *, dht_token=None):
         runtime = self.delivery_runtime
         with runtime.config.lock, self._coord:
             with state_lock():
-                if runtime.stopping or not self.valid(lease) or lease.target.version != version:
+                valid = not runtime.stopping and self.valid(lease) and lease.target.version == version
+            if not valid:
+                if dht_token is not None:
+                    runtime.store.abort_dht(lease.name, dht_token)
+                return False
+            if dht_token is not None:
+                from .dht_support import checkpoint
+                if not runtime.store.finish_dht(lease.name, dht_token, checkpoint(history),
+                                                lambda: runtime.stopping):
+                    if runtime.stopping:
+                        runtime.store.abort_dht(lease.name, dht_token)
                     return False
             if observation is not None:
                 observation['projection_signature'] = runtime.signature(lease)
@@ -182,6 +202,8 @@ class MonitorStateRepository:
             # The original lease cannot be revoked between admission and publish.
             # SQL and rendering above run WITHOUT state_lock.
             with state_lock():
+                if runtime.stopping:
+                    return False
                 lease.current.clear()
                 lease.current.update(current)
                 lease.history.clear()

@@ -19,6 +19,10 @@ from monitor.delivery_types import CHANNELS, DEFAULT_LIMITS, MAX_COUNTER, encode
 from monitor.delivery_types import TeamsPayloadTooLarge, encode_body, stable_reason
 
 
+class _DHTCancelled(Exception):
+    pass
+
+
 class DeliveryStore:
     def __init__(self, history_dir, *, clock=time.time, limits=None, render=None):
         self._render = render or (lambda entries, action, created: {
@@ -181,6 +185,108 @@ class DeliveryStore:
                       "signature TEXT NOT NULL, ip TEXT NOT NULL, expires REAL NOT NULL, "
                       "bytes INTEGER NOT NULL, PRIMARY KEY(target,signature,ip))")
         self._execute("CREATE INDEX IF NOT EXISTS reappearance_expiry ON reappearance(expires)")
+        # Authoritative DHT evidence shares this ledger's application owner.
+        self._execute("CREATE TABLE IF NOT EXISTS dht_state (target TEXT PRIMARY KEY, "
+                      "data TEXT NOT NULL, pending TEXT, bytes INTEGER NOT NULL)")
+
+    def load_dht_checkpoint(self, target):
+        with self._lock:
+            if self._db is None or self._closed or self._unresolved:
+                return False, None
+            try:
+                row = self._one("SELECT data FROM dht_state WHERE target=?", (target,))
+                return True, json.loads(row[0]) if row else None
+            except (sqlite3.Error, ValueError, TypeError):
+                self.enter_gap("delivery_storage", {})
+                return False, None
+
+    def _put_dht_checkpoint(self, target, checkpoint, pending):
+        data = encode(checkpoint)
+        needed = len(data.encode()) + len(target.encode()) + 32
+        old = self._one("SELECT bytes FROM dht_state WHERE target=?", (target,))
+        count, used = self._one("SELECT COUNT(*),COALESCE(SUM(bytes),0) FROM dht_state")
+        if (len(data.encode()) > self.limits['unit_bytes'] or
+                used - (old[0] if old else 0) + needed > self.limits['cursor_bytes'] or
+                (old is None and count >= self.limits['cursor_targets'])):
+            raise ValueError('DHT state capacity')
+        self._execute("INSERT OR REPLACE INTO dht_state VALUES(?,?,?,?)",
+                      (target, data, pending, needed))
+
+    def begin_dht(self, target, checkpoint, cancelled):
+        """Persist a restart fence before collecting potentially newer evidence.
+
+        A failed/uncertain final save leaves pending intact across clean shutdown
+        too. Explicit target retirement can discard that unknown highwater;
+        cancellation clears only its exact ticket without advancing evidence.
+        """
+        with self._lock:
+            token = uuid.uuid4().hex
+            def apply():
+                row = self._one("SELECT data,pending FROM dht_state WHERE target=?", (target,))
+                if row and (row['pending'] is not None or
+                            json.loads(row['data']) != checkpoint):
+                    return None
+                self._put_dht_checkpoint(target, checkpoint, token)
+                return token
+            ok, result, _ = self._transaction(token, apply, cancelled=cancelled)
+            if not ok or result is None:
+                if not cancelled():
+                    self.enter_gap("delivery_storage", {})
+                return None
+            return result
+
+    def finish_dht(self, target, token, checkpoint, cancelled):
+        with self._lock:
+            def apply():
+                row = self._one("SELECT pending FROM dht_state WHERE target=?", (target,))
+                if row is None or row[0] != token:
+                    return False
+                self._put_dht_checkpoint(target, checkpoint, None)
+                return True
+            ok, result, _ = self._transaction(uuid.uuid4().hex, apply, cancelled=cancelled)
+            if not ok and not cancelled():
+                self.enter_gap("delivery_storage", {})
+            return bool(ok and result)
+
+    def abort_dht(self, target, token):
+        with self._lock:
+            ok, _, _ = self._transaction(uuid.uuid4().hex, lambda: self._execute(
+                "UPDATE dht_state SET pending=NULL WHERE target=? AND pending=?", (target, token)))
+            if not ok:
+                self.enter_gap("delivery_storage", {})
+            return ok
+
+    def retire_dht(self, target):
+        with self._lock:
+            if self._db is not None and not self._closed and not self._one(
+                    "SELECT 1 FROM dht_state WHERE target=?", (target,)):
+                return True
+            ok, _, _ = self._transaction(uuid.uuid4().hex, lambda: self._execute(
+                "DELETE FROM dht_state WHERE target=?", (target,)))
+            return ok
+
+    def prune_dht(self, active):
+        with self._lock:
+            if self._db is not None and not self._closed and not self._one("SELECT 1 FROM dht_state LIMIT 1"):
+                return True
+            def apply():
+                last = ''
+                while True:
+                    cursor = self._db.execute("SELECT target FROM dht_state WHERE target>? ORDER BY target LIMIT 256", (last,))
+                    try:
+                        page = cursor.fetchmany(256)
+                    finally:
+                        cursor.close()
+                    if not page:
+                        break
+                    last = page[-1][0]
+                    for row in page:
+                        if row[0] not in active:
+                            self._execute("DELETE FROM dht_state WHERE target=?", (row[0],))
+            ok, _, _ = self._transaction(uuid.uuid4().hex, apply)
+            if not ok:
+                self.enter_gap("delivery_storage", {})
+            return ok
 
     def _release(self):
         if self._db is not None:
@@ -336,7 +442,7 @@ class DeliveryStore:
                 self.enter_gap("delivery_storage", {})
             return {"ledger_committed": ok}
 
-    def _transaction(self, operation, fn):
+    def _transaction(self, operation, fn, *, cancelled=None):
         """A fixed last-transaction UUID resolves commit errors independently.
 
         Only one writer owned by this object exists. No subsequent write is
@@ -357,10 +463,16 @@ class DeliveryStore:
             self._control["last_transaction"] = operation
             self._save_control()
             self._fault("before_commit")
+            if cancelled is not None and cancelled():
+                raise _DHTCancelled()
             stage = 'transaction_commit'
             self._db.commit()
             committed = True
             self._fault("after_commit")
+        except _DHTCancelled:
+            self._db.rollback()
+            self._control = before
+            return False, None, False
         except (sqlite3.Error, OSError, ValueError) as error:
             self._note_storage_error(error, stage)
             try:

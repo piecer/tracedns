@@ -15,14 +15,34 @@ BOOLEAN = {'type': 'boolean'}
 OBJECT = {'type': 'object', 'additionalProperties': True}
 STRINGS = {'type': 'array', 'items': STRING}
 REVISION = {'type': 'integer', 'minimum': 0, 'description': 'Revision of the loaded /config, /settings or /decoders snapshot; one global CAS. Missing, boolean, noninteger or stale => 409.'}
+DHT_OPTIONS = {
+    'type': 'object', 'additionalProperties': False,
+    'description': 'Bounded read-only IPv4 BEP44 lookup; only get/find_node, no publication or C2 contact.',
+    'properties': {
+        'duration': {'type': 'number', 'minimum': 0.05, 'maximum': 60, 'default': 30},
+        'max_queries': {'type': 'integer', 'minimum': 1, 'maximum': 128, 'default': 128},
+        'timeout': {'type': 'number', 'minimum': 0.02, 'maximum': 5, 'default': 2.5},
+        'rate': {'type': 'number', 'minimum': 0.1, 'maximum': 5, 'default': 4},
+        'concurrency': {'type': 'integer', 'minimum': 1, 'maximum': 4, 'default': 4},
+        'max_nodes': {'type': 'integer', 'minimum': 1, 'maximum': 512, 'default': 512},
+        'bootstraps': {'type': 'array', 'minItems': 1, 'maxItems': 8,
+                       'items': {'type': 'string', 'maxLength': 260},
+                       'description': 'Public bootstrap host:port; no URLs, private or noncanonical IPv4 literals.'},
+    },
+}
 DOMAIN = {
     'type': 'object', 'required': ['name'], 'additionalProperties': True,
     'properties': {
-        'name': STRING, 'type': {'type': 'string', 'description': 'DNS record type (A, AAAA, TXT, MX, CNAME, NS, SOA, SRV, CAA, etc.), ENS or SNS.'},
+        'name': STRING, 'type': {'type': 'string', 'description': 'DNS record type (A, AAAA, TXT, MX, CNAME, NS, SOA, SRV, CAA, etc.), ENS, SNS or DHT. DHT name is a display label.'},
         **{name: STRING for name in ('txt_decode', 'a_decode', 'a_xor_key', 'ens_text_key', 'ens_decode',
                                     'ens_node', 'ens_resolver', 'ens_xor_byte', 'sns_decode')},
         'ens_options': OBJECT, 'sns_options': OBJECT,
+        'dht_public_key': {'type': 'string', 'pattern': '^[0-9A-Fa-f]{64}$',
+                           'description': 'Unsalted BEP44 Ed25519 public key, not a credential. Required for DHT.'},
+        'dht_options': DHT_OPTIONS,
     },
+    'allOf': [{'if': {'properties': {'type': {'const': 'DHT'}}, 'required': ['type']},
+               'then': {'required': ['dht_public_key']}}],
 }
 DOMAINS = {'type': 'array', 'items': {'oneOf': [STRING, DOMAIN]},
            'description': 'Complete desired list, not an append. Keep all existing target identities/options. Removal purges history.'}
@@ -78,11 +98,11 @@ BODIES = {
     '/settings': obj({'revision': REVISION, 'alerts': OBJECT, 'clear_fields': STRINGS}, ('revision', 'alerts')),
     '/resolve': obj({'domains': {**DOMAINS, 'maxItems': 64}, 'domain': STRING,
                      'servers': {'type': 'array', 'items': STRING, 'maxItems': 64,
-                                 'description': 'Configured DNS resolver subset. May be empty for ENS/SNS targets with configured chain providers; DNS targets require at least one configured resolver.'}}),
+                                 'description': 'Configured DNS resolver subset. DHT uses its one logical provider independently; ENS/SNS require chain providers. These targets may use an empty DNS subset; DNS targets require a configured resolver.'}}),
     '/ip': obj({'ip': STRING}, ('ip',)),
     '/analyze': obj({'domain': STRING, 'txt': STRING, 'sample': STRING}, ('domain',)),
     '/domain-precheck': obj({**{k: v for k, v in DOMAIN['properties'].items() if k != 'name'}, 'domain': STRING,
-                             'type': {'enum': ['AUTO', 'A', 'TXT', 'ENS', 'SNS'], 'default': 'AUTO'},
+                             'type': {'enum': ['AUTO', 'A', 'TXT', 'ENS', 'SNS', 'DHT'], 'default': 'AUTO'},
                              'servers': {'oneOf': [STRING, STRINGS]},
                              'ens_rpc_url': {'type': 'string', 'writeOnly': True},
                              'include_vt': {'type': 'boolean', 'default': True}, 'analyze_decoders': BOOLEAN,

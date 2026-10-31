@@ -203,7 +203,7 @@ VT 작업의 실행/대기/보관에는 상한이 있으며 한도 초과 항목
 ## 안전한 대상 수정
 
 `GET /config`의 최신 revision과 전체 domains를 읽고 원하는 항목만 편집한다.
-ENS의 name/text-key/node/resolver, SNS의 record key 등 식별자를 보존한다.
+ENS의 name/text-key/node/resolver, SNS의 record key, DHT의 표시 라벨/public key 등 식별자를 보존한다.
 `PATCH /config` 응답의 revision/config 및 후속 GET 결과를 확인한다.
 
 ```json
@@ -217,6 +217,20 @@ Secret 응답은 빈 문자열 + configured 플래그다. 빈 쓰기는 기존 �
 명시적 `clear_fields`만 비운다. 등록/변경 메타데이터는 서버가 관리한다.
 
 ## 비동기 완료 판단
+
+### DHT 대상
+
+`type="DHT"`, `name=<표시 라벨>`, `dht_public_key=<정확히 64 hex>` 및 선택적
+`dht_options`를 사용한다. DNS 서버·ENS RPC·SNS 프록시는 필요하지 않다.
+precheck에서는 `name` 대신 `domain`으로 라벨을 전달하며, `can_add=true`와 실제
+서명 레코드 발견은 별개다. DHT precheck는 VT/디코더 후보 탐색을 실행하지 않는다.
+강제 조회는 전체 typed target을 `domains`에 전달한다. A 단축 필드 `domain`은 사용하지 않는다.
+seq는 JSON 숫자가 아닌 정규 십진 문자열이다. 마지막 확인된 IP와 최신 시도 상태를
+`dht_record` 및 `domain_meta.*.dht_observation`으로 구분한다. 실패·오래된 seq·동일 seq 충돌은
+기존 IP 삭제가 아니며, 아직 레코드가 없는 대상도 prepared results 페이지에 포함된다.
+전체 설정/상태/자원 제한과 검증 범위는 [DHT 안내](DHT_TRACKING.md)를 참조한다.
+
+### 비동기 작업
 
 관계 분석 생성은 202와 `{"status":"queued","job_id":"…"}`를 반환한다.
 상태 GET은 200이어도 실패/진행 중일 수 있다. 1–2초 간격, 제한된 총 시간으로 polling하고

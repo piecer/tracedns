@@ -59,6 +59,13 @@ class ConfigStore:
     def raw(self) -> Dict[str, Any]:
         return self._cfg
 
+    @property
+    def stop_requested(self):
+        # The signal handler publishes requested before its coordinator can
+        # acquire our lock. Read that latch without introducing lock inversion.
+        return bool(self._cfg.get('_monitor_stopped') or
+                    getattr(self._cfg.get('_signal_stop'), 'requested', False))
+
     def dequeue_force(self):
         """Only the serial runner consumes admitted FIFO work."""
         with self._lock:

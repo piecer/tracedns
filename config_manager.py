@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import tempfile
+from copy import deepcopy
 
 
 def _parse_json_object(value):
@@ -36,6 +37,9 @@ def domain_identity(value):
     if isinstance(value, dict):
         name = str(value.get('name', '')).strip().rstrip('.').lower()
         typ = str(value.get('type') or 'A').strip().upper() or 'A'
+        if typ == 'DHT':
+            label = str(value.get('name', '')).strip().lower()
+            return f"{label}|DHT|{str(value.get('dht_public_key') or '').lower()}"
         if typ in ('ENS', 'SNS'):
             default_key = 'TXT' if typ == 'SNS' else 'ipv6'
             text_key = str(value.get('ens_text_key') or default_key).strip() or default_key
@@ -53,6 +57,9 @@ def domain_storage_name(value):
     if isinstance(value, dict):
         name = str(value.get('name', '')).strip().rstrip('.')
         typ = str(value.get('type') or 'A').strip().upper() or 'A'
+        if typ == 'DHT':
+            label = str(value.get('name', '')).strip()
+            return f"{label} [DHT:{str(value.get('dht_public_key') or '').lower()}]"
         if typ in ('ENS', 'SNS'):
             default_key = 'TXT' if typ == 'SNS' else 'ipv6'
             text_key = str(value.get('ens_text_key') or default_key).strip() or default_key
@@ -67,6 +74,31 @@ def domain_storage_name(value):
             return f"{name} [{suffix}]"
         return name
     return str(value or '').strip().rstrip('.')
+
+
+def validate_dht_domain(value):
+    """Side-effect-free admission for a DHT label/key and bounded lookup options."""
+    from dht_query import validate_dht_config
+    from urllib.parse import quote
+    label = value.get('name')
+    if (type(label) is not str or not label.strip() or len(label) > 253 or
+            any(ord(char) < 32 or ord(char) == 127 for char in label)):
+        raise ValueError('invalid DHT display label')
+    # JSON admission follows the optional-object schema. The Python lookup
+    # API's options=None default is distinct from an explicit JSON null.
+    if 'dht_options' in value and value['dht_options'] is None:
+        raise ValueError('invalid_options')
+    validate_dht_config(value.get('dht_public_key'), value.get('dht_options'))
+    # The existing reversible history filename must fit one filesystem component.
+    if len(quote(domain_storage_name(value), safe='.-_|').encode('ascii')) + 5 > 255:
+        raise ValueError('DHT display label is too long for a history filename')
+
+
+def validate_dht_domains(values):
+    items = values if isinstance(values, list) else [values]
+    for item in items:
+        if isinstance(item, dict) and str(item.get('type') or '').upper() == 'DHT':
+            validate_dht_domain(item)
 
 
 def read_config(path):
@@ -192,6 +224,11 @@ def normalize_domains(value):
         if not name:
             continue
         d = {'name': name, 'type': typ}
+        if typ == 'DHT':
+            # Preserve invalid values too: admission must reject, not repair them.
+            d['dht_public_key'] = it.get('dht_public_key')
+            if 'dht_options' in it:
+                d['dht_options'] = deepcopy(it['dht_options'])
         if txt_decode:
             d['txt_decode'] = txt_decode
         if a_decode is not None and str(a_decode).strip() != '':

@@ -37,8 +37,9 @@ class DeliveryRuntime:
         self._repair_channels = {}
         self._channel = 0
         self._sighting_progress = {}
-        self.stopping = False
+        self._stopping = False
         self.history_persistence = 'saved'
+        self._restore_dht_checkpoints()
         with self.config.lock, self.repository._coord:
             self.selected_alerts = select_alert_configuration(self.config.raw, ini_path)
             self.store.bootstrap(self.projection(), load_legacy_grace(history_dir), self.authority())
@@ -47,6 +48,42 @@ class DeliveryRuntime:
         from mispupdate_code import run_observation_hook
         self.worker = DeliveryWorker(self.store, claim_admission=self.claim_admission, clock=clock,
                                      observation_hook=run_observation_hook, sightings_step=self.sightings_step)
+
+    @property
+    def stopping(self):
+        return self._stopping or self.config.stop_requested
+
+    @stopping.setter
+    def stopping(self, value):
+        self._stopping = bool(value)
+
+    def _restore_dht_checkpoints(self):
+        from .dht_support import restore_checkpoint
+        from .runtime_state import state_lock, bump_state_version
+        with self.config.lock:
+            leases = self.repository.capture()
+        self.store.prune_dht(set(leases))
+        for name, lease in leases.items():
+            if lease.target.definition.type != 'DHT':
+                continue
+            available, value = self.store.load_dht_checkpoint(name)
+            if not available or value is None:
+                continue
+            try:
+                state, snapshot = restore_checkpoint(lease.target.definition, value)
+            except (ValueError, TypeError, KeyError):
+                # Leave corrupt evidence untouched; begin_dht's exact checkpoint
+                # comparison denies replacement rather than adopting old history.
+                self.store.enter_gap('delivery_storage', {})
+                continue
+            with self.config.lock, self.repository._coord, state_lock():
+                if not self.repository.valid(lease):
+                    continue
+                lease.history.setdefault('meta', {})['dht_state'] = state
+                if snapshot is not None:
+                    lease.current['DHT'] = snapshot.to_dict()
+                    lease.history.setdefault('current', {})['DHT'] = snapshot.to_dict()
+                bump_state_version()
 
     def revision(self):
         return self.config.raw.get('_config_revision', self.config.raw.get('config_revision', 0))
@@ -214,6 +251,8 @@ class DeliveryRuntime:
     def complete(self, snapshot, current):
         active = {ip: sorted(labels) for ip, labels in current.items()}
         with self.config.lock, self.repository._coord:
+            if self.stopping:
+                return False
             leases = snapshot.target_leases or {}
             if snapshot.force_req is not None:
                 leases = snapshot.force_req.get('_target_leases', {})

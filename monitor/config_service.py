@@ -107,6 +107,10 @@ class ConfigService:
 
     def initialize_decoders(self):
         with self._writer, self.config_lock:
+            try:
+                config_manager.validate_dht_domains(self.shared_config.get('domains', []))
+            except ValueError as error:
+                raise ConfigError(str(error)) from None
             decoder_registry.publish(prepare_decoders(persistent(self.shared_config)))
 
     def _decoder_candidate(self, candidate, command, data):
@@ -133,6 +137,10 @@ class ConfigService:
         cm = config_manager
         removed = []
         if 'domains' in data:
+            try:
+                cm.validate_dht_domains(data['domains'])
+            except ValueError as error:
+                raise ConfigError(str(error)) from None
             prev = cm.normalize_domains(candidate.get('domains', []))
             normalized = cm.normalize_domains(deepcopy(data['domains']))
             identities = {cm.domain_identity(d) for d in normalized}

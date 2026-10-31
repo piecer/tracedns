@@ -3,11 +3,88 @@
     "schemas": {
       "Domain": {
         "additionalProperties": true,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "DHT"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "required": [
+                "dht_public_key"
+              ]
+            }
+          }
+        ],
         "properties": {
           "a_decode": {
             "type": "string"
           },
           "a_xor_key": {
+            "type": "string"
+          },
+          "dht_options": {
+            "additionalProperties": false,
+            "description": "Bounded read-only IPv4 BEP44 lookup; only get/find_node, no publication or C2 contact.",
+            "properties": {
+              "bootstraps": {
+                "description": "Public bootstrap host:port; no URLs, private or noncanonical IPv4 literals.",
+                "items": {
+                  "maxLength": 260,
+                  "type": "string"
+                },
+                "maxItems": 8,
+                "minItems": 1,
+                "type": "array"
+              },
+              "concurrency": {
+                "default": 4,
+                "maximum": 4,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "duration": {
+                "default": 30,
+                "maximum": 60,
+                "minimum": 0.05,
+                "type": "number"
+              },
+              "max_nodes": {
+                "default": 512,
+                "maximum": 512,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "max_queries": {
+                "default": 128,
+                "maximum": 128,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "rate": {
+                "default": 4,
+                "maximum": 5,
+                "minimum": 0.1,
+                "type": "number"
+              },
+              "timeout": {
+                "default": 2.5,
+                "maximum": 5,
+                "minimum": 0.02,
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "dht_public_key": {
+            "description": "Unsalted BEP44 Ed25519 public key, not a credential. Required for DHT.",
+            "pattern": "^[0-9A-Fa-f]{64}$",
             "type": "string"
           },
           "ens_decode": {
@@ -43,7 +120,7 @@
             "type": "string"
           },
           "type": {
-            "description": "DNS record type (A, AAAA, TXT, MX, CNAME, NS, SOA, SRV, CAA, etc.), ENS or SNS.",
+            "description": "DNS record type (A, AAAA, TXT, MX, CNAME, NS, SOA, SRV, CAA, etc.), ENS, SNS or DHT. DHT name is a display label.",
             "type": "string"
           }
         },
@@ -3227,11 +3304,88 @@
                           },
                           {
                             "additionalProperties": true,
+                            "allOf": [
+                              {
+                                "if": {
+                                  "properties": {
+                                    "type": {
+                                      "const": "DHT"
+                                    }
+                                  },
+                                  "required": [
+                                    "type"
+                                  ]
+                                },
+                                "then": {
+                                  "required": [
+                                    "dht_public_key"
+                                  ]
+                                }
+                              }
+                            ],
                             "properties": {
                               "a_decode": {
                                 "type": "string"
                               },
                               "a_xor_key": {
+                                "type": "string"
+                              },
+                              "dht_options": {
+                                "additionalProperties": false,
+                                "description": "Bounded read-only IPv4 BEP44 lookup; only get/find_node, no publication or C2 contact.",
+                                "properties": {
+                                  "bootstraps": {
+                                    "description": "Public bootstrap host:port; no URLs, private or noncanonical IPv4 literals.",
+                                    "items": {
+                                      "maxLength": 260,
+                                      "type": "string"
+                                    },
+                                    "maxItems": 8,
+                                    "minItems": 1,
+                                    "type": "array"
+                                  },
+                                  "concurrency": {
+                                    "default": 4,
+                                    "maximum": 4,
+                                    "minimum": 1,
+                                    "type": "integer"
+                                  },
+                                  "duration": {
+                                    "default": 30,
+                                    "maximum": 60,
+                                    "minimum": 0.05,
+                                    "type": "number"
+                                  },
+                                  "max_nodes": {
+                                    "default": 512,
+                                    "maximum": 512,
+                                    "minimum": 1,
+                                    "type": "integer"
+                                  },
+                                  "max_queries": {
+                                    "default": 128,
+                                    "maximum": 128,
+                                    "minimum": 1,
+                                    "type": "integer"
+                                  },
+                                  "rate": {
+                                    "default": 4,
+                                    "maximum": 5,
+                                    "minimum": 0.1,
+                                    "type": "number"
+                                  },
+                                  "timeout": {
+                                    "default": 2.5,
+                                    "maximum": 5,
+                                    "minimum": 0.02,
+                                    "type": "number"
+                                  }
+                                },
+                                "type": "object"
+                              },
+                              "dht_public_key": {
+                                "description": "Unsalted BEP44 Ed25519 public key, not a credential. Required for DHT.",
+                                "pattern": "^[0-9A-Fa-f]{64}$",
                                 "type": "string"
                               },
                               "ens_decode": {
@@ -3267,7 +3421,7 @@
                                 "type": "string"
                               },
                               "type": {
-                                "description": "DNS record type (A, AAAA, TXT, MX, CNAME, NS, SOA, SRV, CAA, etc.), ENS or SNS.",
+                                "description": "DNS record type (A, AAAA, TXT, MX, CNAME, NS, SOA, SRV, CAA, etc.), ENS, SNS or DHT. DHT name is a display label.",
                                 "type": "string"
                               }
                             },
@@ -3485,11 +3639,88 @@
                         },
                         {
                           "additionalProperties": true,
+                          "allOf": [
+                            {
+                              "if": {
+                                "properties": {
+                                  "type": {
+                                    "const": "DHT"
+                                  }
+                                },
+                                "required": [
+                                  "type"
+                                ]
+                              },
+                              "then": {
+                                "required": [
+                                  "dht_public_key"
+                                ]
+                              }
+                            }
+                          ],
                           "properties": {
                             "a_decode": {
                               "type": "string"
                             },
                             "a_xor_key": {
+                              "type": "string"
+                            },
+                            "dht_options": {
+                              "additionalProperties": false,
+                              "description": "Bounded read-only IPv4 BEP44 lookup; only get/find_node, no publication or C2 contact.",
+                              "properties": {
+                                "bootstraps": {
+                                  "description": "Public bootstrap host:port; no URLs, private or noncanonical IPv4 literals.",
+                                  "items": {
+                                    "maxLength": 260,
+                                    "type": "string"
+                                  },
+                                  "maxItems": 8,
+                                  "minItems": 1,
+                                  "type": "array"
+                                },
+                                "concurrency": {
+                                  "default": 4,
+                                  "maximum": 4,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "duration": {
+                                  "default": 30,
+                                  "maximum": 60,
+                                  "minimum": 0.05,
+                                  "type": "number"
+                                },
+                                "max_nodes": {
+                                  "default": 512,
+                                  "maximum": 512,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "max_queries": {
+                                  "default": 128,
+                                  "maximum": 128,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "rate": {
+                                  "default": 4,
+                                  "maximum": 5,
+                                  "minimum": 0.1,
+                                  "type": "number"
+                                },
+                                "timeout": {
+                                  "default": 2.5,
+                                  "maximum": 5,
+                                  "minimum": 0.02,
+                                  "type": "number"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "dht_public_key": {
+                              "description": "Unsalted BEP44 Ed25519 public key, not a credential. Required for DHT.",
+                              "pattern": "^[0-9A-Fa-f]{64}$",
                               "type": "string"
                             },
                             "ens_decode": {
@@ -3525,7 +3756,7 @@
                               "type": "string"
                             },
                             "type": {
-                              "description": "DNS record type (A, AAAA, TXT, MX, CNAME, NS, SOA, SRV, CAA, etc.), ENS or SNS.",
+                              "description": "DNS record type (A, AAAA, TXT, MX, CNAME, NS, SOA, SRV, CAA, etc.), ENS, SNS or DHT. DHT name is a display label.",
                               "type": "string"
                             }
                           },
@@ -3794,11 +4025,88 @@
                         },
                         {
                           "additionalProperties": true,
+                          "allOf": [
+                            {
+                              "if": {
+                                "properties": {
+                                  "type": {
+                                    "const": "DHT"
+                                  }
+                                },
+                                "required": [
+                                  "type"
+                                ]
+                              },
+                              "then": {
+                                "required": [
+                                  "dht_public_key"
+                                ]
+                              }
+                            }
+                          ],
                           "properties": {
                             "a_decode": {
                               "type": "string"
                             },
                             "a_xor_key": {
+                              "type": "string"
+                            },
+                            "dht_options": {
+                              "additionalProperties": false,
+                              "description": "Bounded read-only IPv4 BEP44 lookup; only get/find_node, no publication or C2 contact.",
+                              "properties": {
+                                "bootstraps": {
+                                  "description": "Public bootstrap host:port; no URLs, private or noncanonical IPv4 literals.",
+                                  "items": {
+                                    "maxLength": 260,
+                                    "type": "string"
+                                  },
+                                  "maxItems": 8,
+                                  "minItems": 1,
+                                  "type": "array"
+                                },
+                                "concurrency": {
+                                  "default": 4,
+                                  "maximum": 4,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "duration": {
+                                  "default": 30,
+                                  "maximum": 60,
+                                  "minimum": 0.05,
+                                  "type": "number"
+                                },
+                                "max_nodes": {
+                                  "default": 512,
+                                  "maximum": 512,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "max_queries": {
+                                  "default": 128,
+                                  "maximum": 128,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "rate": {
+                                  "default": 4,
+                                  "maximum": 5,
+                                  "minimum": 0.1,
+                                  "type": "number"
+                                },
+                                "timeout": {
+                                  "default": 2.5,
+                                  "maximum": 5,
+                                  "minimum": 0.02,
+                                  "type": "number"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "dht_public_key": {
+                              "description": "Unsalted BEP44 Ed25519 public key, not a credential. Required for DHT.",
+                              "pattern": "^[0-9A-Fa-f]{64}$",
                               "type": "string"
                             },
                             "ens_decode": {
@@ -3834,7 +4142,7 @@
                               "type": "string"
                             },
                             "type": {
-                              "description": "DNS record type (A, AAAA, TXT, MX, CNAME, NS, SOA, SRV, CAA, etc.), ENS or SNS.",
+                              "description": "DNS record type (A, AAAA, TXT, MX, CNAME, NS, SOA, SRV, CAA, etc.), ENS, SNS or DHT. DHT name is a display label.",
                               "type": "string"
                             }
                           },
@@ -7479,6 +7787,64 @@
                   "decoder_top_n": {
                     "type": "integer"
                   },
+                  "dht_options": {
+                    "additionalProperties": false,
+                    "description": "Bounded read-only IPv4 BEP44 lookup; only get/find_node, no publication or C2 contact.",
+                    "properties": {
+                      "bootstraps": {
+                        "description": "Public bootstrap host:port; no URLs, private or noncanonical IPv4 literals.",
+                        "items": {
+                          "maxLength": 260,
+                          "type": "string"
+                        },
+                        "maxItems": 8,
+                        "minItems": 1,
+                        "type": "array"
+                      },
+                      "concurrency": {
+                        "default": 4,
+                        "maximum": 4,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "duration": {
+                        "default": 30,
+                        "maximum": 60,
+                        "minimum": 0.05,
+                        "type": "number"
+                      },
+                      "max_nodes": {
+                        "default": 512,
+                        "maximum": 512,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "max_queries": {
+                        "default": 128,
+                        "maximum": 128,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "rate": {
+                        "default": 4,
+                        "maximum": 5,
+                        "minimum": 0.1,
+                        "type": "number"
+                      },
+                      "timeout": {
+                        "default": 2.5,
+                        "maximum": 5,
+                        "minimum": 0.02,
+                        "type": "number"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "dht_public_key": {
+                    "description": "Unsalted BEP44 Ed25519 public key, not a credential. Required for DHT.",
+                    "pattern": "^[0-9A-Fa-f]{64}$",
+                    "type": "string"
+                  },
                   "domain": {
                     "type": "string"
                   },
@@ -7539,7 +7905,8 @@
                       "A",
                       "TXT",
                       "ENS",
-                      "SNS"
+                      "SNS",
+                      "DHT"
                     ]
                   },
                   "vt_lookup_budget": {
@@ -10442,11 +10809,88 @@
                         },
                         {
                           "additionalProperties": true,
+                          "allOf": [
+                            {
+                              "if": {
+                                "properties": {
+                                  "type": {
+                                    "const": "DHT"
+                                  }
+                                },
+                                "required": [
+                                  "type"
+                                ]
+                              },
+                              "then": {
+                                "required": [
+                                  "dht_public_key"
+                                ]
+                              }
+                            }
+                          ],
                           "properties": {
                             "a_decode": {
                               "type": "string"
                             },
                             "a_xor_key": {
+                              "type": "string"
+                            },
+                            "dht_options": {
+                              "additionalProperties": false,
+                              "description": "Bounded read-only IPv4 BEP44 lookup; only get/find_node, no publication or C2 contact.",
+                              "properties": {
+                                "bootstraps": {
+                                  "description": "Public bootstrap host:port; no URLs, private or noncanonical IPv4 literals.",
+                                  "items": {
+                                    "maxLength": 260,
+                                    "type": "string"
+                                  },
+                                  "maxItems": 8,
+                                  "minItems": 1,
+                                  "type": "array"
+                                },
+                                "concurrency": {
+                                  "default": 4,
+                                  "maximum": 4,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "duration": {
+                                  "default": 30,
+                                  "maximum": 60,
+                                  "minimum": 0.05,
+                                  "type": "number"
+                                },
+                                "max_nodes": {
+                                  "default": 512,
+                                  "maximum": 512,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "max_queries": {
+                                  "default": 128,
+                                  "maximum": 128,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "rate": {
+                                  "default": 4,
+                                  "maximum": 5,
+                                  "minimum": 0.1,
+                                  "type": "number"
+                                },
+                                "timeout": {
+                                  "default": 2.5,
+                                  "maximum": 5,
+                                  "minimum": 0.02,
+                                  "type": "number"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "dht_public_key": {
+                              "description": "Unsalted BEP44 Ed25519 public key, not a credential. Required for DHT.",
+                              "pattern": "^[0-9A-Fa-f]{64}$",
                               "type": "string"
                             },
                             "ens_decode": {
@@ -10482,7 +10926,7 @@
                               "type": "string"
                             },
                             "type": {
-                              "description": "DNS record type (A, AAAA, TXT, MX, CNAME, NS, SOA, SRV, CAA, etc.), ENS or SNS.",
+                              "description": "DNS record type (A, AAAA, TXT, MX, CNAME, NS, SOA, SRV, CAA, etc.), ENS, SNS or DHT. DHT name is a display label.",
                               "type": "string"
                             }
                           },
@@ -10497,7 +10941,7 @@
                     "type": "array"
                   },
                   "servers": {
-                    "description": "Configured DNS resolver subset. May be empty for ENS/SNS targets with configured chain providers; DNS targets require at least one configured resolver.",
+                    "description": "Configured DNS resolver subset. DHT uses its one logical provider independently; ENS/SNS require chain providers. These targets may use an empty DNS subset; DNS targets require a configured resolver.",
                     "items": {
                       "type": "string"
                     },

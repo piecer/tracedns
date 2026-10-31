@@ -62,7 +62,7 @@ def build_ip_rows(current_snapshot, history_snapshot):
                         ent['count'] += 1
                         ent['last_ts'] = max(ent['last_ts'], ts)
                         _add_dns_provenance(ent, {}, ev.get('type', 'A'))
-                    for ip in side_obj.get('decoded_ips', []) if ev.get('type', 'A') in ('TXT', 'A', 'ENS', 'SNS') else []:
+                    for ip in side_obj.get('decoded_ips', []) if ev.get('type', 'A') in ('TXT', 'A', 'ENS', 'SNS', 'DHT') else []:
                         changed_ips.add(ip)
                         ent = _ip_entry(ip)
                         ent['domains'].add(d)
@@ -80,7 +80,7 @@ def build_ip_rows(current_snapshot, history_snapshot):
                         ent['count'] += 1
                         ent['last_ts'] = max(ent['last_ts'], ts)
                         _add_dns_provenance(ent, {}, ev.get('type', 'A'))
-                if ev.get('type', 'A') in ('TXT', 'A', 'ENS', 'SNS'):
+                if ev.get('type', 'A') in ('TXT', 'A', 'ENS', 'SNS', 'DHT'):
                     for ip in ev.get('decoded_ips', []):
                         ent = _ip_entry(ip)
                         ent['domains'].add(d)

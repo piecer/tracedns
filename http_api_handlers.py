@@ -252,7 +252,7 @@ def attach_api_handlers(
                             ent['count'] += 1
                             ent['last_ts'] = max(ent['last_ts'], ts)
                             _add_dns_provenance(ent, {}, ev.get('type', 'A'))
-                        for ip in side_obj.get('decoded_ips', []) if ev.get('type', 'A') in ('TXT', 'A', 'ENS', 'SNS') else []:
+                        for ip in side_obj.get('decoded_ips', []) if ev.get('type', 'A') in ('TXT', 'A', 'ENS', 'SNS', 'DHT') else []:
                             changed_ips.add(ip)
                             ent = _ip_entry(ip)
                             ent['domains'].add(d)
@@ -270,7 +270,7 @@ def attach_api_handlers(
                             ent['count'] += 1
                             ent['last_ts'] = max(ent['last_ts'], ts)
                             _add_dns_provenance(ent, {}, ev.get('type', 'A'))
-                    if ev.get('type', 'A') in ('TXT', 'A', 'ENS', 'SNS'):
+                    if ev.get('type', 'A') in ('TXT', 'A', 'ENS', 'SNS', 'DHT'):
                         for ip in ev.get('decoded_ips', []):
                             ent = _ip_entry(ip)
                             ent['domains'].add(d)
@@ -344,7 +344,7 @@ def attach_api_handlers(
                     maxts = max(maxts, ts)
                     if info.get('type') == 'A':
                         samples.extend(info.get('values', []) or [])
-                    elif info.get('type') in ('TXT', 'ENS', 'SNS'):
+                    elif info.get('type') in ('TXT', 'ENS', 'SNS', 'DHT'):
                         samples.extend(info.get('decoded_ips', []) or [])
                 seen_map[d] = {'last_ts': maxts, 'servers': servers, 'samples': samples}
     
@@ -615,6 +615,11 @@ def attach_api_handlers(
             except Exception:
                 return False
 
+        if not isinstance(data, dict):
+            return self._send_json({'error': 'JSON object required'}, 400)
+        if str(data.get('type') or '').strip().upper() == 'DHT':
+            from http_api.dht_handlers import precheck_dht
+            return precheck_dht(self, data, shared_config)
         domain = str(data.get('domain') or '').strip().rstrip('.')
         if not domain:
             return self._send_json({'error': 'domain required'}, 400)
@@ -2244,7 +2249,7 @@ def attach_api_handlers(
                             'old': ev.get('old'),
                             'new': ev.get('new')
                         })
-                    if rtype in ('TXT', 'A', 'ENS', 'SNS') and (ip in ev.get('new', {}).get('decoded_ips', []) or ip in ev.get('old', {}).get('decoded_ips', [])):
+                    if rtype in ('TXT', 'A', 'ENS', 'SNS', 'DHT') and (ip in ev.get('new', {}).get('decoded_ips', []) or ip in ev.get('old', {}).get('decoded_ips', [])):
                         matches.append({
                             'domain': d,
                             'server': ev.get('server'),
@@ -2264,7 +2269,7 @@ def attach_api_handlers(
                             'ts': ts,
                             'values': ev.get('values')
                         })
-                    if rtype in ('TXT', 'A', 'ENS', 'SNS') and ip in ev.get('decoded_ips', []):
+                    if rtype in ('TXT', 'A', 'ENS', 'SNS', 'DHT') and ip in ev.get('decoded_ips', []):
                         matches.append({
                             'domain': d,
                             'server': ev.get('server'),

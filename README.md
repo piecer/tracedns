@@ -8,6 +8,7 @@ A lightweight DNS monitoring toolkit for extracting indicators from TXT records 
 - Multiple built-in TXT decoders (base64, xor variants, BTEA variants, plain IP extraction, etc.).
 - Optional A-record post-processing method (`xor32_ipv4`) with user-supplied XOR key.
 - ENS monitoring: set domain type to `ENS` in Settings, provide `ENS RPC URL`, and optional per-domain `ENS Key` (default `ipv6`) + `ENS Decode` method.
+- DHT monitoring: verify read-only signed DNS records by public key; retain last-confirmed IPs separately from failed/stale/conflicting lookup attempts. See [DHT configuration, limits and evidence](docs/DHT_TRACKING.md).
 - Register, preview, edit and delete safe custom decoders from the web UI; custom decoders persist in `dns_config.json`.
 - Alerts: Teams webhook and MISP integration for newly discovered IPs.
 - Dashboard UI showing unique IPs and optional VirusTotal lookup (store VT API key in settings).
@@ -85,7 +86,7 @@ inferred from a restart, file mtime, or first observation. New registrations via
 `POST /config` record both dates; unchanged saves, list reordering, and changes
 to global server/interval settings leave per-target dates unchanged. Removing
 and re-adding a target starts a new registration. Renaming a target or changing
-its ENS/SNS identity is likewise a new registration. Direct file edits are not
+its ENS/SNS identity or DHT public key is likewise a new registration. Direct file edits are not
 tracked and cannot be used to reconstruct historical dates.
 
 ## REST API and external AI integration
