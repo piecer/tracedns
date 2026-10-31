@@ -5,6 +5,8 @@ from .repository import normalized_domain_specs
 
 def providers_for(domain, servers=(), ens_rpc_url=None, sns_proxy_hosts=()):
     kind = str(domain.type or 'A').upper()
+    if kind == 'DHT':
+        return ('DHT',)
     values = ([ens_rpc_url] if ens_rpc_url else []) if kind == 'ENS' else (
         sns_proxy_hosts if kind == 'SNS' else servers)
     return tuple(dict.fromkeys(str(v).strip() for v in (values or ()) if str(v or '').strip()))

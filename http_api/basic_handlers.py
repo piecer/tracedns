@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from typing import Any, Dict
+from copy import deepcopy
+import hashlib
+import re
 
 from ens_decoder import ens_options_signature
 from monitor.runtime_state import get_state_version, snapshot_results_inputs
@@ -36,7 +39,11 @@ def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Di
     data = {} if include_raw else None
     data_agg: Dict[str, Any] = {}
 
-    for d, m in current_results.items():
+    sources = dict(current_results)
+    for domain, meta in (history_meta_map or {}).items():
+        if isinstance(meta, dict) and isinstance(meta.get('dht_observation'), dict):
+            sources.setdefault(domain, {})
+    for d, m in sources.items():
         if include_raw:
             data[d] = {}
 
@@ -57,6 +64,9 @@ def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Di
             'sns_record_keys': set(),
             'sns_decodes': set(),
             'sns_options': set(),
+            'dht_public_keys': set(),
+            'dht_targets': set(),
+            'dht_sequences': set(),
         }
 
         for srv, info in m.items():
@@ -126,6 +136,19 @@ def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Di
                 if sns_options:
                     agg_entry['sns_options'].add(sns_options)
 
+            if rtype == 'DHT':
+                if entry is not None:
+                    for key in ('dht_public_key', 'dht_options', 'dht_record'):
+                        if info.get(key) is not None:
+                            entry[key] = deepcopy(info[key])
+                record = info.get('dht_record') or {}
+                if info.get('dht_public_key'):
+                    agg_entry['dht_public_keys'].add(str(info['dht_public_key']))
+                if record.get('target'):
+                    agg_entry['dht_targets'].add(str(record['target']))
+                if record.get('seq') is not None:
+                    agg_entry['dht_sequences'].add(str(record['seq']))
+
             if include_raw:
                 data[d][srv] = entry
 
@@ -139,6 +162,13 @@ def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Di
             except Exception:
                 pass
 
+        meta = (history_meta_map or {}).get(d) or {}
+        if not agg_entry['record_types'] and isinstance(meta.get('dht_observation'), dict):
+            agg_entry['record_types'].add('DHT')
+            key = (meta.get('dht_state') or {}).get('public_key')
+            if isinstance(key, str) and re.fullmatch(r'[0-9a-f]{64}', key):
+                agg_entry['dht_public_keys'].add(key)
+                agg_entry['dht_targets'].add(hashlib.sha1(bytes.fromhex(key)).hexdigest())
         record_types = sorted(list(agg_entry['record_types']))
         if len(record_types) == 1:
             domain_type = record_types[0]
@@ -172,6 +202,8 @@ def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Di
                 sns_method += f" / options:{'|'.join(sorted(agg_entry['sns_options']))}"
             method_parts.append(sns_method)
 
+        if 'DHT' in record_types:
+            method_parts.append('DHT: signed DNS (BEP44)')
         data_agg[d] = {
             'type': domain_type,
             'record_types': record_types,
@@ -193,6 +225,13 @@ def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Di
             'sns_options': sorted(list(agg_entry['sns_options'])),
             'method_summary': ' / '.join(method_parts) if method_parts else '-',
         }
+        if 'DHT' in record_types:
+            for key in ('dht_public_keys', 'dht_targets', 'dht_sequences'):
+                data_agg[d][key] = sorted(agg_entry[key])
+            records = [info['dht_record'] for info in m.values()
+                       if isinstance(info, dict) and isinstance(info.get('dht_record'), dict)]
+            if len(records) == 1:
+                data_agg[d]['dht_record'] = deepcopy(records[0])
 
     domain_meta = {}
     for d, meta in (history_meta_map or {}).items():
@@ -204,6 +243,8 @@ def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Di
             'nxdomain_first_seen': int(meta.get('nxdomain_first_seen') or 0) if meta.get('nxdomain_first_seen') else 0,
             'nxdomain_cleared_ts': int(meta.get('nxdomain_cleared_ts') or 0) if meta.get('nxdomain_cleared_ts') else 0,
         }
+        if isinstance(meta.get('dht_observation'), dict):
+            domain_meta[d]['dht_observation'] = deepcopy(meta['dht_observation'])
 
     payload = {'results_agg': data_agg, 'domain_meta': domain_meta}
     if include_raw:

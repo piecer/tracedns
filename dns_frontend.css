@@ -404,6 +404,13 @@ tbody tr:hover{background:#f0f8fb;}
 .domain-editor-grid label{min-width:0;margin:0;}
 .domain-editor-grid label:first-child{grid-column:1/-1;}
 .domain-editor-grid input,.domain-editor-grid select{min-width:0;max-width:100%;box-sizing:border-box;}
+.domain-editor-grid textarea{min-width:0;max-width:100%;box-sizing:border-box;resize:vertical;}
+.dht-public-key,.dht-options,.dht-key-display{overflow-wrap:anywhere;white-space:pre-wrap;word-break:break-word;font-family:var(--font-mono);}
+.dht-key-display{user-select:text;}
+#resultsTable .dht-evidence,#resultsTable .dht-identifier{vertical-align:top;}
+#resultsTable .dht-evidence details{margin-top:8px;white-space:normal;}
+#resultsTable .dht-evidence pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;margin:8px 0 0;}
+#resultsTable .dht-evidence,#resultsTable .dht-identifier{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;overflow:visible;text-overflow:clip;min-width:180px;max-width:320px;user-select:text;}
 #domainSettingsStatus{overflow-wrap:anywhere;font-weight:600;color:#155d74;}
 @media(max-width:600px){
   #domainTable .domain-card{padding:14px;}
@@ -418,6 +425,9 @@ tbody tr:hover{background:#f0f8fb;}
   max-width:220px;
   display:block;
 }
+/* Preserve actual table columns; block/flex TDs create anonymous cells. */
+#resultsTable td.wrap-cell,#resultsTable td:last-child{display:table-cell;vertical-align:top;}
+#resultsTable td:last-child{white-space:normal;}
 .evidence-cell{
   max-width:none;
   white-space:normal;
@@ -505,6 +515,8 @@ tbody tr:hover{background:#f0f8fb;}
   gap:10px;
   align-items:end;
 }
+.domain-verify-grid label[hidden]{display:none;}
+.domain-verify-grid .dht-public-key,.domain-verify-grid .dht-options{min-width:0;max-width:100%;box-sizing:border-box;resize:vertical;}
 #domainVerifySummary{
   font-family:var(--font-mono);
   font-size:.82rem;

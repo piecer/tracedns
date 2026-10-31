@@ -300,7 +300,7 @@ def valid_claim(claim, channel):
         try:
             address = ipaddress.ip_address(ip)
             if ('%' in ip or address.is_loopback or address.is_unspecified
-                    or len(label.encode()) > 1024 or source not in ('TXT', 'A', 'ENS', 'SNS')):
+                    or len(label.encode()) > 1024 or source not in ('TXT', 'A', 'ENS', 'SNS', 'DHT')):
                 return False
         except ValueError:
             return False
@@ -359,7 +359,7 @@ class BoundDestinationAdapter:
             address = ipaddress.ip_address(ip)
             if address.is_loopback or address.is_unspecified or not isinstance(label, str):
                 raise ValueError
-            if len(label.encode()) > 1024 or source_type not in ('TXT', 'A', 'ENS', 'SNS'):
+            if len(label.encode()) > 1024 or source_type not in ('TXT', 'A', 'ENS', 'SNS', 'DHT'):
                 raise ValueError
             progress = claim['progress']
             phase = progress.get('phase', 'read')

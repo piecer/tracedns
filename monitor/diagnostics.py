@@ -55,6 +55,6 @@ def query_error(exc, *, ens_name=None):
 
 
 def provider_label(rtype, slot):
-    kind = {'ENS': 'ens', 'SNS': 'sns'}.get(rtype, 'dns')
+    kind = {'ENS': 'ens', 'SNS': 'sns', 'DHT': 'dht'}.get(rtype, 'dns')
     slot = slot if type(slot) is int and 0 <= slot <= 65535 else 0
     return f'{kind}:{slot}'

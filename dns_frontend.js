@@ -380,6 +380,11 @@ function domainConfigIdentity(domainObj){
   }
   const name = normalizeDomainName(domainObj.name);
   const type = String(domainObj.type || 'A').trim().toUpperCase() || 'A';
+  if(type === 'DHT'){
+    // A DHT name is a display label, not a DNS name (a trailing dot is literal).
+    const label = String(domainObj.name || '').trim().toLowerCase();
+    return `${label}|DHT|${String(domainObj.dht_public_key || '').toLowerCase()}`;
+  }
   if(type === 'ENS'){
     const textKey = String(domainObj.ens_text_key || 'ipv6').trim() || 'ipv6';
     const node = String(domainObj.ens_node || '').trim().toLowerCase();
@@ -389,6 +394,14 @@ function domainConfigIdentity(domainObj){
   if(type === 'SNS'){
     const textKey = String(domainObj.ens_text_key || 'TXT').trim() || 'TXT';
     return `${name}|SNS|${textKey}`;
+  }
+  return name;
+}
+
+function domainStorageName(target){
+  const name = String(typeof target === 'string' ? target : (target && target.name) || '').trim();
+  if(target && String(target.type || '').toUpperCase() === 'DHT'){
+    return `${name} [DHT:${String(target.dht_public_key || '').toLowerCase()}]`;
   }
   return name;
 }
@@ -460,6 +473,22 @@ function parseJsonObjectInput(rawText, fieldName){
   }
 }
 
+function parseDhtInputs(publicKey, optionsText){
+  // Validate the literal token before any normalization or request.
+  const key = String(publicKey || '');
+  if(key.length !== 64 || !/^[0-9a-fA-F]{64}$/.test(key)){
+    return {ok: false, error: 'DHT public key must be exactly 64 hexadecimal characters (no prefix or whitespace)'};
+  }
+  const options = parseJsonObjectInput(optionsText, 'DHT lookup options');
+  if(!options.ok) return options;
+  const allowed = ['duration', 'max_queries', 'timeout', 'rate', 'concurrency', 'max_nodes', 'bootstraps'];
+  const unknown = Object.keys(options.value || {}).filter(key=>!allowed.includes(key));
+  if(unknown.length) return {ok: false, error: `Unknown DHT lookup options: ${unknown.join(', ')}`};
+  const value = {dht_public_key: key};
+  if(options.value !== null) value.dht_options = options.value;
+  return {ok: true, value};
+}
+
 function formatJsonObjectCompact(value){
   if(!value || typeof value !== 'object' || Array.isArray(value)) return '';
   try{
@@ -519,9 +548,22 @@ function updateDomainVerifyInputMode(){
   const isTxtOnly = t === 'TXT';
   const isEnsOnly = t === 'ENS';
   const isSnsOnly = t === 'SNS';
-  txtEl.disabled = isAOnly || isEnsOnly || isSnsOnly;
-  aEl.disabled = isTxtOnly || isEnsOnly || isSnsOnly;
-  xorEl.disabled = isTxtOnly || isEnsOnly || isSnsOnly;
+  const isDhtOnly = t === 'DHT';
+  ['verifyDhtPublicKey', 'verifyDhtOptions'].forEach(id=>{
+    const el = document.getElementById(id);
+    if(el){ el.disabled = !isDhtOnly; el.parentElement.hidden = !isDhtOnly; }
+  });
+  const dhtHelp = document.getElementById('verifyDhtHelp');
+  if(dhtHelp) dhtHelp.hidden = !isDhtOnly;
+  const addButton = document.getElementById('addVerifiedDomainBtn');
+  if(addButton) addButton.textContent = isDhtOnly ? 'Add DHT target' : '➕ Add Verified Domain';
+  ['verifyAnalyzeDecoders', 'verifyDecoderTopN', 'verifyIncludeVt', 'verifyVtBudget', 'verifyVtWorkers'].forEach(id=>{
+    const el = document.getElementById(id);
+    if(el) el.disabled = isDhtOnly;
+  });
+  txtEl.disabled = isAOnly || isEnsOnly || isSnsOnly || isDhtOnly;
+  aEl.disabled = isTxtOnly || isEnsOnly || isSnsOnly || isDhtOnly;
+  xorEl.disabled = isTxtOnly || isEnsOnly || isSnsOnly || isDhtOnly;
   ensKeyEl.disabled = !isEnsOnly;
   ensDecodeEl.disabled = !isEnsOnly;
   ensOptionsEl.disabled = !isEnsOnly;
@@ -561,8 +603,12 @@ function renderDomainVerifySummary(result){
     `Selected Type: ${selectedType}`,
     `Resolved IPs: ${resolvedIps.length}`,
     `Managed IPs: ${managedIps.length}`,
-    `Add Payload: ${JSON.stringify(result.domain_object || {}, null, 0)}`,
+    `Add Payload: ${JSON.stringify(result.domain_object || result.domain_obj || {}, null, 0)}`,
   ];
+  if(selectedType === 'DHT'){
+    const target = result.domain_object || result.domain_obj || {};
+    lines.push(dhtEvidenceText({...target, ...result}, result.dht_observation));
+  }
   if(notes.length){
     lines.push(`Notes: ${notes.join(' | ')}`);
   }
@@ -780,6 +826,7 @@ function clearDomainVerifyResult(){
 }
 
 async function runDomainVerify(){
+  window.DOMAIN_VERIFY_LAST = null;
   const domain = String((document.getElementById('verifyDomainName') || {}).value || '').trim();
   if(!domain){
     setDomainVerifyStatus('Domain is required', 'err');
@@ -797,7 +844,15 @@ async function runDomainVerify(){
   const snsOptionsRaw = String((document.getElementById('verifySnsOptions') || {}).value || '').trim();
   let ensOptions = null;
   let snsOptions = null;
-  if(type === 'ENS'){
+  let dhtFields = {};
+  if(type === 'DHT'){
+    const dht = parseDhtInputs((document.getElementById('verifyDhtPublicKey') || {}).value, (document.getElementById('verifyDhtOptions') || {}).value);
+    if(!dht.ok){
+      setDomainVerifyStatus(dht.error, 'err');
+      return;
+    }
+    dhtFields = dht.value;
+  }else if(type === 'ENS'){
     const parsedEnsOptions = parseJsonObjectInput(ensOptionsRaw, 'ENS options');
     if(!parsedEnsOptions.ok){
       setDomainVerifyStatus(parsedEnsOptions.error, 'err');
@@ -812,8 +867,8 @@ async function runDomainVerify(){
     }
     snsOptions = parsedSnsOptions.value;
   }
-  const includeVt = !!((document.getElementById('verifyIncludeVt') || {}).checked);
-  const analyzeDecoders = !!((document.getElementById('verifyAnalyzeDecoders') || {}).checked);
+  const includeVt = type !== 'DHT' && !!((document.getElementById('verifyIncludeVt') || {}).checked);
+  const analyzeDecoders = type !== 'DHT' && !!((document.getElementById('verifyAnalyzeDecoders') || {}).checked);
   const decoderTopN = parseBoundedInt((document.getElementById('verifyDecoderTopN') || {}).value, 8, 1, 50);
   const vtBudget = parseBoundedInt((document.getElementById('verifyVtBudget') || {}).value, 200, 0, 5000);
   const vtWorkers = parseBoundedInt((document.getElementById('verifyVtWorkers') || {}).value, 8, 1, 32);
@@ -826,6 +881,7 @@ async function runDomainVerify(){
       body: JSON.stringify({
         domain: domain,
         type: type,
+        ...dhtFields,
         txt_decode: txtDecode,
         a_decode: aDecode,
         a_xor_key: aXorKey,
@@ -857,7 +913,13 @@ async function runDomainVerify(){
     renderDomainVerifyDecoderTable(j);
     renderDomainVerifyServerTable(j);
     renderDomainVerifyIpTable(j);
-    setDomainVerifyStatus(j.can_add === false ? 'Validation complete (no addable IP)' : 'Validation complete', j.can_add === false ? 'err' : 'ok');
+    if(type === 'DHT'){
+      const status = String((j.dht_observation || {}).status || 'unknown');
+      const confirmed = ['initial', 'updated', 'unchanged'].includes(status);
+      setDomainVerifyStatus(`Validation complete — DHT lookup: ${status}; ${j.can_add === false ? 'configuration cannot be added' : 'configuration can be added (not proof of retrieval)'}`, confirmed && j.can_add !== false ? 'ok' : 'err');
+    }else{
+      setDomainVerifyStatus(j.can_add === false ? 'Validation complete (no addable IP)' : 'Validation complete', j.can_add === false ? 'err' : 'ok');
+    }
   }catch(e){
     const msg = `Validation error: ${e}`;
     setDomainVerifyStatus(msg, 'err');
@@ -871,7 +933,7 @@ async function runDomainVerify(){
 
 async function addVerifiedDomainToConfig(){
   const state = window.DOMAIN_VERIFY_LAST || {};
-  const domainObj = state.domain_object;
+  const domainObj = state.domain_object || state.domain_obj;
   if(!domainObj || !domainObj.name){
     setDomainVerifyStatus('Validate first, then add', 'err');
     return;
@@ -1608,9 +1670,7 @@ async function removeDomainsFromConfig(domainNames, successMessage){
     const currentDomains = Array.isArray(cfg.domains) ? cfg.domains : [];
     const removeSet = new Set(names);
     const nextDomains = currentDomains.filter(item=>{
-      const name = typeof item === 'string'
-        ? String(item || '').trim()
-        : String((item && item.name) || '').trim();
+      const name = domainStorageName(item);
       return name && !removeSet.has(name);
     });
     const removedCount = currentDomains.length - nextDomains.length;
@@ -2881,7 +2941,8 @@ function filterDomainSettings(){
   const rows = [...document.querySelectorAll('#domainTable tbody tr')];
   let visible = 0;
   rows.forEach(row=>{
-    const text = row.querySelector('.domain-full-name').textContent + ' ' + row.querySelector('.domain-type').value;
+    const text = row.querySelector('.domain-full-name').textContent + ' ' + row.querySelector('.domain-type').value
+      + ' ' + ((row.querySelector('.dht-public-key') || {}).value || '');
     row.hidden = !!query && !text.toLowerCase().includes(query);
     if(!row.hidden) visible++;
   });
@@ -2891,7 +2952,7 @@ function filterDomainSettings(){
 document.getElementById('domainSettingsSearch').oninput = filterDomainSettings;
 
 function domainEditorState(row){
-  return JSON.stringify([...row.querySelectorAll('input, select')].map(el=>el.value));
+  return JSON.stringify([...row.querySelectorAll('input, select, textarea')].map(el=>el.value));
 }
 
 function addDomainRow(obj, metadata){
@@ -2910,7 +2971,7 @@ function addDomainRow(obj, metadata){
   const sel = document.createElement('select');
   sel.className = 'domain-type';
   // Expand supported record type list
-  ['A','TXT','ENS','SNS','AAAA','CNAME','MX','NS','SRV','CAA'].forEach(t=>{ const o = document.createElement('option'); o.value=t; o.text=t; sel.appendChild(o); });
+  ['A','TXT','ENS','SNS','DHT','AAAA','CNAME','MX','NS','SRV','CAA'].forEach(t=>{ const o = document.createElement('option'); o.value=t; o.text=t; sel.appendChild(o); });
   if(obj && obj.type) sel.value = obj.type.toUpperCase();
   tdType.appendChild(sel);
 
@@ -3033,6 +3094,33 @@ function addDomainRow(obj, metadata){
   inpEnsResolver.value = (obj && obj.ens_resolver) || '';
   tdEnsResolver.appendChild(inpEnsResolver);
 
+  const tdDhtKey = document.createElement('td');
+  const inpDhtKey = document.createElement('textarea');
+  inpDhtKey.className = 'dht-public-key';
+  inpDhtKey.rows = 3;
+  inpDhtKey.spellcheck = false;
+  inpDhtKey.placeholder = '64 hexadecimal characters; public, not secret';
+  inpDhtKey.value = (obj && obj.dht_public_key) || '';
+  tdDhtKey.appendChild(inpDhtKey);
+  const tdDhtOptions = document.createElement('td');
+  const inpDhtOptions = document.createElement('textarea');
+  inpDhtOptions.className = 'dht-options';
+  inpDhtOptions.rows = 3;
+  inpDhtOptions.spellcheck = false;
+  inpDhtOptions.placeholder = 'Optional JSON object';
+  inpDhtOptions.value = formatJsonObjectCompact(obj && obj.dht_options);
+  tdDhtOptions.appendChild(inpDhtOptions);
+  const dhtKeyDisplay = document.createElement('p');
+  dhtKeyDisplay.className = 'dht-key-display';
+  const dhtHelp = document.createElement('p');
+  dhtHelp.className = 'field-help';
+  dhtHelp.textContent = 'Read-only BEP44 signed DNS lookup. No C2 contact or republish. The public key is not secret. No DNS server, ENS RPC or SNS proxy is required. Lookup options: duration, max_queries, timeout, rate, concurrency, max_nodes, bootstraps.';
+  const updateDhtKeyDisplay = ()=>{
+    dhtKeyDisplay.textContent = `Public key: ${inpDhtKey.value || 'not set'}`;
+  };
+  updateDhtKeyDisplay();
+  inpDhtKey.addEventListener('input', updateDhtKeyDisplay);
+
   // Toggle decoder fields by record type
   const toggleDecodeInputs = function(){
     const typ = (sel.value || 'A').toUpperCase();
@@ -3040,6 +3128,11 @@ function addDomainRow(obj, metadata){
     const isA = typ === 'A';
     const isENS = typ === 'ENS';
     const isSNS = typ === 'SNS';
+    const isDHT = typ === 'DHT';
+    inpDhtKey.disabled = !isDHT;
+    inpDhtOptions.disabled = !isDHT;
+    dhtKeyDisplay.hidden = !isDHT;
+    dhtHelp.hidden = !isDHT;
     selDecode.disabled = !isTXT;
     selADecode.disabled = !isA;
     inpAKey.disabled = !isA;
@@ -3048,7 +3141,7 @@ function addDomainRow(obj, metadata){
     inpEnsOptions.disabled = !(isENS || isSNS);
     inpEnsNode.disabled = !isENS;
     inpEnsResolver.disabled = !isENS;
-    [selDecode, selADecode, inpAKey, inpEnsKey, selEnsDecode, inpEnsOptions, inpEnsNode, inpEnsResolver].forEach(control=>{
+    [selDecode, selADecode, inpAKey, inpEnsKey, selEnsDecode, inpEnsOptions, inpEnsNode, inpEnsResolver, inpDhtKey, inpDhtOptions].forEach(control=>{
       if(control.parentElement.tagName === 'LABEL') control.parentElement.hidden = control.disabled;
     });
   };
@@ -3124,7 +3217,7 @@ function addDomainRow(obj, metadata){
   summary.textContent = 'View / edit configuration';
   const fields = document.createElement('div');
   fields.className = 'domain-editor-grid';
-  [[tdName,'Domain name'], [tdType,'Record type'], [tdTxtDecode,'TXT decoder'], [tdADecode,'A decoder'], [tdAKey,'A XOR key'], [tdEnsKey,'ENS / SNS record key'], [tdEnsDecode,'ENS / SNS decoder'], [tdEnsOptions,'Decoder options (JSON)'], [tdEnsNode,'ENS node'], [tdEnsResolver,'ENS resolver']].forEach(([cell, title])=>{
+  [[tdName,'Domain name / DHT display label'], [tdType,'Record type'], [tdTxtDecode,'TXT decoder'], [tdADecode,'A decoder'], [tdAKey,'A XOR key'], [tdEnsKey,'ENS / SNS record key'], [tdEnsDecode,'ENS / SNS decoder'], [tdEnsOptions,'Decoder options (JSON)'], [tdEnsNode,'ENS node'], [tdEnsResolver,'ENS resolver'], [tdDhtKey,'DHT public key'], [tdDhtOptions,'DHT lookup options (JSON)']].forEach(([cell, title])=>{
     const label = document.createElement('label');
     label.textContent = title;
     const control = cell.firstChild;
@@ -3132,8 +3225,8 @@ function addDomainRow(obj, metadata){
     label.hidden = control.disabled;
     fields.appendChild(label);
   });
-  detail.append(summary, fields);
-  card.append(heading, dates, detail, del);
+  detail.append(summary, fields, dhtHelp);
+  card.append(heading, dhtKeyDisplay, dates, detail, del);
   tr.appendChild(card);
   inp.addEventListener('input', ()=>{ name.textContent = inp.value || 'New target'; });
   sel.addEventListener('change', ()=>{ badge.textContent = sel.value; });
@@ -3197,12 +3290,18 @@ function collectDomainsFromUI(excludedRow){
   const out = [];
   rows.forEach(r=>{
     if(r === excludedRow) return;
+    const typ = ((r.querySelector('.domain-type') || {}).value || 'A').toUpperCase();
+    let dht = null;
+    if(typ === 'DHT'){
+      dht = parseDhtInputs((r.querySelector('.dht-public-key') || {}).value, (r.querySelector('.dht-options') || {}).value);
+      if(!dht.ok) throw new Error(dht.error);
+      if(!String((r.querySelector('.domain-name') || {}).value || '').trim()) throw new Error('DHT display label is required');
+    }
     if(r._original && domainEditorState(r) === r._initialState){
       out.push({...r._original});
       return;
     }
     const name = ((r.querySelector('.domain-name') || {}).value || '').trim();
-    const typ = ((r.querySelector('.domain-type') || {}).value || 'A').toUpperCase();
     const txt_decode = ((r.querySelector('.txt-decode') || {}).value || '').trim();
     const a_decode = ((r.querySelector('.a-decode') || {}).value || 'none').trim();
     const a_xor_key = ((r.querySelector('.a-xor-key') || {}).value || '').trim();
@@ -3210,8 +3309,11 @@ function collectDomainsFromUI(excludedRow){
     const ens_decode = ((r.querySelector('.ens-decode') || {}).value || 'ipv6_5to8_xor').trim();
     const ens_options_raw = ((r.querySelector('.ens-options') || {}).value || '').trim();
     if(name) {
-      const obj = {name: name, type: typ};
-      if(typ === 'TXT'){
+      const obj = typ === 'DHT' && r._original && r._original.type === 'DHT' ? {...r._original, name, type: typ} : {name: name, type: typ};
+      if(typ === 'DHT'){
+        delete obj.dht_options;
+        Object.assign(obj, dht.value);
+      } else if(typ === 'TXT'){
         if(txt_decode) obj.txt_decode = txt_decode;
       } else if(typ === 'A'){
         if(a_decode && a_decode !== 'none') obj.a_decode = a_decode;
@@ -3442,6 +3544,72 @@ function renderVerifyResult(j, elementId){
   });
 }
 
+function managedIpsForResult(info){
+  const values = Array.isArray(info.values) ? info.values : [];
+  const decoded = Array.isArray(info.decoded_ips) ? info.decoded_ips : [];
+  const type = String(info.type || 'A').toUpperCase();
+  if(type === 'DHT' || type === 'TXT') return decoded;
+  return type === 'A' ? values : values.concat(decoded);
+}
+
+function formatDhtSequence(seq){
+  // BEP44 sequence values are decimal strings, never JS floating point numbers.
+  return typeof seq === 'string' && /^[0-9]+$/.test(seq) ? seq : 'unknown (expected decimal string)';
+}
+
+function dhtEvidenceText(info, observation, storageName=''){
+  const record = info.dht_record || {};
+  const obs = observation || {};
+  const storageKey = String(storageName).match(/\[DHT:([0-9a-fA-F]{64})\]$/);
+  const keys = Array.isArray(info.dht_public_keys) ? info.dht_public_keys : [info.dht_public_key || (storageKey && storageKey[1])].filter(Boolean);
+  const targets = Array.isArray(info.dht_targets) ? info.dht_targets : [record.target].filter(Boolean);
+  const sequences = Array.isArray(info.dht_sequences) ? info.dht_sequences : (record.seq != null ? [record.seq] : []);
+  const labels = {
+    initial:'Initial verified record', updated:'Updated verified record', unchanged:'Unchanged verified record',
+    no_verified_record:'No verified record found', stale_only:'Only stale records observed',
+    same_seq_conflict:'Conflicting signed records at the same sequence',
+    signed_dns_invalid:'Signed value is not valid DNS', cancelled:'Lookup cancelled'
+  };
+  const lines = [`Public key: ${keys.join(', ') || 'unknown'}`];
+  if(sequences.length){
+    lines.push(`Last-confirmed sequence: ${sequences.map(formatDhtSequence).join(', ')}`);
+    lines.push(`Last-confirmed target: ${targets.join(', ') || 'unknown'}`);
+    lines.push('Decoded IPs show the last-confirmed record, not necessarily the latest attempt.');
+  }else{
+    lines.push('No last-confirmed record available.');
+  }
+  if(record.signature_valid != null) lines.push(`Selected record signature: ${record.signature_valid === true ? 'valid' : 'not verified'}`);
+  if(record.value_sha256) lines.push(`Value SHA-256: ${record.value_sha256}`);
+  if(Array.isArray(record.source_node)) lines.push(`Storage node (unsigned observation, not signer/C2): ${JSON.stringify(record.source_node)}`);
+  const status = String(obs.status || 'unknown');
+  lines.push(`Latest lookup attempt: ${status}${labels[status] ? ' — '+labels[status] : ''}`);
+  lines.push(`Attempt observed at: ${obs.observed_at ? formatUnixTsLocal(obs.observed_at) : 'unknown'}`);
+  const observedSeq = obs.observed_seq ?? obs.seq;
+  if(observedSeq != null) lines.push(`Observed sequence: ${formatDhtSequence(observedSeq)}`);
+  lines.push(`Coverage: ${obs.coverage == null ? 'unknown' : JSON.stringify(obs.coverage)}`);
+  lines.push('Coverage warning: a bounded lookup is not proof of absence or deletion.');
+  lines.push('Signed DNS is not proof of actual C2 activity. No C2 contact or republish.');
+  return lines.join('\n');
+}
+
+function renderDhtEvidence(cell, info, observation, storageName){
+  const text = dhtEvidenceText(info, observation, storageName);
+  const lines = text.split('\n');
+  const summary = document.createElement('div');
+  const prefixes = ['Latest lookup attempt:', 'Last-confirmed sequence:', 'No last-confirmed record',
+    'Decoded IPs show', 'Public key:', 'Coverage warning:'];
+  summary.textContent = prefixes.flatMap(prefix=>lines.filter(line=>line.startsWith(prefix))).join('\n');
+  const details = document.createElement('details');
+  const title = document.createElement('summary');
+  title.textContent = 'Signature, source and coverage details';
+  const evidence = document.createElement('pre');
+  evidence.textContent = text;
+  details.append(title, evidence);
+  cell.className = 'dht-evidence';
+  cell.replaceChildren(summary, details);
+  cell.removeAttribute('title');
+}
+
 function aggregateResultsByDomain(results){
   const out = {};
   Object.keys(results || {}).forEach(domain=>{
@@ -3455,6 +3623,9 @@ function aggregateResultsByDomain(results){
       txt_decodes: new Set(),
       a_decodes: new Set(),
       a_xor_keys: new Set(),
+      dht_public_keys: new Set(),
+      dht_targets: new Set(),
+      dht_sequences: new Set(),
       ts: 0
     };
     Object.keys(srvMap).forEach(server=>{
@@ -3474,6 +3645,12 @@ function aggregateResultsByDomain(results){
       if(rtype === 'TXT' && info.txt_decode) acc.txt_decodes.add(String(info.txt_decode));
       if(rtype === 'A' && info.a_decode) acc.a_decodes.add(String(info.a_decode));
       if(rtype === 'A' && info.a_xor_key) acc.a_xor_keys.add(String(info.a_xor_key));
+      if(rtype === 'DHT'){
+        if(info.dht_public_key) acc.dht_public_keys.add(String(info.dht_public_key));
+        const record = info.dht_record || {};
+        if(record.target) acc.dht_targets.add(String(record.target));
+        if(typeof record.seq === 'string') acc.dht_sequences.add(record.seq);
+      }
       const ts = Number(info.ts || 0);
       if(Number.isFinite(ts) && ts > acc.ts) acc.ts = ts;
     });
@@ -3503,7 +3680,10 @@ function aggregateResultsByDomain(results){
       method_summary: methodParts.length ? methodParts.join(' / ') : '-',
       txt_decodes: Array.from(acc.txt_decodes).sort(),
       a_decodes: Array.from(acc.a_decodes).sort(),
-      a_xor_keys: Array.from(acc.a_xor_keys).sort()
+      a_xor_keys: Array.from(acc.a_xor_keys).sort(),
+      dht_public_keys: Array.from(acc.dht_public_keys).sort(),
+      dht_targets: Array.from(acc.dht_targets).sort(),
+      dht_sequences: Array.from(acc.dht_sequences).sort()
     };
   });
   return out;
@@ -3567,15 +3747,13 @@ async function refreshResults(){
       : {};
     const domainMeta = (j && j.domain_meta && typeof j.domain_meta === 'object') ? j.domain_meta : {};
     const tbody = document.querySelector('#resultsTable tbody');
-    const domains = Object.keys(resultsAgg).sort();
+    // A never-confirmed target can have attempt metadata but no retained record.
+    const domains = Array.from(new Set([...Object.keys(resultsAgg), ...Object.keys(domainMeta).filter(d=>domainMeta[d] && domainMeta[d].dht_observation)])).sort();
     const managedSet = new Set();
 
     domains.forEach(d=>{
       const info = resultsAgg[d] || {};
-      const values = Array.isArray(info.values) ? info.values : [];
-      const decodedIps = Array.isArray(info.decoded_ips) ? info.decoded_ips : [];
-      const rowType = String(info.type || 'A').toUpperCase();
-      const managedIps = rowType === 'TXT' ? decodedIps : (rowType === 'A' ? values : values.concat(decodedIps));
+      const managedIps = managedIpsForResult(info);
       managedIps.forEach(ip=>{
         const s = String(ip || '').trim();
         if(s) managedSet.add(s);
@@ -3593,7 +3771,9 @@ async function refreshResults(){
       const decodedIps = Array.isArray(info.decoded_ips) ? info.decoded_ips : [];
       const servers = Array.isArray(info.servers) ? info.servers : [];
       const recordTypes = Array.isArray(info.record_types) ? info.record_types.map(x=>String(x || '').toUpperCase()) : [];
-      const rowType = String(info.type || 'A').toUpperCase();
+      const observation = (domainMeta[d] || {}).dht_observation;
+      const rowType = String(info.type || (observation ? 'DHT' : 'A')).toUpperCase();
+      const hasDht = rowType === 'DHT' || recordTypes.includes('DHT') || !!observation;
       const hasTxt = rowType === 'TXT' || rowType === 'MIXED' || recordTypes.includes('TXT');
 
       const tr = document.createElement('tr');
@@ -3601,7 +3781,8 @@ async function refreshResults(){
 
       const tdDomain = document.createElement('td');
       tdDomain.textContent = d;
-      applyNxdomainLifecycleStyle(tdDomain, domainMeta[d], d);
+      if(hasDht) tdDomain.className = 'dht-identifier';
+      else applyNxdomainLifecycleStyle(tdDomain, domainMeta[d], d);
 
       const tdType = document.createElement('td');
       tdType.textContent = rowType;
@@ -3617,6 +3798,9 @@ async function refreshResults(){
       const methodSummary = String(info.method_summary || '').trim();
       tdMethod.textContent = methodSummary || '-';
       tdMethod.title = methodSummary || '-';
+      if(hasDht){
+        renderDhtEvidence(tdMethod, info, observation, d);
+      }
 
       const tdServers = document.createElement('td');
       tdServers.className = 'wrap-cell';
@@ -4094,6 +4278,10 @@ window.addEventListener('load', ()=>{
       if(ensOptionsEl) ensOptionsEl.value = '';
       if(snsDecodeEl && includeOption(snsDecodeEl, 'ROL3210_decode')) snsDecodeEl.value = 'ROL3210_decode';
       if(snsOptionsEl) snsOptionsEl.value = '';
+      ['verifyDhtPublicKey', 'verifyDhtOptions'].forEach(id=>{
+        const el = document.getElementById(id);
+        if(el) el.value = '';
+      });
       if(includeVtEl) includeVtEl.checked = true;
       updateDomainVerifyInputMode();
       clearDomainVerifyResult();

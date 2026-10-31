@@ -93,7 +93,7 @@
       <p id="domainSettingsSummary" role="status">Loading configured targets…</p>
       <p class="section-intro">Dates refer to registration and configuration changes in TraceDNS, not WHOIS registration or DNS answer changes. Older entries may have no recorded dates. Times use your local timezone.</p>
       <label for="domainSettingsSearch">Find a configured target</label>
-      <input id="domainSettingsSearch" type="search" placeholder="Filter by full domain name or record type" />
+      <input id="domainSettingsSearch" type="search" placeholder="Filter by full name, DHT public key or record type" />
       <p id="domainSettingsEmpty" hidden>No matching targets.</p>
     </div>
     <table class="domain-table" id="domainTable">
@@ -207,7 +207,7 @@
   <h3>🧪 Domain Verify &amp; Add</h3>
   <p style="color:#5b6a77;margin-bottom:10px;">Validate DNS behavior first, review type/IP/VT results, then add to monitoring config.</p>
   <div class="domain-verify-grid">
-    <label>Domain
+    <label>Domain / DHT display label
       <input id="verifyDomainName" type="text" placeholder="example.com" />
     </label>
     <label>Record Type
@@ -217,6 +217,7 @@
         <option value="TXT">TXT</option>
         <option value="ENS">ENS</option>
         <option value="SNS">SNS</option>
+        <option value="DHT">DHT (BEP44 signed DNS)</option>
       </select>
     </label>
     <label>TXT Decode
@@ -243,6 +244,12 @@
     <label>SNS Options (JSON)
       <input id="verifySnsOptions" type="text" placeholder='{"key_u32":"0x00400454"}' />
     </label>
+    <label hidden>DHT public key
+      <textarea id="verifyDhtPublicKey" class="dht-public-key" rows="3" spellcheck="false" disabled aria-describedby="verifyDhtHelp" placeholder="64 hexadecimal characters; no prefix or whitespace"></textarea>
+    </label>
+    <label hidden>DHT lookup options (JSON)
+      <textarea id="verifyDhtOptions" class="dht-options" rows="3" spellcheck="false" disabled aria-describedby="verifyDhtHelp" placeholder="Optional JSON object"></textarea>
+    </label>
     <label style="display:flex;align-items:center;gap:8px;margin-top:30px;font-weight:700;color:#334c5e;">
       <input id="verifyIncludeVt" type="checkbox" checked style="width:auto;margin:0;" />
       Include VT score
@@ -261,6 +268,7 @@
       <input id="verifyVtWorkers" type="number" min="1" max="32" value="8" />
     </label>
   </div>
+  <p id="verifyDhtHelp" class="field-help" hidden>Read-only BEP44 signed DNS lookup via the server. No C2 contact or republish; VT enrichment is disabled for DHT precheck. The public key is not secret; the name is a display label, not necessarily a DNS name. No DNS server, ENS RPC or SNS proxy is required. Allowed lookup options: duration, max_queries, timeout, rate, concurrency, max_nodes, bootstraps. A valid target can be registered even if no record is found. Bounded lookup coverage cannot prove absence or deletion, and signed DNS is not proof of actual C2 activity.</p>
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 10px;">
     <button id="runDomainVerifyBtn">🔬 Validate Domain</button>
     <button id="addVerifiedDomainBtn">➕ Add Verified Domain</button>

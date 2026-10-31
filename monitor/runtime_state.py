@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from copy import deepcopy
 from typing import Any, Dict, Tuple
 
 
@@ -46,6 +47,9 @@ def clone_snapshot(snapshot_obj: Any) -> Dict[str, Any]:
     sns_options = snapshot_obj.get('sns_options')
     if isinstance(sns_options, dict) and sns_options:
         out['sns_options'] = dict(sns_options)
+    for key in ('dht_public_key', 'dht_options', 'dht_record'):
+        if key in snapshot_obj and snapshot_obj[key] is not None:
+            out[key] = deepcopy(snapshot_obj[key])
     return out
 
 
@@ -62,6 +66,14 @@ def clone_current_results(current_results: Dict[str, Any]) -> Dict[str, Dict[str
     return out
 
 
+def _clone_meta(meta):
+    out = dict(meta) if isinstance(meta, dict) else {}
+    for key in ('dht_state', 'dht_observation'):
+        if key in out:
+            out[key] = deepcopy(out[key])
+    return out
+
+
 def clone_history_meta(history: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     out: Dict[str, Dict[str, Any]] = {}
     for domain, hist_obj in (history or {}).items():
@@ -69,7 +81,7 @@ def clone_history_meta(history: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             continue
         meta = hist_obj.get('meta')
         if isinstance(meta, dict):
-            out[str(domain)] = dict(meta)
+            out[str(domain)] = _clone_meta(meta)
     return out
 
 
@@ -85,7 +97,7 @@ def clone_history_entry(
     events = history_obj.get('events')
     current = history_obj.get('current')
     return {
-        'meta': dict(meta) if isinstance(meta, dict) else {},
+        'meta': _clone_meta(meta),
         'events': list(events) if include_events and isinstance(events, list) else [],
         'current': clone_current_results({'_': current}).get('_', {})
         if include_current and isinstance(current, dict)

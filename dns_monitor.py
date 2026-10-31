@@ -73,7 +73,7 @@ def _build_initial_new_ip_tuples(rtype, domain, values=None, decoded_ips=None):
     if not domain:
         return []
     r = str(rtype or '').upper()
-    if r in ('TXT', 'ENS', 'SNS'):
+    if r in ('TXT', 'ENS', 'SNS', 'DHT'):
         ips = sorted(set(decoded_ips or []))
     elif r == 'A':
         ips = sorted(set(values or []))
@@ -93,7 +93,7 @@ def _build_changed_new_ip_tuples(
     if not domain:
         return []
     r = str(rtype or '').upper()
-    if r in ('TXT', 'ENS', 'SNS'):
+    if r in ('TXT', 'ENS', 'SNS', 'DHT'):
         added = sorted(set(new_decoded_ips or []) - set(prev_decoded_ips or []))
     elif r == 'A':
         added = sorted(set(new_values or []) - set(prev_values or []))
@@ -118,11 +118,30 @@ def restore_current_results(history):
         current = hist_obj.get('current', {}) if isinstance(hist_obj, dict) else {}
         if not isinstance(current, dict) or not current:
             continue
-        snapshots = {
-            str(server): clone_snapshot(snapshot)
-            for server, snapshot in current.items()
-            if isinstance(snapshot, dict)
-        }
+        snapshots = {}
+        for server, snapshot in current.items():
+            if not isinstance(snapshot, dict):
+                continue
+            restored = clone_snapshot(snapshot)
+            if str(snapshot.get('type')).upper() == 'DHT':
+                from dht_query import reconcile_dht
+                import re
+                match = re.search(r'\[DHT:([0-9a-f]{64})\]$', str(domain))
+                try:
+                    if match is None or snapshot.get('dht_public_key', '').lower() != match.group(1):
+                        raise ValueError('DHT history identity mismatch')
+                    checked = reconcile_dht(None, {'records': [snapshot.get('dht_record')], 'coverage': {}},
+                                            match.group(1))['record']
+                    if checked is None:
+                        raise ValueError('DHT history record is not usable')
+                except (ValueError, TypeError, AttributeError, ImportError):
+                    hist_obj.setdefault('meta', {})['dht_observation'] = {
+                        'status': 'no_verified_record', 'reason': 'invalid_saved_record',
+                        'confirmed_in_this_run': False, 'coverage': {'globally_complete': False}}
+                    continue
+                restored.update(dht_record=checked, dht_public_key=checked['public_key'],
+                                values=[checked['value_hex']], decoded_ips=list(checked['ips']))
+            snapshots[str(server)] = restored
         if snapshots:
             restored_results[str(domain)] = snapshots
     return restored_results

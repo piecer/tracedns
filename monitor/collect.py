@@ -18,9 +18,10 @@ from txt_decoder import decode_txt_hidden_ips
 class Collected:
     query: QueryResult
     snapshot: Optional[Snapshot]
+    dht_observation: Optional[dict] = None
 
 
-def collect_snapshot(domain: DomainSpec, server: str) -> Collected:
+def collect_snapshot(domain: DomainSpec, server: str, *, cancelled=None) -> Collected:
     """Query DNS for one (domain, server) and decode into a Snapshot.
 
     - Returns snapshot=None on transport errors (status == 'error'), matching legacy behavior.
@@ -28,6 +29,37 @@ def collect_snapshot(domain: DomainSpec, server: str) -> Collected:
     """
     name = domain.name
     rtype = str(domain.type or 'A').upper()
+
+    if rtype == 'DHT':
+        from dht_query import fetch_dht_records, reconcile_dht
+        from monitor.dht_support import record_snapshot, failure_reason
+        ts = int(time.time())
+        try:
+            from config_manager import validate_dht_domain
+            # DomainSpec represents an omitted optional object as None; it is
+            # not the raw JSON admission surface (which rejects explicit null).
+            config = vars(domain).copy()
+            if domain.dht_options is None:
+                config.pop('dht_options', None)
+            validate_dht_domain(config)
+            observation = fetch_dht_records(domain.dht_public_key, domain.dht_options, cancelled=cancelled)
+            if cancelled is not None and cancelled():
+                observation = {'records': [], 'status': 'cancelled', 'coverage': {'termination': 'cancelled'}}
+            outcome = reconcile_dht(None, observation, domain.dht_public_key)
+            snap = record_snapshot(domain, outcome['record'], ts)
+            # Fetch is not the last cancellation boundary: verification and
+            # snapshot projection can complete after the owner stops.
+            if cancelled is not None and cancelled():
+                snap = None
+                observation = {'records': [], 'status': 'cancelled',
+                               'coverage': {'termination': 'cancelled'}}
+            return Collected(QueryResult(server='DHT', domain=name, rtype='DHT',
+                                         status='ok' if snap is not None else 'error',
+                                         values=snap.values if snap is not None else []), snap, observation)
+        except Exception as error:
+            return Collected(QueryResult(server='DHT', domain=name, rtype='DHT',
+                                         status='error', values=[], error=query_error(error)), None,
+                             {'records': [], 'coverage': {}, 'error_code': failure_reason(error)})
 
     # ENS queries are not DNS queries; handle them before query_dns().
     if rtype == 'ENS':
