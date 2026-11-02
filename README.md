@@ -135,7 +135,21 @@ Key items in `dns_config.json`:
 
 Per-domain decoder fields:
 
-- TXT domains: `txt_decode`
+- TXT domains: `txt_decode`. For the pseudo-IPv6 list observed at
+  `jxk.imarapi.st`, choose `ipv6_last4_xor_6b9e3f2a`. This built-in decodes
+  each IPv6 carrier's final four bytes (big-endian) with XOR `0x6B9E3F2A`.
+  It accepts the complete `[IPv6|IPv6|...]:digits` format with zero middle
+  32 bits, at most 256 tokens and 16,384 characters per TXT record. The
+  suffix must contain 1–5 ASCII digits; its meaning is unknown, so it is
+  preserved in the raw TXT and **never promoted to a port**. Malformed or
+  oversized records yield no decoded IPs (no partial-record results).
+  Valid records are decoded independently and their IPv4 candidates are
+  deduplicated/sorted. No domain allowlist or malware-family attribution
+  is implied. Select `TXT` and this decoder in Domain Verification or
+  Settings; it is also included in decoder analysis. Example domain entry:
+  `{"name":"jxk.imarapi.st","type":"TXT","txt_decode":"ipv6_last4_xor_6b9e3f2a"}`.
+  Integration does not modify existing targets or start monitoring this
+  domain automatically. Restart the application to load the new built-in.
 - A domains: `a_decode` (e.g. `xor32_ipv4`) and optional `a_xor_key` (hex/int/dotted-byte format)
 - ENS domains: `ens_text_key`, `ens_decode`, and optional `ens_options`. Use
   `ipv4_literals` when a case-sensitive text record such as `Host` contains

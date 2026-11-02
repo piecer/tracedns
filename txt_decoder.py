@@ -58,6 +58,39 @@ def decode_txt_cafebabe_xor_base64(txt_values, domain=None, **kwargs):
     return sorted(out)
 
 
+@txt_decode_register('ipv6_last4_xor_6b9e3f2a')
+def decode_txt_ipv6_last4_xor_6b9e3f2a(txt_values, domain=None, **kwargs):
+    """Decode [IPv6|...]:metadata carriers, not routable IPv6 endpoints.
+
+    The low 32 bits are big-endian IPv4 XOR 0x6B9E3F2A. The middle
+    32 bits must be zero. The numeric suffix has unknown semantics:
+    callers preserve it in the raw TXT, never attach it as a port.
+    Reject an entire malformed record rather than publish a partial list.
+    """
+    out = set()
+    for value in txt_values or []:
+        if not isinstance(value, str) or len(value) > 16384:
+            continue
+        match = re.fullmatch(r'\[([0-9a-fA-F:|]+)\]:[0-9]{1,5}', value)
+        if not match:
+            continue
+        tokens = match.group(1).split('|')
+        if len(tokens) > 256:
+            continue
+        decoded = set()
+        try:
+            for token in tokens:
+                packed = ipaddress.IPv6Address(token).packed
+                if packed[8:12] != b'\x00' * 4:
+                    break
+                decoded.add(str(ipaddress.IPv4Address(int.from_bytes(packed[-4:], 'big') ^ 0x6B9E3F2A)))
+            else:
+                out.update(decoded)
+        except ipaddress.AddressValueError:
+            continue
+    return sorted(out)
+
+
 @txt_decode_register('plain_base64')
 def decode_txt_plain_base64(txt_values, domain=None, **kwargs):
     """
