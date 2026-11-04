@@ -7,6 +7,7 @@ from typing import List, Optional, Tuple
 from a_decoder import decode_a_hidden_ips
 from ens_decoder import decode_ens_endpoints, decode_ens_hidden_ips, parse_ens_options
 from ens_query import EnsQueryError, fetch_ens_text_record
+from lookup_context import checkpoint, lookup_scope, owned_lookup, transport_timeout
 from monitor.diagnostics import query_error
 from sns_query import fetch_sns_record
 from dns_query import query_dns
@@ -21,7 +22,17 @@ class Collected:
     dht_observation: Optional[dict] = None
 
 
+
 def collect_snapshot(domain: DomainSpec, server: str, *, cancelled=None) -> Collected:
+    checkpoint()
+    result = _collect_snapshot(domain, server, cancelled=cancelled)
+    # DHT carries its explicit discarded-evidence cancellation acknowledgment.
+    if str(domain.type).upper() != 'DHT':
+        checkpoint()
+    return result
+
+
+def _collect_snapshot(domain: DomainSpec, server: str, *, cancelled=None) -> Collected:
     """Query DNS for one (domain, server) and decode into a Snapshot.
 
     - Returns snapshot=None on transport errors (status == 'error'), matching legacy behavior.
@@ -72,6 +83,7 @@ def collect_snapshot(domain: DomainSpec, server: str, *, cancelled=None) -> Coll
         ens_resolver = getattr(domain, 'ens_resolver', None)
         try:
             raw_value = fetch_ens_text_record(str(server), name, ens_key, ens_node=ens_node, resolver_address=ens_resolver)
+            checkpoint()
             snap_values = [str(raw_value)]
             decoded = decode_ens_hidden_ips(
                 raw_value,
@@ -80,6 +92,7 @@ def collect_snapshot(domain: DomainSpec, server: str, *, cancelled=None) -> Coll
                 domain=name,
                 text_key=ens_key,
             )
+            checkpoint()
             decoded_endpoints = decode_ens_endpoints(
                 raw_value,
                 decoded,
@@ -87,6 +100,7 @@ def collect_snapshot(domain: DomainSpec, server: str, *, cancelled=None) -> Coll
                 method=ens_decode,
                 ens_options=ens_options,
             )
+            checkpoint()
             snap = Snapshot(
                 type='ENS',
                 values=snap_values,
@@ -136,6 +150,7 @@ def collect_snapshot(domain: DomainSpec, server: str, *, cancelled=None) -> Coll
         sns_options = parse_ens_options(getattr(domain, 'sns_options', None) or getattr(domain, 'ens_options', None), strict=False)
         try:
             raw_value = fetch_sns_record(str(server), name, sns_key, timeout=15, verify_tls=True)
+            checkpoint()
             snap_values = [str(raw_value)]
             decoded = decode_ens_hidden_ips(raw_value, method=sns_decode, ens_options=sns_options, domain=name, text_key=sns_key)
             snap = Snapshot(type='SNS', values=snap_values, decoded_ips=decoded, ts=ts, ens_text_key=sns_key, sns_decode=sns_decode, sns_options=sns_options)
@@ -146,7 +161,9 @@ def collect_snapshot(domain: DomainSpec, server: str, *, cancelled=None) -> Coll
                 snapshot=None,
             )
 
-    qret = query_dns(server, name, rtype=rtype, with_meta=True)
+    options = {'timeout': transport_timeout(2)} if owned_lookup() else {}
+    qret = query_dns(server, name, rtype=rtype, with_meta=True, **options)
+    checkpoint()
     status = 'error'
     values: List[str] = []
     if isinstance(qret, dict):

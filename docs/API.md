@@ -163,6 +163,14 @@ HTTP 200은 상태 조회 성공일 뿐 알림 전달 성공이 아니다. `obse
 현재 단계의 HTTP 경계 검증과 실제 outbox/bootstrap 연결 완료 여부는
 `ARCHITECTURE_HARDENING_PLAN.md` 및 `DELIVERY_CONTRACT.md`의 수락 상태를 구분해 확인한다.
 
+### Opt-in delivery progress
+
+`?progress=1` selects closed progress version 1 on either delivery-health alias;
+omitting it preserves the exact legacy keys. Invalid/duplicate selectors return
+400. The 4096-byte cap and admin/operator authorization are unchanged. See
+`DELIVERY_PROGRESS.md` for monotonic stall/age semantics, source uncertainty,
+per-target rebaseline versus absence readiness, and legacy UI compatibility.
+
 ## 웹 화면의 비동기 VT 조회
 
 `/ips`와 `/domain-analysis`는 `vt_mode=background`를 선택할 수 있다.

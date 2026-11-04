@@ -2588,14 +2588,36 @@ function renderCellWithClickableIps(td, rawValues, fallbackText, maxDisplayItems
   const reason = n => n === null || typeof n === 'string' && reasons.has(n);
   const enumeration = values => n => values.includes(n);
   function closed(value, fields){
-    return value !== null && typeof value === 'object' && !Array.isArray(value) &&
-      Object.keys(value).length === Object.keys(fields).length &&
-      Object.entries(fields).every(([key, validate]) => Object.hasOwn(value, key) && validate(value[key]));
+    if(value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+    const keys = Reflect.ownKeys(value);
+    return keys.length === Object.keys(fields).length && Object.entries(fields).every(([key, validate]) => {
+      const d = Object.getOwnPropertyDescriptor(value, key);
+      return d && d.enumerable && Object.hasOwn(d, 'value') && validate(d.value);
+    });
   }
   const channel = value => closed(value, {enabled:flag, pending:count, blocked:count,
     last_success_at:optionalCount, last_error:reason});
+  const progressChannel = c => closed(c, {
+    state:enumeration(['disabled','idle','queued','retry_wait','blocked','active','stalled','unavailable']),
+    last_attempt_at:optionalCount, in_flight_age_seconds:optionalCount
+  });
   function validate(value){
+    const extended = {
+      progress_version:enumeration([1]), counts_age_seconds:optionalCount,
+      progress:p => closed(p, {
+        state:enumeration(['not_started','idle','active','stalled','recovering','failed','stopping','stopped']),
+        operation:enumeration([null,'recover_storage','seal_batches','claim','provider_step','finish_step','observation_hook','sightings_step']),
+        channel:enumeration([null,'teams','misp']), last_progress_at:optionalCount,
+        last_progress_age_seconds:optionalCount, in_flight_age_seconds:optionalCount, stall_after_seconds:count,
+        channels:c => closed(c, {teams:progressChannel, misp:progressChannel})
+      }),
+      recovery:r => closed(r, {state:enumeration(['ready','recovering','backoff','uncertain','stopped','failed']),
+        retry_in_seconds:optionalCount, targets_rebaselining:count, absence_state:enumeration(['ready','awaiting_full','unknown'])}),
+      lookup:l => closed(l, {last_attempt_at:optionalCount,last_success_at:optionalCount,in_flight:count,
+        failed_targets:count,uncertain_targets:count,coverage:enumeration(['complete','partial','unknown']),counts_stale:flag})
+    };
     if(!closed(value, {
+      ...(value && Object.hasOwn(value, 'progress_version') ? extended : {}),
       status:enumeration(['disabled','ok','degraded','blocked']), observation_policy:enumeration(['continue']),
       storage_ok:flag, worker_running:flag, coverage:enumeration(['covered','gap','rebaselining']),
       accounting_complete:flag, missed_total:count, missed_unpersisted:count, failed_total:count,
@@ -2625,7 +2647,7 @@ function renderCellWithClickableIps(td, rawValues, fallbackText, maxDisplayItems
       `Backend delivery status: ${h.status}.`,
       `${number(h.missed_total)} not admitted (durable); ${number(h.missed_unpersisted)} volatile known misses; ${number(h.failed_total)} failed.`,
       incompleteSeen ? 'Accounting incomplete — lower bound; total loss unknown.' : 'Accounting complete for this epoch.',
-      `Worker: ${h.worker_running ? 'running' : 'not running'}${h.counts_stale ? ' — Counts stale' : ''}. Observation continues.`
+      `Worker: ${h.worker_running ? 'running (thread/pass alive)' : 'not running'}; ${h.progress_version === 1 ? 'progress: ' + h.progress.state : 'progress unavailable on this server'}${h.counts_stale ? ' — Counts stale' : ''}. Observation policy: continue.`
     ].join(' ');
     const lines = [
       `${number(h.missed_total)} destination-items not admitted (durably recorded).`,
@@ -2634,8 +2656,8 @@ function renderCellWithClickableIps(td, rawValues, fallbackText, maxDisplayItems
       `Pending: ${number(h.pending)} · Retrying: ${number(h.retry_wait)} · Blocked: ${number(h.blocked)}`,
       `Failed: ${number(h.failed_total)} · ACKed: ${number(h.acked_total)}`,
       `Storage: ${h.storage_ok ? 'available' : 'degraded'} · Worker: ${h.worker_running ? 'running' : 'not running'}`,
-      `Coverage: ${h.coverage} · Tracking: ${h.tracking_complete ? 'complete' : 'incomplete'} · ${h.counts_stale ? 'Counts stale' : 'Counts current at health read'}`,
-      `Oldest pending age: ${h.oldest_pending_age_seconds === null ? 'unknown' : number(h.oldest_pending_age_seconds) + ' seconds'}`,
+      `Coverage: ${h.coverage} · Tracking: ${h.tracking_complete ? 'complete' : 'incomplete'} · ${h.counts_stale ? 'Counts stale' : 'Counts from last cached sample'}`,
+      `Oldest outstanding age: ${h.oldest_pending_age_seconds === null ? 'unknown' : number(h.oldest_pending_age_seconds) + ' seconds'}`,
       `Receipt capacity: ${capacity(h.capacity.used_receipts, h.capacity.max_receipts)}`,
       `Payload capacity (bytes): ${capacity(h.capacity.used_payload_bytes, h.capacity.max_payload_bytes)}`,
       `Delivery error: ${errorText(h.last_error)}`
@@ -2643,6 +2665,18 @@ function renderCellWithClickableIps(td, rawValues, fallbackText, maxDisplayItems
     for(const [key, title] of [['teams','Teams'], ['misp','MISP']]){
       const c = h.channels[key];
       lines.push(`${title}: ${c.enabled ? 'enabled' : 'disabled'} · ${errorText(c.last_error)} · Pending: ${number(c.pending)} · Blocked: ${number(c.blocked)} · Last success: ${timestamp(c.last_success_at)}`);
+    }
+    if(h.progress_version === 1){
+      const p = h.progress, r = h.recovery, l = h.lookup;
+      const age = n => n === null ? 'unknown' : number(n) + ' seconds';
+      lines.push(`Progress: ${p.state} · Operation: ${p.operation === null ? 'none' : p.operation.replaceAll('_',' ')} · Channel: ${p.channel || 'none'} · In-flight: ${age(p.in_flight_age_seconds)} · Last boundary: ${age(p.last_progress_age_seconds)} ago (${timestamp(p.last_progress_at)}) · Stall threshold: ${age(p.stall_after_seconds)}; no observed boundary progress is not proof of thread death.`);
+      for(const [key,title] of [['teams','Teams'],['misp','MISP']]){
+        const c = p.channels[key];
+        lines.push(`${title} dispatch: ${c.state} · Last attempt: ${timestamp(c.last_attempt_at)} · In-flight: ${age(c.in_flight_age_seconds)}`);
+      }
+      lines.push(`Delivery storage recovery: ${r.state} · Retry in: ${age(r.retry_in_seconds)} · Targets rebaselining: ${number(r.targets_rebaselining)} · Full-only absence gate: ${r.absence_state}`);
+      lines.push(`Source coverage: ${l.coverage} · Lookup in-flight: ${number(l.in_flight)} · Failed targets: ${number(l.failed_targets)} · Uncertain targets: ${number(l.uncertain_targets)} · ${l.counts_stale ? 'Lookup counts stale' : 'Lookup counts sampled'} · Last attempt: ${timestamp(l.last_attempt_at)} · Last accepted target success (not universal coverage): ${timestamp(l.last_success_at)}`);
+      lines.push(`Count snapshot age: ${age(h.counts_age_seconds)} · ${h.counts_stale ? 'Counts stale' : 'Counts sampled'}; oldest outstanding age advances independently.`);
     }
     const fragment = document.createDocumentFragment();
     for(const line of lines){
@@ -2722,7 +2756,7 @@ function renderCellWithClickableIps(td, rawValues, fallbackText, maxDisplayItems
       panel.hidden = false;
       // Auth can consume most of the deadline: pace actual requests too.
       nextAttempt = performance.now() + intervalMs;
-      const response = await fetch('/delivery-health', {cache:'no-store', signal:controller.signal});
+      const response = await fetch('/delivery-health?progress=1', {cache:'no-store', signal:controller.signal});
       const health = await readHealth(response, controller.signal);
       if(!controller.signal.aborted) render(health);
     };

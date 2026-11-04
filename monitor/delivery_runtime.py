@@ -13,6 +13,7 @@ from .delivery_diagnostics import normalize_diagnostic
 from .delivery_types import provider_result
 from .delivery_store import DeliveryStore
 from .delivery_worker import DeliveryWorker
+from .delivery_progress import counter, elapsed
 from .state_utils import collect_domain_managed_ips
 from .targets import providers_for
 from .removal_grace import load_legacy_grace
@@ -35,10 +36,16 @@ class DeliveryRuntime:
         self.repository = config_store.state_repository
         self.clock = clock
         self.store = DeliveryStore(history_dir, clock=clock, limits=limits, render=render_batch)
+        self._lookup_health = {'last_attempt_at': None, 'last_success_at': None, 'in_flight': 0,
+                               'failed_targets': 0, 'uncertain_targets': 0, 'coverage': 'unknown', 'counts_stale': True}
+        self._recovery_health = ('recovering', None)
         self._transport = transport
+        self._history_dir = history_dir
         self.registry = None
         self._pending_bindings = None
         self._repair_channels = {}
+        self._apply_retry = None
+        self._source_refresh_pending = False
         self._channel = 0
         self._sighting_progress = {}
         self._stopping = False
@@ -49,12 +56,90 @@ class DeliveryRuntime:
         self._restore_dht_checkpoints()
         with self.config.lock, self.repository._coord:
             self.selected_alerts = select_alert_configuration(self.config.raw, ini_path)
+            self._enabled_channels = self._destination_flags(self.selected_alerts)
             self.store.bootstrap(self.projection(), load_legacy_grace(history_dir), self.authority())
             self.repository.delivery_runtime = self
+            self.repository._publish_lookup_health()
         self._attach_registry()
         from mispupdate_code import run_observation_hook
         self.worker = DeliveryWorker(self.store, claim_admission=self.claim_admission, clock=clock,
+                                     maintenance=self.maintain_delivery,
                                      observation_hook=run_observation_hook, sightings_step=self.sightings_step)
+
+    @staticmethod
+    def _destination_flags(selected):
+        return tuple(bool(selected.get(key)) for key in ('teams_webhook', 'misp_url'))
+
+    def publish_lookup_health(self, summary):
+        self._lookup_health = dict(summary)
+
+    def health_snapshot(self, *, include_progress=False):
+        health, counts_age, retries, targets, absence = self.store.progress_health_snapshot()
+        for channel, enabled in zip(('teams', 'misp'), self._enabled_channels):
+            health['channels'][channel]['enabled'] = enabled
+        if health['status'] == 'disabled' and any(self._enabled_channels):
+            health['status'] = 'ok'
+        progress = self.worker.progress_snapshot()
+        unavailable = progress['state'] in ('stalled', 'failed', 'stopping', 'stopped', 'not_started')
+        required = any(c['enabled'] or c['pending'] or c['blocked'] for c in health['channels'].values())
+        recovery_state, retry_at = self._recovery_health
+        if progress['state'] == 'failed':
+            recovery_state = 'failed'
+        elif progress['state'] in ('stopping', 'stopped'):
+            recovery_state = 'stopped'
+        elif recovery_state == 'ready' and not health['storage_ok']:
+            recovery_state = 'recovering'
+        if (unavailable and required or progress['state'] in ('stalled', 'failed') or not health['storage_ok']
+                or recovery_state in ('failed', 'uncertain')):
+            health['status'] = 'degraded'
+        for channel, item in progress['channels'].items():
+            queue = health['channels'][channel]
+            if progress['operation'] is not None and progress['channel'] == channel:
+                continue
+            item['state'] = ('blocked' if queue['blocked'] else
+                             'unavailable' if unavailable and (queue['pending'] or retries[channel]) else
+                             'disabled' if not queue['enabled'] else 'queued' if queue['pending'] else
+                             'retry_wait' if retries[channel] else 'idle')
+        if include_progress:
+            health.update(progress_version=1, counts_age_seconds=counts_age, progress=progress,
+                          recovery={'state': recovery_state,
+                                    'retry_in_seconds': counter(elapsed(retry_at, self.store._monotonic())),
+                                    'targets_rebaselining': targets, 'absence_state': absence},
+                          lookup=dict(self._lookup_health))
+        return health
+
+    def maintain_delivery(self, now):
+        state = self.store.recover_delivery(now)
+        self._recovery_health = (state['state'], self.store._recovery_next or None)
+        if self.stopping or state['state'] not in ('ready', 'recovering'):
+            return state
+        if self.store.needs_bootstrap():
+            legacy = load_legacy_grace(self._history_dir)
+            with self.config.lock, self.repository._coord:
+                if not self.stopping:
+                    self.store.bootstrap(self.projection(), legacy, self.authority())
+        elif state['state'] == 'recovering':
+            return state  # busy owner or another bounded abandoned-claim page
+        with self.config.lock, self.repository._coord:
+            if (self._source_refresh_pending and self.repository.lookup_runtime is not None
+                    and not self.stopping):
+                refreshed = self.store.refresh_configuration(self.authority(), self.projection())
+                self._source_refresh_pending = not refreshed['ledger_committed']
+        with self.config.lock, self.repository._coord:
+            candidate = ({'alerts': deepcopy(self.selected_alerts), 'config_revision': self.revision()}
+                         if (self.registry is None and self._pending_bindings is None
+                             or self._apply_retry == self.revision()) else None)
+        if candidate is not None and not self.stopping:
+            self.apply_configuration(candidate)
+        with self.config.lock, self.repository._coord:
+            if (self._repair_channels and self._pending_bindings is None and self.registry is not None
+                    and self.registry.revision == self.revision() and not self.stopping):
+                epochs = dict(self._repair_channels)
+                applied = self.store.configuration_applied(epochs, apply_epochs=epochs)
+                if applied['ledger_committed']:
+                    self._repair_channels = {c: r for c, r in self._repair_channels.items()
+                                             if epochs.get(c) != r}
+        return state
 
     @property
     def stopping(self):
@@ -77,7 +162,8 @@ class DeliveryRuntime:
             if not available or value is None:
                 continue
             try:
-                state, snapshot = restore_checkpoint(lease.target.definition, value)
+                state, snapshot = restore_checkpoint(lease.target.definition, value,
+                    previous=lease.history.get('meta', {}).get('dht_state'))
             except (ValueError, TypeError, KeyError):
                 # Leave corrupt evidence untouched; begin_dht's exact checkpoint
                 # comparison denies replacement rather than adopting old history.
@@ -149,6 +235,7 @@ class DeliveryRuntime:
         """Cheap descriptor fencing inside CONFIG -> repository; no adapter I/O."""
         with self.repository._coord:
             self.selected_alerts = deepcopy(candidate['alerts'] if 'alerts' in candidate else self.selected_alerts)
+            self._enabled_channels = self._destination_flags(self.selected_alerts)
             key = self.store.binding_key()
             pending = []
             if key is not None:
@@ -162,37 +249,53 @@ class DeliveryRuntime:
                         'allow_removed': channel == 'teams' or str(config.get('misp_remove_on_absent', '')).lower()
                             in ('true', '1', 'yes', 'on'), 'error': 'adapter_unapplied'})
             self._pending_bindings = pending
+            self._apply_retry = None  # ConfigService still owns its first apply
             self._repair_channels.update({channel: self.revision() for channel in repair_channels})
             refreshed = self.store.refresh_configuration(self.authority(), self.projection())
+            self._source_refresh_pending = not refreshed['ledger_committed']
             return [] if refreshed['ledger_committed'] else ['delivery_configuration_refresh_failed']
 
     def apply_configuration(self, candidate):
-        # ConfigService's writer serializes this phase. No config/state locks
-        # while validating local CA files or replacing immutable adapters.
-        selected = deepcopy(candidate['alerts'] if 'alerts' in candidate else self.selected_alerts)
+        # Maintenance can race ConfigService. Build an unpublished registry;
+        # never mutate the live one before revalidating committed authority.
         revision = candidate['config_revision']
+        with self.config.lock, self.repository._coord:
+            if self.stopping or revision != self.revision():
+                return []
+            selected = deepcopy(candidate['alerts'] if 'alerts' in candidate else self.selected_alerts)
+            epochs = dict(self._repair_channels)
+            registry = self.registry
+            # The old registry is detached before local validation. Concurrent
+            # config apply builds another owner; stale work cannot mutate it.
+            self.registry = None
         warnings = []
-        registry = self.registry
         key = self.store.binding_key()
-        if registry is None and key is not None:
-            registry = DestinationRegistry(key, transport=self._transport)
-        if registry is not None:
+        if key is not None:
             try:
+                if registry is None:
+                    registry = DestinationRegistry(key, transport=self._transport)
                 registry.apply(selected, revision=revision)
             except Exception:
                 warnings.append('alerts_runtime_apply_failed')
                 try:
-                    registry.apply(selected, revision=revision, applied=False)
+                    if registry is not None:
+                        registry.apply(selected, revision=revision, applied=False)
                 except Exception:
                     registry = None
         with self.config.lock, self.repository._coord:
+            if self.stopping or self.revision() != revision:
+                return warnings
             self.selected_alerts = selected
+            self._enabled_channels = self._destination_flags(selected)
             self.registry = registry
-            self._pending_bindings = None if registry is not None or key is None else self._pending_bindings
-            applied = self.store.configuration_applied(self._repair_channels, apply_epochs=self._repair_channels)
+            self._apply_retry = revision if registry is None else None
+            if registry is not None:
+                self._pending_bindings = None
+            applied = (self.store.configuration_applied(epochs, apply_epochs=epochs)
+                       if registry is not None else {'ledger_committed': not epochs})
             if applied['ledger_committed']:
-                self._repair_channels = {}
-            elif self._repair_channels:
+                self._repair_channels = {c: r for c, r in self._repair_channels.items() if epochs.get(c) != r}
+            elif epochs:
                 warnings.append('delivery_configuration_apply_failed')
         self.worker.wake()
         return warnings
@@ -317,8 +420,16 @@ class DeliveryRuntime:
                 valid = (snapshot.generation == self.repository.generation
                          and set(leases) == set(self.repository.capture())
                          and all(self.repository.valid(lease) for lease in leases.values()))
-                if valid and getattr(current, 'complete', True):
-                    if self.store.health_snapshot()['coverage'] != 'covered':
+                complete = getattr(current, 'complete', self.repository.lookup_runtime is None)
+                if self.repository.lookup_runtime is not None:
+                    complete = (complete and set(getattr(current, 'target_complete', {})) == set(leases)
+                                and all(getattr(current, 'target_complete', {}).values()))
+                if valid and self.repository.lookup_runtime is not None:
+                    self.repository.lookup_full_progress(complete)
+                if valid and complete:
+                    if self.repository.lookup_runtime is not None:
+                        self.store.rebaseline_absence(self.authority(), active, self.clock(), self.bindings())
+                    elif self.store.health_snapshot()['coverage'] != 'covered':
                         self.store.recover_gap(self.authority(), self.projection(), {
                             'active_map': active, 'completed_at': self.clock(), 'bindings': self.bindings()})
                     else:
@@ -328,8 +439,11 @@ class DeliveryRuntime:
                     # evidence remains safe for cancellation under the full gate.
                     self.store.cancel_force_positive(self.authority(), getattr(current, 'positive', {}))
             self.store.seal_cycle(None)
-        if self.registry is None and self._pending_bindings is None:
-            self._attach_registry()
+        if self.registry is None:
+            if self._apply_retry == self.revision():
+                self.apply_configuration({'alerts': deepcopy(self.selected_alerts), 'config_revision': self.revision()})
+            elif self._pending_bindings is None:
+                self._attach_registry()
         wake = False
         with self.config.lock, self.repository._coord:
             if (self._repair_channels and self._pending_bindings is None and self.registry is not None
@@ -346,16 +460,20 @@ class DeliveryRuntime:
     def note_history_failure(self):
         self.store.note_history_failure()
 
-    def stop(self, *, join_seconds=3.0):
-        with self.config.lock, self.repository._coord:
-            self.stopping = True
-        self.store.seal_cycle(None)
+    def stop(self, *, join_seconds=3.0, producers_stopped=True):
+        # Fence immediately, even while a lookup producer is blocked in local
+        # admission. A worker stop is not proof that source producers retired.
+        self.stopping = True
+        lookup = self.repository.lookup_runtime
+        producers_stopped = producers_stopped and (lookup is None or lookup.status()['stopped'])
         deadline = time.monotonic() + min(3.0, max(0.0, join_seconds))
         result = self.worker.stop(join_seconds=max(0, deadline - time.monotonic()))
         probe_stopped = self._teams_test_gate.acquire(timeout=max(0, deadline - time.monotonic()))
         try:
-            result['stopped'] = result['stopped'] and probe_stopped
+            result['stopped'] = result['stopped'] and probe_stopped and producers_stopped
             result['in_flight_preserved'] = not result['stopped']
+            if result['stopped']:
+                self.store.seal_cycle(None)
             result['closed'] = self.store.close(clean=True) if result['stopped'] else False
         finally:
             if probe_stopped:

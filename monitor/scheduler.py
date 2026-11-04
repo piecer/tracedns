@@ -18,6 +18,23 @@ class MonitorScheduler:
             return self.clock()
         return self.last_full_completion + self.store.snapshot().interval
 
+    @property
+    def audit(self):
+        lookup = getattr(self.store.state_repository, 'lookup_runtime', None)
+        owner = getattr(lookup, 'audit', None)
+        if owner is not None:
+            owner.retire = self.stop
+        return owner
+
+    def _dequeue(self, *, retiring=False):
+        """Caller holds config condition; reserve before removing the envelope."""
+        queue = self.store.raw.get('_force_resolve_queue')
+        job = queue[0] if isinstance(queue, list) and queue else self.store.raw.get('_force_resolve')
+        owner = self.audit
+        if job is not None and owner is not None and not owner.reserve(job, retiring=retiring):
+            return None
+        return self.store._dequeue_force_locked()
+
     def next_scan(self, *, block=True):
         # Snapshot, due check, dequeue and wait share the config condition;
         # writers notify while holding exactly this lock, preventing lost wake.
@@ -32,7 +49,7 @@ class MonitorScheduler:
                     if (self._full_due or snap.generation != self._full_generation
                             or self.clock() >= deadline):
                         return snap
-                    job = self.store._dequeue_force_locked()
+                    job = self._dequeue()
                     if job is not None:
                         repo = self.store.state_repository
                         leases = job.get('_target_leases')
@@ -56,21 +73,59 @@ class MonitorScheduler:
                 self.last_full_completion = self.clock()
                 self._full_generation = snapshot.generation
 
+    def active_force(self):
+        """At most one dequeue per pump; never advance the full-scan clock."""
+        job = None
+        # A busy config writer cannot stall the full-scan pump or its stop latch.
+        if not self.store.condition.acquire(blocking=False):
+            return None
+        try:
+            try:
+                if self.store.stop_requested:
+                    return None
+                job = self._dequeue()
+                if job is None:
+                    return None
+                snapshot = self.store._snapshot_locked()
+                snapshot.force_req = job
+                return snapshot
+            finally:
+                self.store.condition.release()
+        except Exception:
+            if job is not None:
+                finish_force(job, 'failure')
+            raise
+
     def stop(self):
+        # Publish before a possibly blocked source admission's config lock.
+        self.store.raw['_monitor_stopped'] = True
+        repo = self.store.state_repository
+        lookup = getattr(repo, 'lookup_runtime', None)
+        if lookup is not None:
+            lookup.fence()
+        owner = self.audit
+        if owner is not None:
+            owner.backlog = True
+            owner.fence()
+        if not self.store.condition.acquire(blocking=lookup is None):
+            # Queue remains with its original owner. A later stop retries audit
+            # retirement; no dequeue, duplicate audit, or ledger close is implied.
+            return False
         pending = []
         try:
-            with self.store.condition:
-                self.store.raw['_monitor_stopped'] = True
-                try:
-                    while True:
-                        job = self.store._dequeue_force_locked()
-                        if job is None:
-                            break
-                        pending.append(job)
-                finally:
-                    self.store.condition.notify_all()
+            try:
+                while True:
+                    job = self._dequeue(retiring=True)
+                    if job is None:
+                        break
+                    pending.append(job)
+                if owner is not None:
+                    owner.backlog = bool(self.store.raw.get('_force_resolve_queue')
+                                         or self.store.raw.get('_force_resolve'))
+            finally:
+                self.store.condition.notify_all()
         finally:
-            # A later failed dequeue must not abandon already removed jobs.
-            # Audit outside the lock; the runner still owns running work.
+            self.store.condition.release()
             for job in pending:
                 finish_force(job, 'failure')
+        return owner is None or (not owner.backlog and not owner.status()['pending'])

@@ -29,9 +29,18 @@ def audit_force(job, outcome):
 
 def finish_force(job, outcome):
     """One terminal audit attempt per admitted in-process request."""
+    owner = job.get('_terminal_audit_owner')
+    if owner is not None:
+        owner.submit(job, outcome)
+        return
     if job.get('_terminal_outcome') is not None:
         return
     job['_terminal_outcome'] = outcome
+    terminal_audit_attempt(job, outcome)
+
+
+def terminal_audit_attempt(job, outcome):
+    """The reserved worker (or legacy synchronous caller) owns this attempt."""
     if job.get('actor'):
         try:
             audit_force(job, outcome)
@@ -43,6 +52,11 @@ def audited_force(function):
     @wraps(function)
     def run(**kwargs):
         job = kwargs.get('force_req') or {}
+        lookup = kwargs.get('lookup_runtime')
+        if job and lookup is not None and not lookup.audit.reserve(job):
+            # Direct owned callers retain the envelope on admission refusal.
+            # Production scheduler requests already own their reservation.
+            raise RuntimeError('terminal_audit_capacity_unavailable')
         outcome = 'completed'
         try:
             return function(**kwargs)

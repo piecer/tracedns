@@ -157,8 +157,44 @@ def _domain_storage_name(domain: DomainSpec) -> str:
 
 
 def run_domain_cycle(*, state_repository=None, target_lease=None, cycle_id='',
-                     cycle_quality=None, positive_observations=None, **kwargs):
+                     cycle_quality=None, positive_observations=None, lookup_runtime=None,
+                     target_deadline=None, owned_dht_token=None, eligible=None, target_complete=None, **kwargs):
     """Production collects privately, admits once, then publishes independently."""
+    if lookup_runtime is not None:
+        from .lookup_runtime import NotDispatched
+        entries, quality, statuses = [], [], []
+        for server, value, error, ticket in lookup_runtime.collect(
+                kwargs['domain'], kwargs['servers'], kwargs.get('registry_view'),
+                target_lease, target_deadline):
+            if isinstance(error, NotDispatched):
+                quality.append(False)
+                continue
+            args = dict(kwargs, servers=[server], collected_results=[(server, value, error)],
+                        retain_last_good=True, summarize=False)
+            args['target_complete'] = False
+            if error is None:
+                args['eligible'] = lambda ticket=ticket: not lookup_runtime.cancelled(ticket)
+            if str(kwargs['domain'].type).upper() == 'DHT':
+                if error is not None:
+                    quality.append(False)
+                    continue
+                args['owned_dht_token'] = ticket.dht_token
+            provider_quality = []
+            entries.extend(run_domain_cycle(state_repository=state_repository,
+                target_lease=target_lease, cycle_id=cycle_id, cycle_quality=provider_quality,
+                positive_observations=positive_observations, **args))
+            admitted = bool(provider_quality) and all(provider_quality)
+            quality.append(admitted)
+            statuses.append(str(value.query.status).lower() if admitted and value is not None else 'error')
+        if cycle_quality is not None:
+            cycle_quality.extend(quality or [False])
+        complete = (bool(quality) and all(quality)
+                    and set(kwargs['servers']) == set(kwargs.get('active_servers', kwargs['servers'])))
+        accepted = _owned_lifecycle(state_repository, target_lease, statuses, complete, kwargs,
+                         lambda: not lookup_runtime.stopping and lookup_runtime.clock() < target_deadline)
+        state_repository.lookup_target_progress(target_lease, complete=complete,
+            accepted=bool(accepted), successful=any(s != 'error' for s in statuses))
+        return entries
     runtime = getattr(state_repository, 'delivery_runtime', None)
     if runtime is None:
         return _collect_domain_cycle(state_repository=state_repository, target_lease=target_lease,
@@ -178,13 +214,20 @@ def run_domain_cycle(*, state_repository=None, target_lease=None, cycle_id='',
     name = target_lease.name
     domain = kwargs['domain']
     admission = {}
+    if eligible is not None:
+        admission['eligible'] = eligible
     if str(domain.type).upper() == 'DHT':
-        token = state_repository.begin_dht(target_lease, version, history)
+        token = owned_dht_token if owned_dht_token is not None else state_repository.begin_dht(target_lease, version, history)
         if token is None:
             if cycle_quality is not None:
                 cycle_quality.append(False)
             return []
         admission['dht_token'] = token
+        if owned_dht_token is None:
+            candidate = state_repository.observation_candidate(target_lease)
+            if candidate is None:
+                return []
+            version, current, history, failures = candidate
     providers = kwargs.get('active_servers', kwargs['servers'])
     before = collect_domain_managed_ips({name: current}, name, rtype=domain.type, active_servers=providers)
     private_current, private_history = {name: current}, {name: history}
@@ -205,7 +248,10 @@ def run_domain_cycle(*, state_repository=None, target_lease=None, cycle_id='',
     if private_positive:
         observation = {'target': name, 'managed_ips': sorted(after), 'before_ips': sorted(before),
             'source_operation_id': uuid.uuid4().hex, 'cycle_id': cycle_id,
-            'observed_at': runtime.clock(), 'label': name, 'source_type': str(domain.type).upper()}
+            'observed_at': runtime.clock(), 'label': name, 'source_type': str(domain.type).upper(),
+            'target_complete': bool(quality) and all(quality) if target_complete is None else target_complete,
+            'fresh_positive_ips': sorted(collect_domain_managed_ips(private_positive, name,
+                rtype=domain.type, active_servers=providers))}
     accepted = state_repository.accept_observation(target_lease, version, current, history,
                                                    private_lease.target.failures, observation, **admission)
     if cycle_quality is not None:
@@ -213,16 +259,69 @@ def run_domain_cycle(*, state_repository=None, target_lease=None, cycle_id='',
     if not accepted:
         return []
     if positive_observations is not None:
-        positive_observations.update(private_positive)
+        for target, providers in private_positive.items():
+            positive_observations.setdefault(target, {}).update(providers)
+    _persist_admitted(state_repository, target_lease, history, kwargs['history_dir'], eligible=eligible)
+    return entries
+
+
+def _persist_admitted(repository, lease, history, history_dir, *, eligible=None):
+    runtime = repository.delivery_runtime
     try:
-        persistence = persist_history_entry(kwargs['history_dir'], name, history, detailed=True,
-            commit=lambda temporary, destination: state_repository.commit_history(target_lease, temporary, destination))
+        persistence = persist_history_entry(history_dir, lease.name, history, detailed=True,
+            commit=lambda temporary, destination: repository.commit_history(lease, temporary, destination,
+                **({'eligible': eligible} if eligible is not None else {})))
     except Exception:
         persistence = 'failed'
     runtime.history_persistence = persistence if isinstance(persistence, str) else ('saved' if persistence else 'failed')
     if runtime.history_persistence != 'saved':
         runtime.note_history_failure()
-    return entries
+
+
+def _owned_lifecycle(repository, lease, statuses, complete, args, eligible):
+    candidate = repository.observation_candidate(lease)
+    if candidate is None or repository.producer_stopping or repository.delivery_runtime.stopping or not eligible():
+        return
+    version, current, history, failures = candidate
+    success = sum(status in ('ok', 'nodata') for status in statuses)
+    nx = statuses.count('nxdomain')
+    errors = statuses.count('error')
+    if success or complete:
+        update_nxdomain_lifecycle({lease.name: history}, lease.name, len(statuses),
+                                 success, nx, errors, int(time.time()))
+    else:
+        # Incomplete coverage may report counts, never activate absence.
+        history.setdefault('meta', {}).update(dns_cycle_total=len(statuses),
+            dns_cycle_success_count=success, dns_cycle_nxdomain_count=nx,
+            dns_cycle_error_count=errors)
+    observation = None
+    if complete:
+        import uuid
+        domain = args['domain']
+        ips = sorted(collect_domain_managed_ips({lease.name: current}, lease.name, rtype=domain.type,
+                     active_servers=args.get('active_servers', args['servers'])))
+        observation = {'target': lease.name, 'managed_ips': ips, 'before_ips': ips,
+            'fresh_positive_ips': ips, 'target_complete': True,
+            'source_operation_id': uuid.uuid4().hex, 'cycle_id': '',
+            'observed_at': repository.delivery_runtime.clock(), 'label': lease.name,
+            'source_type': str(domain.type).upper()}
+    if repository.accept_observation(lease, version, current, history, failures, observation, eligible=eligible):
+        _persist_admitted(repository, lease, history, args['history_dir'], eligible=eligible)
+        return True
+    return False
+
+
+def _parallel_results(servers, collect, max_workers):
+    """Explicit no-owner compatibility adapter; owned lookups never use this pool."""
+    with ThreadPoolExecutor(max_workers=max(1, int(max_workers or 1))) as executor:
+        futures = {executor.submit(collect, str(server)): str(server) for server in servers}
+        for future in as_completed(futures):
+            try:
+                value = future.result()
+            except Exception as error:
+                yield futures[future], None, error
+            else:
+                yield futures[future], value, None
 
 
 def _collect_domain_cycle(
@@ -242,6 +341,9 @@ def _collect_domain_cycle(
     persist_candidate=True,
     cycle_quality=None,
     cancelled=None,
+    collected_results=None,
+    retain_last_good=False,
+    summarize=True,
 ) -> List[Tuple[str, str, str]]:
     """Run one cycle for a single domain across all servers.
 
@@ -303,213 +405,207 @@ def _collect_domain_cycle(
     domain_nxdomain_count = 0
     domain_error_count = 0
 
-    max_workers_eff = max(1, int(max_workers or 1))
-    futures = {}
-    with ThreadPoolExecutor(max_workers=max_workers_eff) as ex:
-        for srv in servers:
-            if not state_repository.valid(target_lease):
-                return []
-            domain_query_total += 1
-            server = str(srv)
-            futures[ex.submit(collect_owned, server)] = server
-
-        for fut in as_completed(futures):
-            submitted_server = futures[fut]
-            try:
-                collected = fut.result()
-            except Exception as exc:
-                domain_error_count += 1
-                if cycle_quality is not None:
-                    cycle_quality.append(False)
-                fail_key = (name, submitted_server, rtype)
-                with _STATE_LOCK:
-                    if not state_repository.valid(target_lease):
-                        return []
-                    fail_count = mark_query_failure(query_fail_counts, fail_key)
-                logger.error('Query worker failed; provider=%s consecutive=%s reason=%s',
-                             provider_slots.get(submitted_server, provider_label(rtype, 0)),
-                             fail_count, diagnostic_reason(exc))
-                continue
-            label = provider_slots.get(submitted_server, provider_label(rtype, 0))
-            if rtype == 'DHT':
-                from dht_query import reconcile_dht
-                from .dht_support import record_snapshot, attempt_metadata, failure_reason
-                with _STATE_LOCK:
-                    if not state_repository.valid(target_lease):
-                        return []
-                    prior_state = deepcopy(history[name].get('meta', {}).get('dht_state'))
-                    prior_attempt = deepcopy(history[name].get('meta', {}).get('dht_observation'))
-                observation = collected.dht_observation or {'records': [], 'coverage': {}}
-                if cancelled is not None and cancelled():
-                    observation = {'records': [], 'status': 'cancelled', 'coverage': {'termination': 'cancelled'}}
-                try:
-                    # Crypto/decoding is outside the shared state lock.
-                    outcome = reconcile_dht(prior_state, observation, domain.dht_public_key)
-                except Exception as error:
-                    outcome = {'state': prior_state, 'status': 'no_verified_record', 'record': None,
-                               'coverage': {'globally_complete': False}, 'error_code': failure_reason(error)}
-                    observation = {'records': [], 'coverage': {}}
-                ts_attempt = int(time.time())
-                with _STATE_LOCK:
-                    if not state_repository.valid(target_lease):
-                        return []
-                    meta = history[name].setdefault('meta', {})
-                    if meta.get('dht_state') != prior_state:
-                        domain_error_count += 1
-                        if cycle_quality is not None:
-                            cycle_quality.append(False)
-                        continue
-                    if outcome['state'] is not None:
-                        meta['dht_state'] = outcome['state']
-                    meta['dht_observation'] = attempt_metadata(outcome, observation, prior_attempt, ts_attempt)
-                    collected.snapshot = record_snapshot(domain, outcome['record'], ts_attempt)
-                    collected.query.status = 'ok' if collected.snapshot is not None else 'error'
-                    bump_state_version()
-            srv = collected.query.server
-            status = str(collected.query.status or 'error').lower()
+    results = (collected_results if collected_results is not None else
+               _parallel_results(servers, collect_owned, max_workers))
+    for submitted_server, collected, exc in results:
+        domain_query_total += 1
+        if exc is not None:
+            domain_error_count += 1
             if cycle_quality is not None:
-                cycle_quality.append(status in ('ok', 'nodata', 'nxdomain') and collected.snapshot is not None)
-            fail_key = (name, srv, rtype)
-
-            if status == 'nxdomain':
-                domain_nxdomain_count += 1
-                logger.info('Query NXDOMAIN; provider=%s', label)
-            elif status in ('ok', 'nodata'):
-                domain_success_count += 1
-            elif status == 'error':
-                domain_error_count += 1
-
-            if status == 'error':
-                with _STATE_LOCK:
-                    if not state_repository.valid(target_lease):
-                        return []
-                    fail_count = mark_query_failure(query_fail_counts, fail_key)
-                logger.warning('Query failed; provider=%s consecutive=%s reason=%s',
-                               label, fail_count, diagnostic_reason(getattr(collected.query, 'error', None)))
-                # Drop stale snapshot after consecutive failures.
-                if fail_count >= 3 and rtype != 'DHT':
-                    ts_fail = int(time.time())
-                    with _STATE_LOCK:
-                        if not state_repository.valid(target_lease):
-                            return []
-                        removed = drop_snapshot_for_failed_target(current_results, history, name, srv, ts=ts_fail)
-                        hist_to_persist = clone_history_entry(history.get(name)) if removed else None
-                    if removed:
-                        logger.info('Removed stale snapshot; provider=%s consecutive=%s', label, fail_count)
-                        try:
-                            persist_owned(hist_to_persist)
-                        except Exception:
-                            pass
-                continue
-
+                cycle_quality.append(False)
+            fail_key = (name, submitted_server, rtype)
             with _STATE_LOCK:
                 if not state_repository.valid(target_lease):
                     return []
-                clear_query_failure(query_fail_counts, fail_key)
-            snap = collected.snapshot
-            if snap is None:
-                continue
-
-            ts = int(snap.ts or time.time())
-            with _STATE_LOCK:
-                if state_repository.valid(target_lease) and positive_observations is not None:
-                    positive_observations.setdefault(name, {})[srv] = _snapshot_dict(snap)
+                fail_count = mark_query_failure(query_fail_counts, fail_key)
+            logger.error('Query worker failed; provider=%s consecutive=%s reason=%s',
+                         provider_slots.get(submitted_server, provider_label(rtype, 0)),
+                         fail_count, diagnostic_reason(exc))
+            continue
+        label = provider_slots.get(submitted_server, provider_label(rtype, 0))
+        if rtype == 'DHT':
+            from dht_query import reconcile_dht
+            from .dht_support import record_snapshot, attempt_metadata, failure_reason
             with _STATE_LOCK:
                 if not state_repository.valid(target_lease):
                     return []
-                prev_obj = current_results[name].get(srv)
-                hist_obj = history[name]
-            prev = Snapshot.from_legacy(prev_obj) if isinstance(prev_obj, dict) else None
-            # initial population
-            if prev_obj is None:
-                hist_to_persist = None
+                prior_state = deepcopy(history[name].get('meta', {}).get('dht_state'))
+                prior_attempt = deepcopy(history[name].get('meta', {}).get('dht_observation'))
+            observation = collected.dht_observation or {'records': [], 'coverage': {}}
+            if cancelled is not None and cancelled():
+                observation = {'records': [], 'status': 'cancelled', 'coverage': {'termination': 'cancelled'}}
+            try:
+                # Crypto/decoding is outside the shared state lock.
+                outcome = reconcile_dht(prior_state, observation, domain.dht_public_key)
+            except Exception as error:
+                outcome = {'state': prior_state, 'status': 'no_verified_record', 'record': None,
+                           'coverage': {'globally_complete': False}, 'error_code': failure_reason(error)}
+                observation = {'records': [], 'coverage': {}}
+            ts_attempt = int(time.time())
+            with _STATE_LOCK:
+                if not state_repository.valid(target_lease):
+                    return []
+                meta = history[name].setdefault('meta', {})
+                if meta.get('dht_state') != prior_state:
+                    domain_error_count += 1
+                    if cycle_quality is not None:
+                        cycle_quality.append(False)
+                    continue
+                if outcome['state'] is not None:
+                    meta['dht_state'] = outcome['state']
+                meta['dht_observation'] = attempt_metadata(outcome, observation, prior_attempt, ts_attempt)
+                collected.snapshot = record_snapshot(domain, outcome['record'], ts_attempt)
+                collected.query.status = 'ok' if collected.snapshot is not None else 'error'
+                bump_state_version()
+        srv = collected.query.server
+        status = str(collected.query.status or 'error').lower()
+        if cycle_quality is not None:
+            cycle_quality.append(status in ('ok', 'nodata', 'nxdomain') and collected.snapshot is not None)
+        fail_key = (name, srv, rtype)
+
+        if status == 'nxdomain':
+            domain_nxdomain_count += 1
+            logger.info('Query NXDOMAIN; provider=%s', label)
+        elif status in ('ok', 'nodata'):
+            domain_success_count += 1
+        elif status == 'error':
+            domain_error_count += 1
+
+        if status == 'error':
+            with _STATE_LOCK:
+                if not state_repository.valid(target_lease):
+                    return []
+                fail_count = mark_query_failure(query_fail_counts, fail_key)
+            logger.warning('Query failed; provider=%s consecutive=%s reason=%s',
+                           label, fail_count, diagnostic_reason(getattr(collected.query, 'error', None)))
+            # The owned path reports, but never converts failure into absence.
+            if fail_count >= 3 and retain_last_good:
+                logger.info('Retained stale snapshot; provider=%s consecutive=%s', label, fail_count)
+            # Drop stale snapshot only in the no-owner compatibility path.
+            if fail_count >= 3 and rtype != 'DHT' and not retain_last_good:
+                ts_fail = int(time.time())
                 with _STATE_LOCK:
                     if not state_repository.valid(target_lease):
                         return []
-                    hist_obj = history[name]
-                    current_results[name][srv] = _snapshot_dict(snap)
+                    removed = drop_snapshot_for_failed_target(current_results, history, name, srv, ts=ts_fail)
+                    hist_to_persist = clone_history_entry(history.get(name)) if removed else None
+                if removed:
+                    logger.info('Removed stale snapshot; provider=%s consecutive=%s', label, fail_count)
                     try:
-                        hist_obj.setdefault('current', {})[srv] = _snapshot_dict(snap)
-                        meta = hist_obj.setdefault('meta', {})
-                        meta.setdefault('first_seen', ts)
-                        meta.setdefault('last_changed', ts)
-                    finally:
-                        # Current is published even if a later history update fails.
-                        bump_state_version()
-                    hist_to_persist = clone_history_entry(hist_obj)
-                logger.info('INIT snapshot; provider=%s values=%s decoded=%s',
-                            label, len(snap.values), len(snap.decoded_ips))
-                try:
-                    persist_owned(hist_to_persist)
-                except Exception:
-                    pass
-                continue
+                        persist_owned(hist_to_persist)
+                    except Exception:
+                        pass
+            continue
 
-            # changed?
-            changed = _snapshot_changed(prev_obj if isinstance(prev_obj, dict) else prev, snap)
-
-            if changed:
-                hist_to_persist = None
-                ev = {
-                    'ts': ts,
-                    'server': srv,
-                    'type': rtype,
-                    'old': _history_snapshot(prev_obj if isinstance(prev_obj, dict) else prev),
-                    'new': _history_snapshot(snap),
-                }
-                with _STATE_LOCK:
-                    if not state_repository.valid(target_lease):
-                        return []
-                    hist_obj = history[name]
-                    events = hist_obj.setdefault('events', [])
-                    events.append(ev)
-                    try:
-                        hist_obj['events'] = trim_history_events(events)
-                        meta = hist_obj.setdefault('meta', {})
-                        meta['last_changed'] = ts
-                        meta.setdefault('first_seen', ev['old'].get('ts', ts) if isinstance(ev.get('old'), dict) else ts)
-                        hist_obj.setdefault('current', {})[srv] = _snapshot_dict(snap)
-                        current_results[name][srv] = _snapshot_dict(snap)
-                    finally:
-                        # The event is published even if a later history update fails.
-                        bump_state_version()
-                    hist_to_persist = clone_history_entry(hist_obj)
-                logger.info('CHANGED snapshot; provider=%s values=%s decoded=%s',
-                            label, len(snap.values), len(snap.decoded_ips))
-                try:
-                    persist_owned(hist_to_persist)
-                except Exception:
-                    pass
-
-    # Update per-domain NXDOMAIN lifecycle metadata once per domain cycle.
-    try:
-        ts_cycle = int(time.time())
-        hist_to_persist = None
         with _STATE_LOCK:
             if not state_repository.valid(target_lease):
                 return []
-            had_meta = bool(history[name].get('meta'))
-            lifecycle_changed = update_nxdomain_lifecycle(
-                history,
-                name,
-                domain_query_total,
-                domain_success_count,
-                domain_nxdomain_count,
-                domain_error_count,
-                ts_cycle,
-            )
-            # Even default lifecycle fields admit a new domain_meta projection.
-            if lifecycle_changed or (not had_meta and bool(history[name].get('meta'))):
-                bump_state_version()
-            if lifecycle_changed:
-                hist_to_persist = clone_history_entry(history.get(name))
-        if lifecycle_changed:
+            clear_query_failure(query_fail_counts, fail_key)
+        snap = collected.snapshot
+        if snap is None:
+            continue
+
+        ts = int(snap.ts or time.time())
+        with _STATE_LOCK:
+            if state_repository.valid(target_lease) and positive_observations is not None:
+                positive_observations.setdefault(name, {})[srv] = _snapshot_dict(snap)
+        with _STATE_LOCK:
+            if not state_repository.valid(target_lease):
+                return []
+            prev_obj = current_results[name].get(srv)
+            hist_obj = history[name]
+        prev = Snapshot.from_legacy(prev_obj) if isinstance(prev_obj, dict) else None
+        # initial population
+        if prev_obj is None:
+            hist_to_persist = None
+            with _STATE_LOCK:
+                if not state_repository.valid(target_lease):
+                    return []
+                hist_obj = history[name]
+                current_results[name][srv] = _snapshot_dict(snap)
+                try:
+                    hist_obj.setdefault('current', {})[srv] = _snapshot_dict(snap)
+                    meta = hist_obj.setdefault('meta', {})
+                    meta.setdefault('first_seen', ts)
+                    meta.setdefault('last_changed', ts)
+                finally:
+                    # Current is published even if a later history update fails.
+                    bump_state_version()
+                hist_to_persist = clone_history_entry(hist_obj)
+            logger.info('INIT snapshot; provider=%s values=%s decoded=%s',
+                        label, len(snap.values), len(snap.decoded_ips))
             try:
                 persist_owned(hist_to_persist)
             except Exception:
                 pass
-    except Exception:
-        pass
+            continue
+
+        # changed?
+        changed = _snapshot_changed(prev_obj if isinstance(prev_obj, dict) else prev, snap)
+
+        if changed:
+            hist_to_persist = None
+            ev = {
+                'ts': ts,
+                'server': srv,
+                'type': rtype,
+                'old': _history_snapshot(prev_obj if isinstance(prev_obj, dict) else prev),
+                'new': _history_snapshot(snap),
+            }
+            with _STATE_LOCK:
+                if not state_repository.valid(target_lease):
+                    return []
+                hist_obj = history[name]
+                events = hist_obj.setdefault('events', [])
+                events.append(ev)
+                try:
+                    hist_obj['events'] = trim_history_events(events)
+                    meta = hist_obj.setdefault('meta', {})
+                    meta['last_changed'] = ts
+                    meta.setdefault('first_seen', ev['old'].get('ts', ts) if isinstance(ev.get('old'), dict) else ts)
+                    hist_obj.setdefault('current', {})[srv] = _snapshot_dict(snap)
+                    current_results[name][srv] = _snapshot_dict(snap)
+                finally:
+                    # The event is published even if a later history update fails.
+                    bump_state_version()
+                hist_to_persist = clone_history_entry(hist_obj)
+            logger.info('CHANGED snapshot; provider=%s values=%s decoded=%s',
+                        label, len(snap.values), len(snap.decoded_ips))
+            try:
+                persist_owned(hist_to_persist)
+            except Exception:
+                pass
+
+    if summarize:
+        # Update per-domain NXDOMAIN lifecycle metadata once per domain cycle.
+        try:
+            ts_cycle = int(time.time())
+            hist_to_persist = None
+            with _STATE_LOCK:
+                if not state_repository.valid(target_lease):
+                    return []
+                had_meta = bool(history[name].get('meta'))
+                lifecycle_changed = update_nxdomain_lifecycle(
+                    history,
+                    name,
+                    domain_query_total,
+                    domain_success_count,
+                    domain_nxdomain_count,
+                    domain_error_count,
+                    ts_cycle,
+                )
+                # Even default lifecycle fields admit a new domain_meta projection.
+                if lifecycle_changed or (not had_meta and bool(history[name].get('meta'))):
+                    bump_state_version()
+                if lifecycle_changed:
+                    hist_to_persist = clone_history_entry(history.get(name))
+            if lifecycle_changed:
+                try:
+                    persist_owned(hist_to_persist)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     if rtype == 'DHT':
         with _STATE_LOCK:
@@ -535,10 +631,87 @@ from security.jobs import audited_force
 
 class CycleResult(dict):
     """Compatible active map plus fresh positive query evidence for forces."""
-    def __init__(self, active, positive, complete=True):
+    def __init__(self, active, positive, complete=True, target_complete=None):
         super().__init__(active)
         self.positive = positive
         self.complete = complete
+        self.target_complete = dict(target_complete or {})
+
+
+class OwnedScan:
+    """Lazy configured traversal; fresh evidence never includes cached providers."""
+    def __init__(self, args, *, snapshot=None):
+        import uuid
+        self.args = args
+        self.snapshot = snapshot
+        self.job = args.get('force_req')
+        self.repo = args['state_repository']
+        self.domains = normalized_domain_specs(args['domains_raw'])
+        self.leases = args['target_leases']
+        self.registry = args.get('registry_view')
+        self.positive = {}
+        self.quality = {}
+        self.cycle_id = uuid.uuid4().hex
+        self.pending = 0
+        self.exhausted = False
+        self.invalid = False
+        if self.job is not None:
+            self.leases = self.job.get('_target_leases')
+            self.registry = self.job.get('_registry_view', self.registry)
+            self.invalid = (self.leases is None or self.job.get('_terminal_outcome') is not None
+                            or not all(self.repo.valid(lease) for lease in self.leases.values()))
+            targets = [] if self.invalid else [deepcopy(lease.target.definition)
+                                               for lease in self.leases.values()]
+        else:
+            targets = self.domains
+        self.iterator = self._descriptors(targets)
+
+    def _descriptors(self, targets):
+        from .targets import providers_for
+        args, job = self.args, self.job or {}
+        for domain in targets:
+            name = _domain_storage_name(domain)
+            quality = self.quality.setdefault(name, [])
+            lease = (self.leases or {}).get(name)
+            if not self.repo.valid(lease):
+                quality.append(False)
+                continue
+            servers = providers_for(domain, job.get('servers', args['servers']),
+                job.get('ens_rpc_url', args.get('ens_rpc_url')),
+                job.get('sns_proxy_hosts', args.get('sns_proxy_hosts')))
+            if not servers:
+                quality.append(False)
+                continue
+            yield dict(domain=domain, servers=servers, current_results=args['current_results'],
+                history=args['history'], history_dir=args['history_dir'], query_fail_counts={},
+                max_workers=args['max_workers'], state_repository=self.repo, target_lease=lease,
+                registry_view=self.registry, positive_observations=self.positive,
+                cycle_quality=quality, cycle_id=self.cycle_id,
+                active_servers=providers_for(domain, args['servers'], args.get('ens_rpc_url'),
+                                             args.get('sns_proxy_hosts')))
+
+    def result(self):
+        from .targets import active_target_projection
+        args = self.args
+        projection = active_target_projection(self.domains, args['servers'],
+            args.get('ens_rpc_url'), args.get('sns_proxy_hosts'))
+        target_complete = {name: bool(value) and all(value) and self.repo.valid((self.leases or {}).get(name))
+                           for name, value in self.quality.items()}
+        complete = (not self.invalid and not self.repo.producer_stopping
+                    and not self.repo.delivery_runtime.stopping and all(target_complete.values()))
+        return CycleResult(collect_active_ip_map(args['current_results'], active_providers=projection),
+            collect_active_ip_map(self.positive, active_providers=projection), complete, target_complete)
+
+    def finish_force(self):
+        from security.jobs import finish_force
+        result = self.result()
+        accepted = False
+        try:
+            if not self.invalid:
+                accepted, _ = reconcile_scan(self.repo.delivery_runtime.config, self.snapshot,
+                                             {}, result, None)
+        finally:
+            finish_force(self.job, 'completed' if accepted else 'failure')
 
 
 @audited_force
@@ -558,11 +731,26 @@ def run_full_cycle(
     state_repository=None,
     target_leases=None,
     registry_view=None,
+    lookup_runtime=None,
 ) -> Dict[str, Any]:
     """Run a full scan cycle across domains.
 
     Returns the updated active_ip_map (for removal reconciliation).
     """
+    if lookup_runtime is not None:
+        args = dict(domains_raw=domains_raw, servers=servers, current_results=current_results,
+            history=history, history_dir=history_dir, max_workers=max_workers, force_req=force_req,
+            ens_rpc_url=ens_rpc_url, sns_proxy_hosts=sns_proxy_hosts, state_repository=state_repository,
+            target_leases=target_leases if target_leases is not None else state_repository.capture(),
+            registry_view=registry_view)
+        scan = OwnedScan(args)
+        result = lookup_runtime.run_scan(scan)
+        if force_req is not None and (scan.invalid or state_repository.producer_stopping
+                or state_repository.delivery_runtime.stopping
+                or not all(state_repository.valid(lease) for lease in (scan.leases or {}).values())):
+            from security.jobs import finish_force
+            finish_force(force_req, 'failure')
+        return result
     domains: List[DomainSpec] = normalized_domain_specs(domains_raw)
 
     # Optional forced resolve subset.
@@ -606,32 +794,28 @@ def run_full_cycle(
     delivery_runtime = getattr(state_repository, 'delivery_runtime', None)
     positive_observations = {}
     cycle_added_tuples: List[Tuple[str, str, str]] = []
-    for ds in target_domains:
-        target_lease = target_leases.get(_domain_storage_name(ds))
-        if not state_repository.valid(target_lease):
-            continue
-        from .targets import providers_for
-        svr_list = providers_for(
-            ds, target_servers_override if target_servers_override is not None else servers,
-            force_req.get('ens_rpc_url', ens_rpc_url) if force_req else ens_rpc_url,
-            force_req.get('sns_proxy_hosts', sns_proxy_hosts) if force_req else sns_proxy_hosts)
-        if not svr_list:
-            continue
-        domain_added = run_domain_cycle(
-            domain=ds,
-            servers=svr_list,
-            current_results=current_results,
-            history=history,
-            history_dir=history_dir,
-            query_fail_counts=query_fail_counts,
-            max_workers=max_workers,
-            state_repository=state_repository,
-            target_lease=target_lease,
-            positive_observations=positive_observations,
-            registry_view=registry_view,
-            cycle_id=cycle_id, cycle_quality=cycle_quality,
-            active_servers=providers_for(ds, servers, ens_rpc_url, sns_proxy_hosts),
-        )
+    def descriptors():
+        for ds in target_domains:
+            target_lease = target_leases.get(_domain_storage_name(ds))
+            if not state_repository.valid(target_lease):
+                cycle_quality.append(False)
+                continue
+            from .targets import providers_for
+            svr_list = providers_for(
+                ds, target_servers_override if target_servers_override is not None else servers,
+                force_req.get('ens_rpc_url', ens_rpc_url) if force_req else ens_rpc_url,
+                force_req.get('sns_proxy_hosts', sns_proxy_hosts) if force_req else sns_proxy_hosts)
+            if not svr_list:
+                continue
+            yield dict(domain=ds, servers=svr_list, current_results=current_results,
+                history=history, history_dir=history_dir, query_fail_counts=query_fail_counts,
+                max_workers=max_workers, state_repository=state_repository, target_lease=target_lease,
+                positive_observations=positive_observations, registry_view=registry_view,
+                cycle_id=cycle_id, cycle_quality=cycle_quality,
+                active_servers=providers_for(ds, servers, ens_rpc_url, sns_proxy_hosts))
+
+    results = (run_domain_cycle(**args) for args in descriptors())
+    for domain_added in results:
         if domain_added:
             cycle_added_tuples.extend(domain_added)
 
@@ -684,6 +868,8 @@ def reconcile_scan(store, snapshot, previous, current, tracker):
     """Admission of baseline/grace is atomic relative to config publication."""
     runtime = getattr(store.state_repository, 'delivery_runtime', None)
     if runtime is not None:
+        if runtime.stopping or store.state_repository.producer_stopping:
+            return False, previous
         accepted = runtime.complete(snapshot, current)
         return accepted, (current if accepted and snapshot.force_req is None
                           and getattr(current, 'complete', True) else previous)

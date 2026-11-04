@@ -90,13 +90,13 @@ def test_delivery_health_invalid_cache_is_unknown_not_success(delivery_app, fiel
 
 
 def test_delivery_health_openapi_is_same_closed_projection(delivery_app):
-    from http_api.delivery_health import HEALTH_SCHEMA
+    from http_api.delivery_health import HEALTH_SCHEMA, PROGRESS_SCHEMA
     client, _ = delivery_app
     assert client.login()[0] == 200
     code, document = client.call('GET', '/api/v1/openapi.json')
     assert code == 200
     operation = document['paths']['/delivery-health']['get']
-    assert operation['responses']['200']['content']['application/json']['schema'] == HEALTH_SCHEMA
+    assert operation['responses']['200']['content']['application/json']['schema'] == {'oneOf': [HEALTH_SCHEMA, PROGRESS_SCHEMA]}
     assert operation['x-roles'] == ['operator', 'admin']
     from jsonschema import Draft7Validator
     code, health = client.call('GET', '/api/v1/delivery-health')

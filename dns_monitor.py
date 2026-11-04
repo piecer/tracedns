@@ -13,6 +13,7 @@ import os
 import signal
 import sys
 import threading
+import time
 from copy import deepcopy
 
 from alerts import init_from_alerts as alerts_init_from_dict  # noqa: F401 - legacy import seam
@@ -155,7 +156,7 @@ def build_arg_parser():
     parser.add_argument("-c", "--config", default="dns_config.json", help="Path to JSON config file")
     parser.add_argument("--http-host", default="127.0.0.1", help="HTTP UI bind host")
     parser.add_argument("--http-port", type=int, default=8000, help="HTTP UI port")
-    parser.add_argument("--max-workers", type=int, default=8, help="Max worker threads for per-domain parallel DNS queries")
+    parser.add_argument("--max-workers", type=int, default=8, help="Global provider worker limit (1..64) for owned lookups")
     parser.add_argument('--security-db', default=os.path.expanduser('~/.local/share/tracedns/security/auth.sqlite'))
     parser.add_argument('--public-origin', default='', help='HTTPS public origin behind trusted proxy')
     parser.add_argument('--insecure-http', action='store_true', help='Explicit insecure HTTP mode')
@@ -283,7 +284,10 @@ def main():
     stop_housekeeping = None
     http_thread = None
     signal_stop = None
+    lookup = None
     try:
+        from monitor.lookup_runtime import LookupRuntime
+        lookup = LookupRuntime(state_repository, scheduler=scheduler)
         delivery.apply_local_settings(delivery.selected_alerts)
         initial = cfg_store.snapshot()
         projection = active_target_projection(initial.domains, initial.servers,
@@ -294,7 +298,7 @@ def main():
                                      insecure_http=args.insecure_http,
                                      allow_insecure_remote_http=args.allow_insecure_remote_http,
                                      trusted_proxies=args.trusted_proxy, state_repository=state_repository,
-                                     config_service=config_service, delivery_health=delivery.store.health_snapshot,
+                                     config_service=config_service, delivery_health=delivery.health_snapshot,
                                      delivery_diagnostics=delivery.store.diagnostics_snapshot)
         from security.startup import start_housekeeping
         if args.allow_insecure_remote_http:
@@ -332,6 +336,7 @@ def main():
                 state_repository=state_repository,
                 target_leases=snap.target_leases,
                 registry_view=snap.registry_view,
+                lookup_runtime=lookup,
             )
 
             accepted, active_ip_map_prev = reconcile_scan(
@@ -342,6 +347,7 @@ def main():
         # Keep the primary exception; a failed stop never authorizes store close.
         primary_error = sys.exc_info()[1]
         cleanup_errors = []
+        shutdown_deadline = time.monotonic() + 3
 
         def cleanup(action):
             try:
@@ -354,17 +360,23 @@ def main():
         cleanup(scheduler.stop)
         if signal_stop is not None and cleanup(signal_stop.close) is False:
             logger.warning('Signal stop coordinator is still draining')
-        # This serial runner has returned: no producer remains in admission.
-        delivery_stop = cleanup(delivery.stop)
-        if delivery_stop is not None and not delivery_stop['stopped']:
-            logger.warning('Delivery callback still running; ledger and in-flight claim retained')
-        logger.info("Exiting DNS monitor.")
+        # Independent resources retire before a possibly blocked audit/source
+        # drain. Neither audit callbacks nor producer I/O own these resources.
         if stop_housekeeping is not None:
             cleanup(stop_housekeeping.set)
         if http_thread is not None and http_thread.is_alive():
             cleanup(httpd.shutdown)
         if httpd is not None:
             cleanup(httpd.server_close)
+        lookup_stop = cleanup(lambda: lookup.stop(join_seconds=max(0, shutdown_deadline - time.monotonic()))) if lookup is not None else {'stopped': True}
+        if not lookup_stop or not lookup_stop['stopped']:
+            logger.warning('Lookup shutdown incomplete; live producers and ledger retained')
+        delivery_stop = cleanup(lambda: delivery.stop(
+            producers_stopped=bool(lookup_stop and lookup_stop['stopped']),
+            join_seconds=max(0, shutdown_deadline - time.monotonic())))
+        if delivery_stop is not None and not delivery_stop['stopped']:
+            logger.warning('Delivery callback still running; ledger and in-flight claim retained')
+        logger.info("Exiting DNS monitor.")
         if primary_error is None and cleanup_errors:
             raise cleanup_errors[0]
 

@@ -171,7 +171,9 @@ else:
             assert changed['events'][-1]['server'] == ENDPOINT
             assert changed['events'][-1]['old']['values'] == raw
             assert RAW in str(changed['events'][-1]['new']['values'])
-            assert ENDPOINT not in snapshots[5]['current'][target]
+            # Explicit owned production path retains last-good facts on three
+            # transport failures; no-owner compatibility still tests eviction.
+            assert snapshots[5]['current'][target][ENDPOINT] == snapshots[2]['current'][target][ENDPOINT]
     history_manager.os.makedirs = original_makedirs
 logging.shutdown()
 (work / 'evidence.json').write_text(json.dumps({'type': rtype, 'mode': mode, 'snapshots': snapshots,

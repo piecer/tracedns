@@ -27,6 +27,8 @@ class _Target:
     active: bool = True
     failures: dict = field(default_factory=dict)
     version: int = 0
+    lookup_failed: bool = False
+    lookup_uncertain: bool = True
 
 
 @dataclass(frozen=True)
@@ -45,7 +47,12 @@ class MonitorStateRepository:
         self._coord = threading.RLock()
         self._providers = None
         self.delivery_runtime = None
+        self.lookup_runtime = None
         self.generation = 0
+        self._lookup_in_flight = 0
+        self._lookup_attempt = None
+        self._lookup_success = None
+        self._lookup_coverage = 'unknown'
         self._pending_cleanup = set()
         self._targets = {
             domain_storage_name(vars(domain)): _Target(deepcopy(domain))
@@ -68,6 +75,51 @@ class MonitorStateRepository:
                     current.pop(name, None)
                     history.pop(name, None)
             self.retry_cleanup()
+
+    def _publish_lookup_health(self):
+        # Producer-only aggregation under repository ownership; HTTP never calls
+        # this method or walks the target registry.
+        if self.delivery_runtime is None:
+            return
+        from .delivery_progress import counter
+        self.delivery_runtime.publish_lookup_health({
+            'last_attempt_at': self._lookup_attempt, 'last_success_at': self._lookup_success,
+            'in_flight': counter(self._lookup_in_flight),
+            'failed_targets': counter(sum(t.lookup_failed for t in self._targets.values())),
+            'uncertain_targets': counter(sum(t.lookup_uncertain for t in self._targets.values())),
+            'coverage': self._lookup_coverage, 'counts_stale': False,
+        })
+
+    def lookup_provider_progress(self, lease, *, starting):
+        with self._coord:
+            # Capacity belongs to the actual callback, even after its target's
+            # authority is retired. Only current leases may update target facts.
+            self._lookup_in_flight = max(0, self._lookup_in_flight + (1 if starting else -1))
+            if starting and self.valid(lease) and self.delivery_runtime is not None:
+                from .delivery_progress import counter
+                self._lookup_attempt = counter(self.delivery_runtime.clock())
+                lease.target.lookup_uncertain = True
+                self._lookup_coverage = 'partial'
+            self._publish_lookup_health()
+
+    def lookup_target_progress(self, lease, *, complete, accepted, successful):
+        with self._coord:
+            if not self.valid(lease) or self.delivery_runtime is None:
+                return
+            lease.target.lookup_failed = not complete
+            lease.target.lookup_uncertain = not (complete and accepted)
+            if accepted and successful:
+                from .delivery_progress import counter
+                self._lookup_success = counter(self.delivery_runtime.clock())
+            self._publish_lookup_health()
+
+    def lookup_full_progress(self, complete):
+        with self._coord:
+            # DHT positive evidence does not certify global network coverage.
+            self._lookup_coverage = ('complete' if complete and not any(
+                t.lookup_uncertain or str(t.definition.type).upper() == 'DHT'
+                for t in self._targets.values()) else 'partial')
+            self._publish_lookup_health()
 
     def configure(self, config, removed=()):
         """Config lock must cover this call and configuration publication.
@@ -103,6 +155,9 @@ class MonitorStateRepository:
                 for name, definition in definitions.items()
             }
             self._providers = providers
+            if changed_targets or changed_providers:
+                self._lookup_coverage = 'unknown'
+            self._publish_lookup_health()
             for name in retired:
                 self.current.pop(name, None)
                 self.history.pop(name, None)
@@ -171,38 +226,78 @@ class MonitorStateRepository:
                     deepcopy(lease.target.failures))
 
     def begin_dht(self, lease, version, history):
-        from .dht_support import checkpoint
+        from .dht_support import checkpoint, restore_checkpoint
         runtime = self.delivery_runtime
-        with runtime.config.lock, self._coord:
-            if runtime.stopping or not self.valid(lease) or lease.target.version != version:
+        # The scheduler's same-target/single-flight owner has quiesced the prior
+        # collector before this entry. Only durable, finalized evidence can be
+        # restored; pending tickets and unresolved commits remain fences.
+        available, durable = runtime.store.load_dht_checkpoint(lease.name, settled=True)
+        if not available:
+            return None
+        restored = None
+        if durable is not None and durable != checkpoint(history):
+            try:
+                restored = restore_checkpoint(lease.target.definition, durable,
+                                              previous=history.get('meta', {}).get('dht_state'))
+            except (ValueError, TypeError, KeyError):
                 return None
-            return runtime.store.begin_dht(lease.name, checkpoint(history), lambda: runtime.stopping)
+        with runtime.config.lock, self._coord:
+            if self.producer_stopping or runtime.stopping or not self.valid(lease) or lease.target.version != version:
+                return None
+            if restored is not None:
+                available, exact = runtime.store.load_dht_checkpoint(lease.name, settled=True)
+                if not available or exact != durable:
+                    return None
+                state, snapshot = restored
+                with state_lock():
+                    if self.producer_stopping or runtime.stopping:
+                        return None
+                    lease.history.setdefault('meta', {})['dht_state'] = state
+                    if snapshot is not None:
+                        lease.current['DHT'] = snapshot.to_dict()
+                        lease.history.setdefault('current', {})['DHT'] = snapshot.to_dict()
+                    lease.target.version += 1
+                    bump_state_version()
+                history = lease.history
+            return runtime.store.begin_dht(lease.name, checkpoint(history),
+                                           lambda: runtime.stopping or self.producer_stopping)
 
-    def accept_observation(self, lease, version, current, history, failures, observation, *, dht_token=None):
+    def accept_observation(self, lease, version, current, history, failures, observation, *, dht_token=None,
+                           eligible=None):
         runtime = self.delivery_runtime
         with runtime.config.lock, self._coord:
             with state_lock():
-                valid = not runtime.stopping and self.valid(lease) and lease.target.version == version
+                valid = (not self.producer_stopping and not runtime.stopping
+                         and self.valid(lease) and lease.target.version == version
+                         and (eligible is None or eligible()))
             if not valid:
-                if dht_token is not None:
+                if dht_token is not None and self.lookup_runtime is None:
                     runtime.store.abort_dht(lease.name, dht_token)
                 return False
             if dht_token is not None:
                 from .dht_support import checkpoint
                 if not runtime.store.finish_dht(lease.name, dht_token, checkpoint(history),
-                                                lambda: runtime.stopping):
-                    if runtime.stopping:
+                                                lambda: runtime.stopping or self.producer_stopping
+                                                or (eligible is not None and not eligible())):
+                    if runtime.stopping and self.lookup_runtime is None:
                         runtime.store.abort_dht(lease.name, dht_token)
                     return False
             if observation is not None:
                 observation['projection_signature'] = runtime.signature(lease)
-                result = runtime.store.record_domain(observation, runtime.authority(), runtime.bindings())
+                if eligible is not None and not eligible():
+                    return False
+                admission = {}
+                if self.lookup_runtime is not None or eligible is not None:
+                    admission['cancelled'] = lambda: runtime.stopping or self.producer_stopping \
+                        or (eligible is not None and not eligible())
+                result = runtime.store.record_domain(observation, runtime.authority(), runtime.bindings(),
+                                                     **admission)
                 if result['outcome'] == 'stale':
                     return False
             # The original lease cannot be revoked between admission and publish.
             # SQL and rendering above run WITHOUT state_lock.
             with state_lock():
-                if runtime.stopping:
+                if runtime.stopping or self.producer_stopping or (eligible is not None and not eligible()):
                     return False
                 lease.current.clear()
                 lease.current.update(current)
@@ -212,6 +307,10 @@ class MonitorStateRepository:
                 lease.target.failures.update(failures)
                 lease.target.version += 1
                 bump_state_version()
+            if observation is not None:
+                from .delivery_progress import counter
+                self._lookup_success = counter(runtime.clock())
+                self._publish_lookup_health()
             return True
 
     def admit_force_positive(self, leases, cancel):
@@ -233,13 +332,18 @@ class MonitorStateRepository:
                 return False, []
             return True, reconcile()
 
-    def commit_history(self, lease, temporary, destination):
+    def commit_history(self, lease, temporary, destination, *, eligible=None):
         """Final file publication and purge share the same short lock boundary."""
         with self._coord, state_lock():
-            if not self.valid(lease):
+            if self.producer_stopping or not self.valid(lease) or (eligible is not None and not eligible()):
                 return False
             os.replace(temporary, destination)
             return True
+
+    @property
+    def producer_stopping(self):
+        # A lock-free permanent latch: stop must not wait behind local I/O.
+        return self.lookup_runtime is not None and self.lookup_runtime.stopping
 
     def admit_additions(self, leases, entries, dedupe):
         """Admission/dedupe is atomic with revocation; delivery occurs unlocked."""

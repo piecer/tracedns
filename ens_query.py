@@ -3,10 +3,14 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Dict, List
 from urllib.parse import urlsplit, urlunsplit
 
+import requests
+
 from ens_decoder import decode_ens_hidden_ips
+from lookup_context import checkpoint, owned_lookup, transport_timeout
 
 try:
     from web3 import Web3
@@ -183,6 +187,48 @@ def _normalize_address(value: str) -> str:
     return s
 
 
+class _DeadlineSession(requests.Session):
+    def send(self, request, **kwargs):
+        kwargs['timeout'] = transport_timeout(kwargs['timeout'])
+        kwargs['allow_redirects'] = False
+        try:
+            response = super().send(request, **kwargs)
+        except Exception:
+            checkpoint()
+            raise
+        try:
+            checkpoint()
+            if 300 <= response.status_code < 400:
+                raise ValueError('ENS RPC redirect refused')
+            return response
+        except BaseException:
+            response.close()
+            raise
+
+
+def _owned_http_provider(rpc, timeout, session):
+    # Web3 calls get_request_kwargs for EVERY HTTP attempt, including its
+    # internal retry loop and RPCs issued by contract/middleware machinery.
+    class DeadlineProvider(Web3.HTTPProvider):
+        # Web3's CCIP gateway fetches use a different, unowned HTTP session.
+        # Fail closed rather than let a resolver escape this RPC deadline.
+        global_ccip_read_enabled = False
+
+        def get_request_kwargs(self):
+            kwargs = super().get_request_kwargs()
+            kwargs['timeout'] = transport_timeout(timeout)
+            kwargs['allow_redirects'] = False
+            return kwargs
+
+        def decode_rpc_response(self, raw_response):
+            checkpoint()
+            response = super().decode_rpc_response(raw_response)
+            checkpoint()
+            return response
+
+    return DeadlineProvider(rpc, request_kwargs={'timeout': transport_timeout(timeout)}, session=session)
+
+
 def fetch_ens_text_record(
     rpc_url: str,
     ens_name: str,
@@ -191,6 +237,17 @@ def fetch_ens_text_record(
     ens_node: str | None = None,
     resolver_address: str | None = None,
 ) -> str:
+    with (_DeadlineSession() if owned_lookup() else nullcontext(None)) as session:
+        checkpoint()
+        result = _fetch_ens_text_record(rpc_url, ens_name, key, timeout_sec,
+                                       ens_node, resolver_address, session=session)
+        checkpoint()
+        return result
+
+
+def _fetch_ens_text_record(
+    rpc_url, ens_name, key, timeout_sec, ens_node, resolver_address, *, session,
+):
     rpc = str(rpc_url or '').strip()
     name = str(ens_name or '').strip().rstrip('.')
     text_key = str(key or '').strip()
@@ -222,12 +279,16 @@ def fetch_ens_text_record(
     if Web3 is None:
         raise EnsQueryError('dependency_missing', 'web3 package is required for ENS queries', rpc_url=rpc, ens_name=name, key=text_key, ens_node=node_hint, resolver_address=resolver_hint)
     try:
-        provider = Web3.HTTPProvider(rpc, request_kwargs={'timeout': max(2, int(timeout_sec or 8))})
+        if owned_lookup():
+            provider = _owned_http_provider(rpc, float(timeout_sec or 8), session)
+        else:
+            provider = Web3.HTTPProvider(rpc, request_kwargs={'timeout': max(2, int(timeout_sec or 8))})
         w3 = Web3(provider)
     except Exception as e:
         raise EnsQueryError('provider_init_failed', 'failed to initialize HTTP provider', rpc_url=rpc, ens_name=name, key=text_key, ens_node=node_hint, resolver_address=resolver_hint, cause=e) from e
     try:
         connected = bool(w3.is_connected())
+        checkpoint()
     except Exception as e:
         raise EnsQueryError('rpc_connect_check_failed', 'failed to check Ethereum RPC connectivity', rpc_url=rpc, ens_name=name, key=text_key, ens_node=node_hint, resolver_address=resolver_hint, cause=e) from e
     if not connected:
@@ -240,6 +301,7 @@ def fetch_ens_text_record(
             raise EnsQueryError('registry_init_failed', 'failed to initialize ENS registry contract', rpc_url=rpc, ens_name=name, key=text_key, ens_node=node_hint, resolver_address=resolver_hint, cause=e) from e
         try:
             resolver_addr = registry.functions.resolver(node).call()
+            checkpoint()
         except Exception as e:
             code = 'resolver_lookup_reverted' if isinstance(e, ContractLogicError) else 'resolver_lookup_failed'
             raise EnsQueryError(code, 'failed to query resolver address from ENS registry', rpc_url=rpc, ens_name=name, key=text_key, ens_node=node_hint, resolver_address=resolver_hint, cause=e) from e
@@ -263,6 +325,7 @@ def fetch_ens_text_record(
         raise EnsQueryError('resolver_contract_init_failed', 'failed to initialize resolver contract', rpc_url=rpc, ens_name=name, key=text_key, ens_node=node_hint, resolver_address=resolver_text, cause=e) from e
     try:
         value = resolver.functions.text(node, text_key).call()
+        checkpoint()
     except Exception as e:
         code = 'resolver_text_reverted' if isinstance(e, ContractLogicError) else 'resolver_text_failed'
         raise EnsQueryError(code, 'failed to fetch ENS text record', rpc_url=rpc, ens_name=name, key=text_key, ens_node=node_hint, resolver_address=resolver_text, cause=e) from e

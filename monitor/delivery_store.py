@@ -8,15 +8,18 @@ from __future__ import annotations
 import copy
 import errno
 import json
+import math
 import os
 from pathlib import Path
 import sqlite3
 import threading
 import time
+from .delivery_progress import counter, elapsed, finite
 import uuid
 
 from monitor.delivery_types import CHANNELS, DEFAULT_LIMITS, MAX_COUNTER, encode, size, valid_binding, provider_result as normalize_result
 from monitor.delivery_types import TeamsPayloadTooLarge, encode_body, stable_reason
+from monitor.delivery_types import TEAMS_BATCH_MAX_WAIT_SECONDS, TEAMS_BATCH_MAINTENANCE_LIMIT
 
 
 class _DHTCancelled(Exception):
@@ -24,6 +27,15 @@ class _DHTCancelled(Exception):
 
 
 class DeliveryStore:
+    @property
+    def _health(self):
+        return self._health_cache[0]
+
+    @_health.setter
+    def _health(self, value):
+        # Every status-only update retains the exact counts/age sample.
+        self._health_cache = (value, self._health_cache[1])
+
     def __init__(self, history_dir, *, clock=time.time, limits=None, render=None):
         self._render = render or (lambda entries, action, created: {
             "title": action + " at " + str(int(created)),
@@ -35,10 +47,14 @@ class DeliveryStore:
             raise ValueError("invalid delivery limits")
         self.path = Path(history_dir).absolute() / "delivery.sqlite"
         self._clock = clock
+        self._monotonic = time.monotonic
+        self._recovery_next = 0.0
+        self._recovery_failures = 0
         self._lock = threading.RLock()
         self._db = None
         self._owner = None
         self._closed = False
+        self._new_file_identity = None
         self._unresolved = None
         self._worker_thread = False
         self._worker_active = False
@@ -48,6 +64,7 @@ class DeliveryStore:
         self._gap = False
         self._rebaseline = False
         self._history_failed = False
+        self._pending_addition_epoch = None
         self._fault = lambda point: None
         self._process_id = uuid.uuid4().hex
         self._checkpoint = {c: 0 for c in CHANNELS}
@@ -55,8 +72,10 @@ class DeliveryStore:
         self._control = {
             "schema": 1, "epoch": uuid.uuid4().hex, "clean": True, "binding_key": os.urandom(32).hex(),
             "accounting_complete": True, "tracking_complete": True,
+            "addition_epoch": "", "absence_pending": False,
             "missed_total": 0, "failed_total": 0, "acked_total": 0,
         }
+        self._health_cache = (None, (None, None, None, None, {c: 0 for c in CHANNELS}, 0, 'unknown', 0))
         self._health = {
             "status": "disabled", "observation_policy": "continue", "storage_ok": False,
             "worker_running": False, "coverage": "covered", "accounting_complete": True,
@@ -100,6 +119,9 @@ class DeliveryStore:
     def _open(self):
         # Unsupported platforms degrade instead of running an unfenced owner.
         import fcntl
+        if self._unresolved is not None:
+            raise ValueError('unresolved ledger operation')
+        self._storage_stage = 'open_owner'
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(self.path.parent, 0o700)
         lock_path = self.path.with_name("delivery.lock")
@@ -116,7 +138,13 @@ class DeliveryStore:
             raise ValueError("unsafe ledger")
         if not existed:
             fd = os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+            stat = os.fstat(fd)
+            self._new_file_identity = (stat.st_dev, stat.st_ino)
             os.close(fd)
+        elif not established:
+            stat = self.path.stat()
+            if stat.st_size == 0 and (stat.st_dev, stat.st_ino) == self._new_file_identity:
+                existed = False  # our own uninitialized file after failed connect
         os.chmod(self.path, 0o600)
         self._db = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False, timeout=.05)
         self._db.row_factory = sqlite3.Row
@@ -179,22 +207,39 @@ class DeliveryStore:
         # candidate order and bounded membership lookup in SQL, not hydration.
         self._execute("CREATE INDEX IF NOT EXISTS receipt_claim ON receipt(channel,binding,id)")
         self._execute("CREATE INDEX IF NOT EXISTS receipt_members ON receipt(batch_id,id)")
+        columns = self._db.execute("PRAGMA table_info(cursor)").fetchall()
+        if not any(row['name'] == 'addition_epoch' for row in columns):
+            self._execute("ALTER TABLE cursor ADD COLUMN addition_epoch TEXT NOT NULL DEFAULT ''")
+        self._control.setdefault('addition_epoch', '')
+        self._control.setdefault('absence_pending', False)
         # Additive schema-1 state: suppression is not proof of global absence.
         # Existing receipts, cursors and removal deadlines are left untouched.
         self._execute("CREATE TABLE IF NOT EXISTS reappearance (target TEXT NOT NULL, "
                       "signature TEXT NOT NULL, ip TEXT NOT NULL, expires REAL NOT NULL, "
                       "bytes INTEGER NOT NULL, PRIMARY KEY(target,signature,ip))")
         self._execute("CREATE INDEX IF NOT EXISTS reappearance_expiry ON reappearance(expires)")
+        # NULL legacy context is unknown, never reconstructed from payloads.
+        columns = self._db.execute("PRAGMA table_info(receipt)").fetchall()
+        for name in ('source_target', 'source_incarnation', 'source_signature'):
+            if not any(row['name'] == name for row in columns):
+                self._execute("ALTER TABLE receipt ADD COLUMN " + name + " TEXT")
+        self._execute("CREATE TABLE IF NOT EXISTS failed_addition (target TEXT NOT NULL, "
+                      "incarnation TEXT NOT NULL, signature TEXT NOT NULL, ip TEXT NOT NULL, "
+                      "channel TEXT NOT NULL CHECK(channel IN ('teams','misp')), binding TEXT NOT NULL, "
+                      "receipt_id INTEGER NOT NULL CHECK(receipt_id>0), bytes INTEGER NOT NULL CHECK(bytes>0), "
+                      "PRIMARY KEY(target,incarnation,signature,ip,channel,binding))")
         # Authoritative DHT evidence shares this ledger's application owner.
         self._execute("CREATE TABLE IF NOT EXISTS dht_state (target TEXT PRIMARY KEY, "
                       "data TEXT NOT NULL, pending TEXT, bytes INTEGER NOT NULL)")
 
-    def load_dht_checkpoint(self, target):
+    def load_dht_checkpoint(self, target, *, settled=False):
         with self._lock:
             if self._db is None or self._closed or self._unresolved:
                 return False, None
             try:
-                row = self._one("SELECT data FROM dht_state WHERE target=?", (target,))
+                row = self._one("SELECT data,pending FROM dht_state WHERE target=?", (target,))
+                if settled and row and row['pending'] is not None:
+                    return False, None
                 return True, json.loads(row[0]) if row else None
             except (sqlite3.Error, ValueError, TypeError):
                 self.enter_gap("delivery_storage", {})
@@ -228,9 +273,9 @@ class DeliveryStore:
                     return None
                 self._put_dht_checkpoint(target, checkpoint, token)
                 return token
-            ok, result, _ = self._transaction(token, apply, cancelled=cancelled)
+            ok, result, _ = self._transaction(token, apply, cancelled=cancelled, kind='checkpoint')
             if not ok or result is None:
-                if not cancelled():
+                if result != 'cancelled':
                     self.enter_gap("delivery_storage", {})
                 return None
             return result
@@ -243,8 +288,8 @@ class DeliveryStore:
                     return False
                 self._put_dht_checkpoint(target, checkpoint, None)
                 return True
-            ok, result, _ = self._transaction(uuid.uuid4().hex, apply, cancelled=cancelled)
-            if not ok and not cancelled():
+            ok, result, _ = self._transaction(uuid.uuid4().hex, apply, cancelled=cancelled, kind='checkpoint')
+            if not ok and result != 'cancelled':
                 self.enter_gap("delivery_storage", {})
             return bool(ok and result)
 
@@ -320,23 +365,47 @@ class DeliveryStore:
             self._increment("missed_total", count)
             totals[channel] = min(MAX_COUNTER, totals[channel] + count)
 
-    def _known_additions(self, observation):
+    def _addition_destinations(self, observation, ip, bindings):
+        """Shared admission/loss predicate; absence of proof grants no exception."""
+        target, signature, now = (observation['target'], observation['projection_signature'],
+                                  observation['observed_at'])
+        key = encode([target, signature, ip, 'Added'])
+        if self._one("SELECT 1 FROM grace WHERE ip=?", (ip,)) or self._one(
+                "SELECT 1 FROM recent WHERE key=? AND expires>?", (key, now)):
+            return []
+        destinations = [b for b in bindings if b['enabled']]
+        if not self._one("SELECT 1 FROM reappearance WHERE target=? AND signature=? AND ip=? AND expires>?",
+                         (target, signature, ip, now)):
+            return destinations
+        if self._unresolved is not None:
+            return []  # Optional failure proof cannot authorize an uncertain exception.
+        cursor = self._one("SELECT incarnation FROM cursor WHERE target=? AND signature=? AND tracked=1",
+                           (target, signature))
+        if cursor is None:
+            return []
+        selected = []
+        for b in destinations:
+            identity = (target, cursor[0], signature, ip, b['channel'], b['binding_id'])
+            if self._one("SELECT 1 FROM failed_addition WHERE target=? AND incarnation=? AND signature=? "
+                         "AND ip=? AND channel=? AND binding=?", identity) and not self._one(
+                    "SELECT 1 FROM receipt INDEXED BY receipt_fifo WHERE source_target=? AND source_incarnation=? "
+                    "AND source_signature=? AND ip=? AND channel=? AND binding=? AND action='Added' LIMIT 1", identity):
+                selected.append(b)
+        return selected
+
+    def _known_additions(self, observation, bindings):
+        counts = {c: 0 for c in CHANNELS}
         if self._db is None:
-            # With no readable suppression state there is no defensible exact
-            # loss count. Completeness is already false, not a fictional zero.
-            return 0
+            # No readable proof is unknown, not permission or an exact zero.
+            return counts
         try:
-            count = 0
-            for ip in set(observation["managed_ips"]) - set(observation.get("before_ips", [])):
-                key = encode([observation["target"], observation["projection_signature"], ip, "Added"])
-                if not self._one("SELECT 1 FROM grace WHERE ip=?", (ip,)) and not self._one(
-                        "SELECT 1 FROM recent WHERE key=? AND expires>?", (key, observation["observed_at"])) and not self._one(
-                        "SELECT 1 FROM reappearance WHERE target=? AND signature=? AND ip=? AND expires>?",
-                        (observation["target"], observation["projection_signature"], ip, observation["observed_at"])):
-                    count += 1
-            return count
+            fresh = set(observation.get('fresh_positive_ips', observation['managed_ips']))
+            for ip in (set(observation['managed_ips']) - set(observation.get('before_ips', []))) & fresh:
+                for b in self._addition_destinations(observation, ip, bindings):
+                    counts[b['channel']] += 1
+            return counts
         except sqlite3.Error:
-            return 0
+            return {c: 0 for c in CHANNELS}
 
     def _read_control(self):
         db = sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True, timeout=.05)
@@ -353,6 +422,57 @@ class DeliveryStore:
         """Private registry input, never a public health field."""
         with self._lock:
             return bytes.fromhex(self._control["binding_key"]) if self._ready else None
+
+    def _validated_control(self, epoch):
+        saved = self._read_control()
+        if (not isinstance(saved, dict) or type(saved.get('schema')) is not int
+                or saved['schema'] != 1 or saved.get('epoch') != epoch
+                or saved.get('binding_key') != self._control['binding_key']
+                or not (isinstance(saved.get('last_transaction'), str)
+                        or saved.get('last_transaction') is None and self._control.get('last_transaction') is None)
+                or any(type(saved.get(k)) is not int or not 0 <= saved[k] <= MAX_COUNTER
+                       for k in ('missed_total', 'failed_total', 'acked_total'))
+                or any(type(saved.get(k)) is not bool
+                       for k in ('clean', 'accounting_complete', 'tracking_complete'))
+                or type(saved.get('addition_epoch', '')) is not str
+                or (saved.get('addition_epoch', '') != '' and
+                    (len(saved['addition_epoch']) != 32 or any(ch not in '0123456789abcdef'
+                                                              for ch in saved['addition_epoch'])))
+                or any(k in saved and type(saved[k]) is not bool
+                       for k in ('absence_pending', 'restart_rebaseline', 'session_closed'))):
+            raise ValueError('invalid recovery identity')
+        return saved
+
+    def _resolve_unresolved(self):
+        if self._unresolved is None:
+            return
+        pending = self._unresolved
+        saved = self._validated_control(pending['epoch'])
+        if saved.get('last_transaction') == pending['operation']:
+            if pending['checkpoint'] is not None:
+                if saved.get('loss_checkpoint') != {'process': self._process_id, **pending['checkpoint']}:
+                    raise ValueError('invalid loss checkpoint')
+                self._adopt_checkpoint(pending['checkpoint'], pending['captured'],
+                                       newer=pending['newer_losses'])
+        else:
+            for c in CHANNELS:
+                self._volatile[c] = min(MAX_COUNTER, self._volatile[c] + pending['losses'].get(c, 0))
+        # Durable identity proves the old operation, not completeness of later
+        # observations. These flags are sticky within this process; preserve
+        # conservative obligations on both committed and rolled-back readback.
+        for key in ('accounting_complete', 'tracking_complete'):
+            saved[key] = saved[key] and self._control[key]
+        self._control = saved
+        self._unresolved = None
+
+    def _adopt_checkpoint(self, totals, captured, *, newer=None):
+        for c in CHANNELS:
+            # An unknown COMMIT may outlive new observations. Subtraction from
+            # their saturated aggregate cannot recover the newer contribution.
+            # Synchronous adoption still holds the store lock across capture.
+            self._volatile[c] = newer[c] if newer is not None else max(0, self._volatile[c] - captured[c])
+            self._checkpoint[c] = totals[c]
+        self._health = {**self._health, 'missed_unpersisted': min(MAX_COUNTER, sum(self._volatile.values()))}
 
     def cursor_incarnation(self, target):
         with self._lock:
@@ -399,7 +519,7 @@ class DeliveryStore:
         with self._lock:
             if not authority.get("valid"):
                 return {"ledger_committed": False, "source_valid": False}
-            if self._gap or self._rebaseline or not self._ready:
+            if self._pending_addition_epoch is not None or not self._ready or self._unresolved or self._claims_halted:
                 self.enter_gap("delivery_storage", {})
                 return {"ledger_committed": False, "source_valid": True}
             def apply():
@@ -408,7 +528,8 @@ class DeliveryStore:
                     row = self._one("SELECT signature FROM cursor WHERE target=?", (target,))
                     if row is None or row["signature"] != value["signature"]:
                         self._execute("DELETE FROM cursor WHERE target=?", (target,))
-                        self._put_cursor(target, sorted(set(value["ips"])), value["signature"], uuid.uuid4().hex)
+                        self._put_cursor(target, sorted(set(value["ips"])), value["signature"], uuid.uuid4().hex,
+                                         addition_epoch='' if self._control['absence_pending'] else None)
                 self._prune_reappearance()
                 self._control["revision"] = authority["revision"]
                 self._control["signature"] = authority["signature"]
@@ -442,7 +563,7 @@ class DeliveryStore:
                 self.enter_gap("delivery_storage", {})
             return {"ledger_committed": ok}
 
-    def _transaction(self, operation, fn, *, cancelled=None):
+    def _transaction(self, operation, fn, *, cancelled=None, kind='ledger', checkpoint=None, captured=None):
         """A fixed last-transaction UUID resolves commit errors independently.
 
         Only one writer owned by this object exists. No subsequent write is
@@ -452,12 +573,16 @@ class DeliveryStore:
             return False, None, True
         if self._db is None or self._closed:
             return False, None, False
+        if cancelled is not None and cancelled():
+            return False, 'cancelled', False
         before = copy.deepcopy(self._control)
         committed = False
         result = None
         stage = 'transaction_begin'
         try:
             self._execute("BEGIN IMMEDIATE")
+            if cancelled is not None and cancelled():
+                raise _DHTCancelled()
             stage = 'transaction_body'
             result = fn()
             self._control["last_transaction"] = operation
@@ -469,18 +594,22 @@ class DeliveryStore:
             self._db.commit()
             committed = True
             self._fault("after_commit")
-        except _DHTCancelled:
-            self._db.rollback()
-            self._control = before
-            return False, None, False
-        except (sqlite3.Error, OSError, ValueError) as error:
+        except (_DHTCancelled, sqlite3.Error, OSError, ValueError) as error:
+            if isinstance(error, _DHTCancelled):
+                try:
+                    self._db.rollback()
+                except (sqlite3.Error, OSError, ValueError) as rollback_error:
+                    error = rollback_error
+                else:
+                    self._control = before
+                    return False, 'cancelled', False
             self._note_storage_error(error, stage)
             try:
                 self._db.rollback()
             except sqlite3.Error:
                 pass
             try:
-                saved = self._read_control()
+                saved = self._validated_control(before['epoch'])
                 if saved.get("last_transaction") == operation:
                     self._control = saved
                     self._safe_refresh()
@@ -490,7 +619,10 @@ class DeliveryStore:
             except (sqlite3.Error, OSError, ValueError, TypeError) as error:
                 self._note_storage_error(error, 'transaction_readback')
                 self._control = before
-                self._unresolved = {"operation": operation, "losses": {}}
+                self._unresolved = {"operation": operation, "epoch": before['epoch'], "losses": {},
+                                    "kind": kind, "checkpoint": copy.deepcopy(checkpoint),
+                                    "captured": copy.deepcopy(captured),
+                                    "newer_losses": {c: 0 for c in CHANNELS}}
                 self._claims_halted = True
                 return False, None, True
         if committed:
@@ -508,6 +640,29 @@ class DeliveryStore:
     def _refresh(self):
         health = copy.deepcopy(self._health)
         used = self._one("SELECT COUNT(*),COALESCE(SUM(reserved),0),MIN(created) FROM receipt")
+        oldest = self._one("SELECT id,created FROM receipt ORDER BY created,id LIMIT 1")
+        sampled = finite(self._monotonic())
+        wall = finite(self._clock())
+        if sampled is None or wall is None:
+            # Validate the actual pair, not a preflight before potentially slow
+            # SQL. Keep last-good counts, anchors and historical diagnostics.
+            self._health = {**self._health, 'counts_stale': True, 'status': 'degraded'}
+            return
+        previous = self._health_cache[1]
+        age = elapsed(wall, oldest[1]) if oldest is not None else None
+        if oldest is not None and previous[0] == oldest[0] and previous[1] is not None:
+            age = max(age or 0, previous[1] + (elapsed(sampled, previous[2]) or 0))
+        retries = {c: self._one("SELECT COUNT(*) FROM receipt WHERE channel=? AND state='retry_wait'", (c,))[0]
+                   for c in CHANNELS}
+        epoch = self._pending_addition_epoch or self._control['addition_epoch']
+        # Match the committed target gate in rebaseline_absence. Unrepresented
+        # targets have no exact cardinality: retain bounded row counts and
+        # advertise unknown, never invent a full-absence certificate.
+        rebasing = self._one("SELECT COUNT(*) FROM cursor WHERE addition_epoch<>? OR tracked=0", (epoch,))[0]
+        absence = ('unknown' if self._control.get('untracked_targets') else
+                   'awaiting_full' if rebasing or self._control['absence_pending'] or self._pending_addition_epoch else 'ready')
+        cursor_count = self._one('SELECT COUNT(*) FROM cursor')[0]
+        anchors = (oldest[0] if oldest is not None else None, age, sampled, wall, retries, rebasing, absence, cursor_count)
         health["capacity"]["used_receipts"] = used[0]
         health["capacity"]["used_payload_bytes"] = used[1]
         health["pending"] = self._one("SELECT COUNT(*) FROM receipt WHERE state IN ('pending','unsealed','in_flight')")[0]
@@ -521,7 +676,7 @@ class DeliveryStore:
                 "last_success_at": self._control.get("success_" + channel),
                 "last_error": (self._one("SELECT error FROM receipt WHERE channel=? AND state='blocked_config' AND error IS NOT NULL ORDER BY id LIMIT 1", (channel,)) or [self._control.get("error_" + channel)])[0],
             }
-        health["oldest_pending_age_seconds"] = min(MAX_COUNTER, max(0, int(self._clock() - used[2]))) if used[2] is not None else None
+        health["oldest_pending_age_seconds"] = counter(age)
         for key in ("missed_total", "failed_total", "acked_total", "accounting_complete", "tracking_complete"):
             health[key] = self._control[key]
         health["storage_ok"] = True
@@ -535,8 +690,8 @@ class DeliveryStore:
         elif self._history_failed:
             health["last_error"] = "history_persistence"
             health["status"] = "degraded"
-        self._health = health
-        self._publish_diagnostics()
+        self._publish_diagnostics(wall)
+        self._health_cache = (health, anchors)
 
     def note_history_failure(self):
         """Sticky process diagnostic, not a ledger gap or raw-history receipt.
@@ -584,7 +739,12 @@ class DeliveryStore:
                     self._control["grace_imported"] = True
                 mismatch = (self._control.get("revision") != authority["revision"] or
                             self._control.get("signature") != authority["signature"])
-                self._rebaseline = not first and (not self._control["clean"] or mismatch)
+                self._rebaseline = not first and (not self._control["clean"] or mismatch
+                                                  or self._control['absence_pending'])
+                if not first and (not self._control.get('session_closed', self._control['clean']) or mismatch):
+                    self._control['addition_epoch'] = uuid.uuid4().hex
+                    self._control['absence_pending'] = True
+                    self._control['restart_rebaseline'] = True
                 if not first and mismatch:
                     # Equal final names/definitions do not prove no intervening
                     # delete/re-add. Keep detector evidence for loss accounting,
@@ -592,9 +752,10 @@ class DeliveryStore:
                     self._execute("UPDATE cursor SET incarnation=lower(hex(randomblob(16)))")
                 self._prune_cursors(active_projection)
                 self._prune_reappearance()
-                self._recover_claims()
+                _, self._claims_halted = self._recover_claims()
                 self._control["enrolled"] = True
                 self._control["clean"] = False
+                self._control['session_closed'] = False
                 if not self._rebaseline:
                     self._control["revision"] = authority["revision"]
                     self._control["signature"] = authority["signature"]
@@ -603,35 +764,38 @@ class DeliveryStore:
             self._ready = ok
             if not ok:
                 self.enter_gap("delivery_storage", {})
+                if self._db is not None:
+                    self._recovery_failed()
             else:
                 self.seal_cycle(None)
             return result if ok else {"ready": False}
 
-    def _admit(self, entries, bindings, operation, action, created, force_loss=False, cycle=""):
-        destinations = [b for b in bindings if b["enabled"]]
-        needed = len(entries) * len(destinations)
-        reserved = sum(size({"entries": [e]}) + 4096 +
-                       (self.limits["batch_bytes"] if b["channel"] == "teams" else 0)
-                       for e in entries for b in destinations)
+    def _admit(self, entries, bindings, operation, action, created, force_loss=False, cycle="",
+               *, selection=None, source=None):
+        destinations = [b for b in bindings if b['enabled']]
+        plan = [(e, b) for e in entries for b in (destinations if selection is None else selection[e[0]])]
+        context = source or (None, None, None)
+        context_bytes = size(context) if source is not None else 0
+        needed = len(plan)
+        reserved = sum(size({'entries': [e]}) + 4096 + context_bytes +
+                       (self.limits['batch_bytes'] if b['channel'] == 'teams' else 0) for e, b in plan)
         used = self._one("SELECT COUNT(*),COALESCE(SUM(reserved),0) FROM receipt")
-        overflow = (force_loss or len(entries) > self.limits["unit_items"] or size(entries) > self.limits["unit_bytes"] or
-                    any(len(e[1].encode()) > self.limits["label_bytes"] for e in entries) or
-                    needed + used[0] > self.limits["receipts"] or
-                    reserved + used[1] > self.limits["payload_bytes"])
+        overflow = (force_loss or len(entries) > self.limits['unit_items'] or size(entries) > self.limits['unit_bytes'] or
+                    any(len(e[1].encode()) > self.limits['label_bytes'] for e in entries) or
+                    needed + used[0] > self.limits['receipts'] or
+                    reserved + used[1] > self.limits['payload_bytes'])
         if overflow:
-            counts = {c: len(entries) * sum(b["channel"] == c for b in destinations) for c in CHANNELS}
-            self._record_loss("delivery_capacity", counts)
+            self._record_loss('delivery_capacity', {c: sum(b['channel'] == c for _, b in plan) for c in CHANNELS})
             return 0, needed
-        for entry in entries:
-            payload = encode({"entries": [entry]})
-            for b in destinations:
-                self._execute(
-                    "INSERT INTO receipt(operation,channel,binding,action,ip,payload,state,created,reserved,cycle) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
-                    (operation, b["channel"], b["binding_id"], action, entry[0], payload,
-                     "unsealed" if b["channel"] == "teams" else "pending", created,
-                     len(payload.encode()) + 4096 + (self.limits["batch_bytes"] if b["channel"] == "teams" else 0), cycle),
-                )
+        for entry, b in plan:
+            payload = encode({'entries': [entry]})
+            self._execute(
+                "INSERT INTO receipt(operation,channel,binding,action,ip,payload,state,created,reserved,cycle,"
+                "source_target,source_incarnation,source_signature) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (operation, b['channel'], b['binding_id'], action, entry[0], payload,
+                 'unsealed' if b['channel'] == 'teams' else 'pending', created,
+                 len(payload.encode()) + 4096 + context_bytes +
+                 (self.limits['batch_bytes'] if b['channel'] == 'teams' else 0), cycle, *context))
         return needed, 0
 
     def _result(self, outcome, admitted=0, missed=0, committed=False):
@@ -641,6 +805,14 @@ class DeliveryStore:
     def _prune_reappearance(self):
         self._execute("DELETE FROM reappearance WHERE NOT EXISTS (SELECT 1 FROM cursor "
                       "WHERE cursor.target=reappearance.target AND cursor.signature=reappearance.signature)")
+        self._prune_failed_additions()
+
+    def _prune_failed_additions(self, target=None):
+        scope = 'target=? AND ' if target is not None else ''
+        self._execute("DELETE FROM failed_addition WHERE " + scope + "NOT EXISTS (SELECT 1 FROM cursor "
+                      "WHERE cursor.target=failed_addition.target AND cursor.incarnation=failed_addition.incarnation "
+                      "AND cursor.signature=failed_addition.signature AND cursor.tracked=1)",
+                      (target,) if target is not None else ())
 
     def _remember_disappearance(self, observation, missing):
         """Retain a bounded per-target hold, never start a removal deadline."""
@@ -664,26 +836,38 @@ class DeliveryStore:
             count += 1
             used += needed
 
-    def record_domain(self, observation, authority, bindings):
+    def record_domain(self, observation, authority, bindings, *, cancelled=None):
         with self._lock:
+            if cancelled is not None and cancelled() and self._unresolved is None:
+                return self._result("stale")
             if not authority.get("valid"):
                 return self._result("stale")
-            if len(bindings) > 2 or not all(valid_binding(b) for b in bindings):
+            if (len(bindings) > 2 or not all(valid_binding(b) for b in bindings) or
+                    any(type(observation.get(k)) is not str or not observation[k]
+                        for k in ('target', 'projection_signature'))):
                 self.enter_gap("delivery_storage", {})
                 return self._result("gap")
+            if (self._unresolved is not None and self._unresolved['kind'] == 'source'
+                    and self._unresolved['operation'] == observation['source_operation_id']):
+                return self._result('gap')  # its speculative loss already has one owner
+            pending_source = False
             if self._db is not None and not self._unresolved and not self._closed:
                 try:
-                    existing = self._one("SELECT operation FROM cursor WHERE target=?", (observation["target"],))
+                    existing = self._one("SELECT operation,addition_epoch FROM cursor WHERE target=?", (observation["target"],))
                     if existing and existing[0] == observation["source_operation_id"]:
                         return self._result("consumed", committed=True)
+                    pending_source = ('target_complete' in observation and self._control['absence_pending']
+                                      and (existing is None or existing['addition_epoch'] != self._control['addition_epoch']))
                 except sqlite3.Error:
                     pass
             # A definitely readable suppression state permits exact lower-bound
             # losses even when BEGIN IMMEDIATE cannot obtain its writer lock.
-            known = self._known_additions(observation)
-            losses = {c: known * sum(b["enabled"] and b["channel"] == c for b in bindings) for c in CHANNELS}
-            if self._gap or not self._ready:
-                self.enter_gap("delivery_storage", losses)
+            losses = self._known_additions(observation, bindings)
+            target_evidence = ('target_complete' in observation and 'fresh_positive_ips' in observation)
+            gap_ready = (target_evidence and self._pending_addition_epoch is None
+                         and self._control['absence_pending'])
+            if (self._gap and not gap_ready) or not self._ready or self._claims_halted:
+                self.enter_gap("delivery_storage", losses, invalidate_additions=not pending_source)
                 return self._result("gap")
             def apply():
                 row = self._one("SELECT * FROM cursor WHERE target=?", (observation["target"],))
@@ -692,41 +876,68 @@ class DeliveryStore:
                 if "expected_operation_id" in observation and (row["operation"] if row else None) != observation["expected_operation_id"]:
                     return "stale"
                 ips = sorted(set(observation["managed_ips"]))
+                pending = bool(row and row['addition_epoch'] != self._control['addition_epoch'])
+                pending = pending or (row is None and self._control['absence_pending'])
+                pending = pending or (target_evidence and bool(
+                    row and (not row['tracked'] or row['signature'] != observation['projection_signature'])
+                    or row is None and self._control.get('untracked_targets')))
                 before = (set(json.loads(row["ips"])) if row and row["tracked"] and
                           row["signature"] == observation["projection_signature"]
                           else set(observation.get("before_ips", [])))
-                fits = self._put_cursor(observation["target"], ips, observation["projection_signature"],
-                                        observation["source_operation_id"])
-                if (row and not row["tracked"] or not row and self._control.get("untracked_targets")) and fits:
-                    before = set(ips)  # recovery enrolls current data, never a backlog
-                entries = [[ip, observation["label"], observation["source_type"]] for ip in sorted(set(ips) - before)]
+                if pending and not self._control.get('restart_rebaseline', False):
+                    before = set(observation.get('before_ips', []))
+                epoch = (self._control['addition_epoch'] if not pending or observation.get('target_complete', False)
+                         else row['addition_epoch'] if row else '')
+                if pending and not observation.get('target_complete', False) and epoch == self._control['addition_epoch']:
+                    epoch = 'pending'
+                fresh = set(observation.get('fresh_positive_ips', ips)) & set(ips)
+                cursor_ips = ips
+                if pending and not observation.get('target_complete', False) and target_evidence:
+                    durable = set(json.loads(row['ips'])) if row and row['tracked'] else set()
+                    cursor_ips = sorted((durable & set(ips)) | fresh)
+                entries = [[ip, observation["label"], observation["source_type"]] for ip in sorted((set(ips) - before) & fresh)]
                 self._execute("DELETE FROM recent WHERE expires<=?", (observation["observed_at"],))
                 eligible = []
+                selection = {}
                 for entry in entries:
-                    key = encode([observation["target"], observation["projection_signature"], entry[0], "Added"])
-                    if self._one("SELECT 1 FROM recent WHERE key=?", (key,)) or self._one(
-                            "SELECT 1 FROM grace WHERE ip=?", (entry[0],)) or self._one(
-                            "SELECT 1 FROM reappearance WHERE target=? AND signature=? AND ip=? AND expires>?",
-                            (observation["target"], observation["projection_signature"], entry[0], observation["observed_at"])):
-                        continue
-                    eligible.append(entry)
+                    selected = self._addition_destinations(observation, entry[0], bindings)
+                    if selected:
+                        eligible.append(entry)
+                        selection[entry[0]] = selected
+                # Plan against the original authority before a tracking overflow
+                # prunes it. Its exact selected destinations still count as loss.
+                fits = self._put_cursor(observation["target"], cursor_ips, observation["projection_signature"],
+                                        observation["source_operation_id"], addition_epoch=epoch)
+                if (row and not row["tracked"] or not row and self._control.get("untracked_targets")) and fits:
+                    before = set(ips)  # recovery enrolls current data, never a backlog
+                    entries, eligible, selection = [], [], {}
+                # Any actual return consumes the opportunity, including loss or
+                # suppression by an independent gate. Unchanged positives do not.
+                for ip in ({entry[0] for entry in entries} | (fresh if pending else set())):
+                    self._execute("DELETE FROM failed_addition WHERE target=? AND signature=? AND ip=?",
+                                  (observation['target'], observation['projection_signature'], ip))
                 # Consume holds only after testing additions; a later disappearance
                 # starts its own window rather than extending this one forever.
-                for ip in ips:
+                for ip in fresh:
+                    if target_evidence:
+                        self._execute("DELETE FROM grace WHERE ip=?", (ip,))
                     self._execute("DELETE FROM reappearance WHERE target=? AND signature=? AND ip=?",
                                   (observation["target"], observation["projection_signature"], ip))
                 self._remember_disappearance(observation, before - set(ips))
                 recent_n, recent_bytes = self._one("SELECT COUNT(*),COALESCE(SUM(bytes),0) FROM recent")
                 needed_bytes = sum(size([observation["target"], observation["projection_signature"], e[0], "Added"]) for e in eligible)
                 recent_full = recent_n + len(eligible) > self.limits["recent_items"] or recent_bytes + needed_bytes > self.limits["recent_bytes"]
-                if self._rebaseline or not fits:
-                    missed = len(eligible) * sum(b["enabled"] for b in bindings)
-                    self._record_loss("recovery_gap" if self._rebaseline else "tracking_overflow",
-                        {c: len(eligible) * sum(b["enabled"] and b["channel"] == c for b in bindings) for c in CHANNELS})
+                if pending or not fits:
+                    counts = {c: sum(b['channel'] == c for selected in selection.values() for b in selected)
+                              for c in CHANNELS}
+                    missed = sum(counts.values())
+                    self._record_loss("recovery_gap" if pending else "tracking_overflow", counts)
                     admitted = 0
                 else:
+                    incarnation = self._one("SELECT incarnation FROM cursor WHERE target=?", (observation['target'],))[0]
                     admitted, missed = self._admit(eligible, bindings, observation["source_operation_id"],
-                        "Added", observation["observed_at"], recent_full, observation["cycle_id"])
+                        "Added", observation["observed_at"], recent_full, observation["cycle_id"], selection=selection,
+                        source=(observation['target'], incarnation, observation['projection_signature']))
                 # Suppression consumes known lost transitions too, but does not ACK.
                 for entry in eligible:
                     key = encode([observation["target"], observation["projection_signature"], entry[0], "Added"])
@@ -735,15 +946,23 @@ class DeliveryStore:
                         self._execute("INSERT OR REPLACE INTO recent VALUES(?,?,?)",
                                       (key, observation["observed_at"] + 60, len(key.encode())))
                 return admitted, missed
-            ok, result, uncertain = self._transaction(observation["source_operation_id"], apply)
+            ok, result, uncertain = self._transaction(observation["source_operation_id"], apply,
+                                                     cancelled=cancelled, kind='source')
             if not ok:
+                if result == 'cancelled' and not uncertain:
+                    return self._result("stale")
                 if uncertain and self._unresolved is not None:
                     self._unresolved["losses"] = losses
-                self.enter_gap("delivery_storage", {} if uncertain else losses)
+                self.enter_gap("delivery_storage", {} if uncertain else losses,
+                               invalidate_additions=not pending_source)
                 return self._result("gap")
             if result == "stale":
                 return self._result("stale")
             admitted, missed = result
+            if target_evidence and self._gap:
+                self._gap = False
+                self._rebaseline = self._control['absence_pending']
+                self._safe_refresh()
             if admitted:
                 # Optional chunk sealing is a separate transaction: a renderer
                 # fault cannot roll back previously admitted observations.
@@ -751,18 +970,26 @@ class DeliveryStore:
             return self._result("missed" if missed else ("admitted" if admitted else "consumed"),
                                 admitted, missed, True)
 
-    def _seal(self, cycle, *, partial=True):
+    def _seal(self, cycle, *, partial=True, created_before=None, max_batches=None):
         count = 0
-        while True:
-            first = self._one("SELECT * FROM receipt WHERE state='unsealed' AND (? IS NULL OR cycle=?) ORDER BY id LIMIT 1", (cycle, cycle))
-            if first is None:
+        inspected = 0
+        while max_batches is None or inspected < max_batches:
+            eligible = self._one("SELECT * FROM receipt WHERE state='unsealed' AND (? IS NULL OR cycle=?) "
+                                 "AND (? IS NULL OR created<=?) ORDER BY id LIMIT 1",
+                                 (cycle, cycle, created_before, created_before))
+            if eligible is None:
                 return count
+            inspected += 1  # Failed oversized singletons also consume the work budget.
             cur = self._db.execute("SELECT * FROM receipt WHERE state='unsealed' AND cycle=? AND action=? AND binding=? "
-                                   "ORDER BY id LIMIT ?", (first["cycle"], first["action"], first["binding"], self.limits["batch_items"]))
+                                   "ORDER BY id LIMIT ?", (eligible["cycle"], eligible["action"], eligible["binding"], self.limits["batch_items"]))
             try:
                 page = cur.fetchmany(self.limits["batch_items"])
             finally:
                 cur.close()
+            # Any due member makes the group eligible, but clock rollback can
+            # put that member behind its FIFO prefix. Render, identify and
+            # terminally reject only the actual first member of that prefix.
+            first = page[0]
             entries, members, body = [], [], None
             for row in page:
                 candidate = entries + json.loads(row["payload"])["entries"]
@@ -789,6 +1016,33 @@ class DeliveryStore:
             for member in members:
                 self._execute("UPDATE receipt SET state='pending',batch_id=? WHERE id=?", (first["id"], member))
             count += 1
+        return count
+
+    def seal_due_batches(self, now):
+        """Bounded partial flush independent of source-cycle completion.
+
+        Age belongs to the oldest durable receipt, not the most recent append.
+        Existing receipts retain their binding, FIFO and exact rendered payload.
+        """
+        with self._lock:
+            if (self._stopping or self._claims_halted or self._closed or not self._ready
+                    or self._unresolved is not None or not math.isfinite(now)):
+                return {"ledger_committed": False, "sealed_batches": 0}
+            cutoff = now - TEAMS_BATCH_MAX_WAIT_SECONDS
+            try:
+                due = self._one("SELECT 1 FROM receipt WHERE state='unsealed' AND created<=? LIMIT 1",
+                                (cutoff,))
+            except sqlite3.Error as error:
+                self._note_storage_error(error, 'batch_due')
+                self._health = {**self._health, "status": "degraded", "last_error": "delivery_storage", "counts_stale": True}
+                return {"ledger_committed": False, "sealed_batches": 0}
+            if due is None:
+                return {"ledger_committed": True, "sealed_batches": 0}
+            ok, count, _ = self._transaction(uuid.uuid4().hex,
+                lambda: self._seal(None, created_before=cutoff, max_batches=TEAMS_BATCH_MAINTENANCE_LIMIT))
+            if not ok:
+                self._health = {**self._health, "status": "degraded", "last_error": "delivery_storage", "counts_stale": True}
+            return {"ledger_committed": ok, "sealed_batches": count if ok else 0}
 
     def seal_cycle(self, cycle_id):
         with self._lock:
@@ -799,31 +1053,67 @@ class DeliveryStore:
                 self._health = {**self._health, "status": "degraded", "last_error": "delivery_storage", "counts_stale": True}
             return {"ledger_committed": ok, "sealed_batches": result if ok else 0}
 
-    def _recover_claims(self):
-        last = 0
-        while True:
-            cur = self._db.execute("SELECT * FROM receipt WHERE state='in_flight' AND id>? "
-                                   "AND (batch_id IS NULL OR id=batch_id) ORDER BY id LIMIT 256", (last,))
-            try:
-                page = cur.fetchmany(256)
-            finally:
-                cur.close()
-            if not page:
-                break
-            last = page[-1]["id"]
-            for row in page:
-                if row["attempt"] >= 8:
-                    self._terminal(row, "failed", "attempts_exhausted", self._clock())
-                else:
-                    # The reserved mutation may already have reached MISP.
-                    # Recover by authoritative read, atomically with the retry
-                    # state/token fence; attempts and call reservations survive.
-                    self._execute("UPDATE receipt SET state='retry_wait',token=NULL,resume=0,"
-                                  "progress=CASE WHEN channel='misp' THEN '{}' ELSE progress END,"
-                                  "due=? WHERE id=? OR batch_id=?",
-                                  (self._clock() + 30 * 2 ** max(0, row["attempt"] - 1), row["id"], row["id"]))
+    def _recover_claims(self, now=None, max_claims=8):
+        if self._one("SELECT 1 FROM receipt WHERE state='in_flight' LIMIT 1") is None:
+            return 0, False
+        # Lazy schema-1 maintenance index: enroll only when abandoned work
+        # exists, inside the resolved recovery/bootstrap transaction. Keep the
+        # ordinary channel/binding FIFO claim plan unchanged.
+        self._execute("CREATE INDEX IF NOT EXISTS receipt_abandoned ON receipt(id) "
+                      "WHERE state='in_flight' AND (batch_id IS NULL OR id=batch_id)")
+        now = self._clock() if now is None else now
+        limit = min(8, max(1, int(max_claims)))
+        cur = self._db.execute("SELECT * FROM receipt WHERE state='in_flight' "
+                               "AND (batch_id IS NULL OR id=batch_id) ORDER BY id LIMIT ?", (limit,))
+        try:
+            page = cur.fetchmany(limit)
+        finally:
+            cur.close()
+        for row in page:
+            if row["attempt"] >= 8:
+                self._terminal(row, "failed", "attempts_exhausted", now)
+            else:
+                # A reserved mutation may already have reached MISP. Preserve
+                # reservations/budgets and retry from an authoritative read.
+                self._execute("UPDATE receipt SET state='retry_wait',token=NULL,resume=0,"
+                              "progress=CASE WHEN channel='misp' THEN '{}' ELSE progress END,"
+                              "due=MAX(due,?) WHERE id=? OR batch_id=?",
+                              (now + 30 * 2 ** max(0, row["attempt"] - 1), row["id"], row["id"]))
+        more = self._one("SELECT 1 FROM receipt WHERE state='in_flight' "
+                         "AND (batch_id IS NULL OR id=batch_id) LIMIT 1") is not None
+        return len(page), more
+
+    def _addition_outcome(self, row, state):
+        context = (row['source_target'], row['source_incarnation'], row['source_signature'])
+        if row['action'] != 'Added' or any(value is None for value in context):
+            return
+        if not self._one("SELECT 1 FROM cursor WHERE target=? AND incarnation=? AND signature=? AND tracked=1", context):
+            return
+        identity = (*context, row['ip'], row['channel'], row['binding'])
+        old = self._one("SELECT receipt_id,bytes FROM failed_addition WHERE target=? AND incarnation=? "
+                        "AND signature=? AND ip=? AND channel=? AND binding=?", identity)
+        if old and old['receipt_id'] > row['id']:
+            return
+        if state == 'acked':
+            self._execute("DELETE FROM failed_addition WHERE target=? AND incarnation=? AND signature=? "
+                          "AND ip=? AND channel=? AND binding=?", identity)
+            return
+        needed = size([*identity, row['id']])
+        count, used = self._one("SELECT COUNT(*),COALESCE(SUM(bytes),0) FROM failed_addition")
+        if (count + (old is None) > self.limits['failed_addition_items'] or
+                used - (old['bytes'] if old else 0) + needed > self.limits['failed_addition_bytes']):
+            self._tracking_loss()
+            return
+        self._execute("INSERT OR REPLACE INTO failed_addition VALUES(?,?,?,?,?,?,?,?)", (*identity, row['id'], needed))
 
     def _terminal(self, row, state, reason, now, diagnostic=None):
+        members = self._db.execute("SELECT * FROM receipt WHERE id=? OR batch_id=?",
+                                   (row['id'], row['id']))
+        try:
+            for member in members:
+                self._addition_outcome(member, state)
+        finally:
+            members.close()
         count = self._one("SELECT COUNT(*) FROM receipt WHERE id=? OR batch_id=?", (row["id"], row["id"]))[0]
         self._increment("acked_total" if state == "acked" else "failed_total", count)
         self._record_diagnostic(row, state, reason, now, diagnostic, count)
@@ -900,10 +1190,9 @@ class DeliveryStore:
                                 self._one("SELECT payload FROM batch WHERE id=?", (row["id"],))[0]
                                 if row["batch_id"] else row["payload"]),
                             "observation_hook_consumed": bool(row["hook"])}
-            ok, result, _ = self._transaction(uuid.uuid4().hex, apply)
+            ok, result, _ = self._transaction(uuid.uuid4().hex, apply, kind='claim')
             if not ok:
-                self._claims_halted = True
-                self.enter_gap("delivery_storage", {})
+                self._halt_delivery()
             return result if ok else None
 
     def finish_step(self, claim, provider_result, now):
@@ -952,10 +1241,9 @@ class DeliveryStore:
                                    reason, int(provider_result["provider_calls"] == 0), row["claim_revision"],
                                    row["id"], row["id"], claim["attempt_token"]))
                 return {"applied": True, "observation_hook": hook}
-            ok, result, _ = self._transaction(uuid.uuid4().hex, apply)
+            ok, result, _ = self._transaction(uuid.uuid4().hex, apply, kind='ack')
             if not ok:
-                self._claims_halted = True
-                self.enter_gap("delivery_storage", {})
+                self._halt_delivery()
             return result if ok else {"applied": False, "storage_error": True}
 
     def _pages(self, table):
@@ -1059,11 +1347,47 @@ class DeliveryStore:
                 self.enter_gap("delivery_storage", {})
             return {**self._result("consumed" if ok else "gap", committed=ok), "source_valid": True}
 
-    def _put_cursor(self, target, ips, signature, operation):
+    def rebaseline_absence(self, authority, active_map, completed_at, bindings):
+        """Only the generation-validated complete producer may certify absence.
+
+        Target operations remain intact. An accepted history publication during
+        failed ledger admission cannot satisfy the durable target-ready gate.
+        """
+        with self._lock:
+            if not authority.get('valid') or self._stopping or self._closed:
+                return {**self._result('stale'), 'source_valid': False}
+            if self._pending_addition_epoch is not None or not self._ready or self._unresolved:
+                return {**self._result('gap'), 'source_valid': True}
+            def apply():
+                if self._one('SELECT 1 FROM cursor WHERE addition_epoch<>? OR tracked=0 LIMIT 1',
+                             (self._control['addition_epoch'],)) or self._control.get('untracked_targets'):
+                    return None
+                result = self._reconcile(active_map, completed_at, bindings,
+                    recovering=self._control['absence_pending'], retain_baseline=self._control.get('restart_rebaseline', False))
+                self._control['absence_pending'] = False
+                self._control['restart_rebaseline'] = False
+                self._control['revision'] = authority['revision']
+                self._control['signature'] = authority['signature']
+                return result
+            ok, result, _ = self._transaction(uuid.uuid4().hex, apply, kind='absence',
+                                             cancelled=lambda: self._stopping)
+            if not ok:
+                self._halt_delivery()
+                return {**self._result('gap'), 'source_valid': True}
+            self._rebaseline = self._control['absence_pending']
+            if not self._rebaseline:
+                self._gap = False
+            self._safe_refresh()
+            admitted, missed = result or (0, 0)
+            return {**self._result('consumed' if result is not None else 'gap', admitted, missed, True),
+                    'source_valid': True}
+
+    def _put_cursor(self, target, ips, signature, operation, *, addition_epoch=None):
+        epoch = self._control['addition_epoch'] if addition_epoch is None else addition_epoch
         row = self._one("SELECT * FROM cursor WHERE target=?", (target,))
         n, members, used = self._one("SELECT COUNT(*),COALESCE(SUM(members),0),COALESCE(SUM(bytes),0) FROM cursor")
         data = encode(ips)
-        byte_count = len(data.encode()) + len(target.encode()) + len(signature.encode())
+        byte_count = len(data.encode()) + len(target.encode()) + len(signature.encode()) + len(epoch.encode())
         fits = (len(ips) <= self.limits["target_ips"] and
                 members - (row["members"] if row else 0) + len(ips) <= self.limits["cursor_members"] and
                 used - (row["bytes"] if row else 0) + byte_count <= self.limits["cursor_bytes"] and
@@ -1072,15 +1396,19 @@ class DeliveryStore:
             self._control["tracking_complete"] = False
             self._control["accounting_complete"] = False
             self._increment("tracking_overflow", 1)
-            data, byte_count = "[]", len(target.encode()) + len(signature.encode()) + 2
+            data, byte_count = "[]", len(target.encode()) + len(signature.encode()) + len(epoch.encode()) + 2
         if (row or n < self.limits["cursor_targets"]) and used - (row["bytes"] if row else 0) + byte_count <= self.limits["cursor_bytes"]:
-            self._execute("INSERT OR REPLACE INTO cursor VALUES(?,?,?,?,?,?,?,?)", (
+            self._execute("INSERT OR REPLACE INTO cursor "
+                          "(target,incarnation,signature,ips,operation,tracked,members,bytes,addition_epoch) "
+                          "VALUES(?,?,?,?,?,?,?,?,?)", (
                 target, row["incarnation"] if row else uuid.uuid4().hex, signature,
                 data, operation, int(fits), len(ips) if fits else 0, byte_count,
+                epoch,
             ))
         else:
             # No unbounded side map for targets that cannot be represented.
             self._control["untracked_targets"] = True
+        self._prune_failed_additions(target)
         return fits
 
     def _rebase(self, projection):
@@ -1094,9 +1422,86 @@ class DeliveryStore:
                               (target, value["signature"], ip))
         self._prune_reappearance()
 
+    def recover_delivery(self, now, max_claims=8):
+        """Recover durable delivery ownership, never detector evidence."""
+        result = {"state": "recovering", "ledger_committed": False,
+                  "recovered_claims": 0, "has_more": False}
+        if not self._lock.acquire(blocking=False):
+            return result
+        try:
+            if self._closed or self._stopping or self._worker_active:
+                return {**result, "state": "stopped"}
+            if self._monotonic() < self._recovery_next:
+                return {**result, "state": "backoff"}
+            try:
+                self._resolve_unresolved()
+            except (sqlite3.Error, OSError, ValueError, TypeError):
+                self._recovery_failed()
+                return {**result, "state": "uncertain"}
+            if not self._ready:
+                if self._db is None:
+                    try:
+                        self._open()
+                    except (OSError, sqlite3.Error, ValueError, KeyError, TypeError, ImportError) as error:
+                        self._note_storage_error(error, self._storage_stage)
+                        self._release()
+                        self._recovery_failed()
+                        return {**result, "state": "failed"}
+                return result  # runtime supplies current authority for bootstrap
+            if (not self._claims_halted and self._pending_addition_epoch is None and self._health['storage_ok']
+                    and not any(self._volatile.values())):
+                return {**result, "state": "ready"}
+            captured = dict(self._volatile)
+            totals = {c: min(MAX_COUNTER, self._checkpoint[c] + captured[c]) for c in CHANNELS}
+            def apply():
+                old = self._control.get('loss_checkpoint', {})
+                if self._pending_addition_epoch is not None:
+                    self._control['addition_epoch'] = self._pending_addition_epoch
+                    self._control['absence_pending'] = True
+                    self._control['restart_rebaseline'] = False
+                for c in CHANNELS:
+                    prior = old.get(c, 0) if old.get('process') == self._process_id else 0
+                    self._record_loss('delivery_storage', {c: max(0, totals[c] - prior)})
+                self._control['loss_checkpoint'] = {'process': self._process_id, **totals}
+                return self._recover_claims(now, max_claims)
+            ok, page, _ = self._transaction(uuid.uuid4().hex, apply,
+                                          cancelled=lambda: self._stopping, kind='recovery', checkpoint=totals, captured=captured)
+            if ok:
+                self._adopt_checkpoint(totals, captured)
+                self._recovery_failures = 0
+                self._recovery_next = 0.0
+            elif not self._stopping:
+                self._halt_delivery()
+                self._recovery_failed()
+            if ok and not self._stopping:
+                self._claims_halted = page[1]
+                self._pending_addition_epoch = None
+                if not self._gap:
+                    self._rebaseline = self._control['absence_pending']
+                self._safe_refresh()
+            return {**result, "state": ('recovering' if page[1] else 'ready')
+                    if ok and not self._stopping else 'failed',
+                    "ledger_committed": ok, "recovered_claims": page[0] if ok else 0,
+                    "has_more": page[1] if ok else False}
+        finally:
+            self._lock.release()
+
+    def _recovery_failed(self):
+        self._recovery_next = self._monotonic() + min(30, 2 ** self._recovery_failures)
+        self._recovery_failures = min(5, self._recovery_failures + 1)
+
+    def needs_bootstrap(self):
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            return (self._db is not None and not self._ready and self._unresolved is None
+                    and not self._closed and not self._stopping and not self._worker_active)
+        finally:
+            self._lock.release()
+
     def recover_gap(self, authority, current_projection, full_result, loss_checkpoint=None):
         with self._lock:
-            if not authority.get("valid"):
+            if not authority.get("valid") or self._stopping or self._closed or self._worker_active:
                 return {"ready": False, "source_valid": False}
             if self._db is None and not self._closed:
                 try:
@@ -1105,19 +1510,16 @@ class DeliveryStore:
                     self._release()
                     self.enter_gap("delivery_storage", {})
                     return {"ready": False, "source_valid": True}
-            if self._ready and not self._gap and not self._rebaseline and not self._unresolved and not any(self._volatile.values()):
+            if (self._ready and not self._gap and not self._rebaseline and not self._unresolved
+                    and not self._claims_halted and not any(self._volatile.values())):
                 return {"ready": True, "source_valid": True}
             if self._unresolved is not None:
                 try:
-                    saved = self._read_control()
+                    self._resolve_unresolved()
                 except (sqlite3.Error, OSError, ValueError, TypeError):
                     return {"ready": False, "source_valid": True}
-                if saved.get("last_transaction") != self._unresolved["operation"]:
-                    for c in CHANNELS:
-                        self._volatile[c] = min(MAX_COUNTER, self._volatile[c] + self._unresolved["losses"].get(c, 0))
-                self._control = saved
-                self._unresolved = None
-            totals = {c: self._checkpoint[c] + self._volatile[c] for c in CHANNELS}
+            captured = dict(self._volatile)
+            totals = {c: min(MAX_COUNTER, self._checkpoint[c] + captured[c]) for c in CHANNELS}
             def apply():
                 old = self._control.get("loss_checkpoint", {})
                 for c in CHANNELS:
@@ -1130,21 +1532,23 @@ class DeliveryStore:
                                 full_result.get("bindings", []), recovering=True,
                                 retain_baseline=self._rebaseline)
                 self._rebase(current_projection)
+                self._control['absence_pending'] = False
+                self._control['restart_rebaseline'] = False
                 self._control["accounting_complete"] = False
                 self._control["clean"] = False
                 self._control["enrolled"] = True
                 self._control["revision"] = authority["revision"]
                 self._control["signature"] = authority["signature"]
                 return {"ready": True, "source_valid": True}
-            ok, result, _ = self._transaction(uuid.uuid4().hex, apply)
+            ok, result, _ = self._transaction(uuid.uuid4().hex, apply, kind='recovery', checkpoint=totals, captured=captured)
             if not ok:
                 self.enter_gap("delivery_storage", {})
                 return {"ready": False, "source_valid": True}
-            self._checkpoint = totals
-            self._volatile = {c: 0 for c in CHANNELS}
+            self._adopt_checkpoint(totals, captured)
             self._gap = False
             self._rebaseline = False
-            self._claims_halted = False
+            self._pending_addition_epoch = None
+            self._claims_halted = self._one("SELECT 1 FROM receipt WHERE state='in_flight' LIMIT 1") is not None
             self._ready = True
             self._safe_refresh()
             self._health = {**self._health, "missed_unpersisted": 0,
@@ -1152,18 +1556,32 @@ class DeliveryStore:
                                            "history_persistence" if self._history_failed else None)}
             return result
 
-    def enter_gap(self, reason, known_loss_counts):
+    def _halt_delivery(self):
+        # Dispatch failure is not evidence of a lost source observation.
+        self._claims_halted = True
+        self._health = {**self._health, 'storage_ok': False, 'counts_stale': True,
+                        'status': 'degraded', 'last_error': 'delivery_storage'}
+
+    def enter_gap(self, reason, known_loss_counts, *, invalidate_additions=True):
         with self._lock:
+            if self._pending_addition_epoch is None and invalidate_additions:
+                self._pending_addition_epoch = uuid.uuid4().hex
             self._gap = True
             self._control["accounting_complete"] = False
             for channel in CHANNELS:
-                self._volatile[channel] = min(MAX_COUNTER, self._volatile[channel] +
-                                              max(0, int(known_loss_counts.get(channel, 0))))
+                count = max(0, int(known_loss_counts.get(channel, 0)))
+                self._volatile[channel] = min(MAX_COUNTER, self._volatile[channel] + count)
+                if self._unresolved is not None and self._unresolved['checkpoint'] is not None:
+                    newer = self._unresolved['newer_losses']
+                    newer[channel] = min(MAX_COUNTER, newer[channel] + count)
             health = copy.deepcopy(self._health)
             health.update(status="degraded", coverage="gap", storage_ok=False, counts_stale=True,
                           accounting_complete=False, last_error="delivery_storage",
                           missed_unpersisted=min(MAX_COUNTER, sum(self._volatile.values())))
-            self._health = health
+            anchors = self._health_cache[1]
+            if self._pending_addition_epoch is not None:
+                anchors = (*anchors[:5], anchors[7], 'awaiting_full', anchors[7])
+            self._health_cache = (health, anchors)
 
     def dispatch_available(self):
         return bool(self._ready and not self._closed and not self._stopping and not self._claims_halted)
@@ -1191,9 +1609,17 @@ class DeliveryStore:
         # wait for an in-progress fsync just to publish its admission fence.
         self._stopping = True
 
+    def progress_health_snapshot(self):
+        # Capture once: status-only publications cannot split counts and anchors.
+        health, anchors = self._health_cache
+        result = copy.deepcopy(health)
+        _, age, sampled, _, retries, targets, absence, _ = anchors
+        since = elapsed(self._monotonic(), sampled)
+        result['oldest_pending_age_seconds'] = counter(age + (since or 0)) if age is not None else None
+        return result, counter(since), dict(retries), targets, absence
+
     def health_snapshot(self):
-        # Copy-on-publish: no connection or store lock on the HTTP read path.
-        return copy.deepcopy(self._health)
+        return self.progress_health_snapshot()[0]
 
     @staticmethod
     def _diagnostic_record(value):
@@ -1227,7 +1653,7 @@ class DeliveryStore:
             saved.setdefault('latest_failure', {})[row['channel']] = record
             saved['recent_failures'] = [record, *saved.get('recent_failures', [])[:9]]
 
-    def _publish_diagnostics(self):
+    def _publish_diagnostics(self, wall):
         saved = self._control.get('delivery_diagnostics')
         if type(saved) is not dict:
             saved = {}
@@ -1250,13 +1676,18 @@ class DeliveryStore:
         recent = saved.get('recent_failures')
         recent = recent[:10] if type(recent) is list else []
         self._diagnostics = {
-            'version': 1, 'observed_at': max(0, min(MAX_COUNTER, int(self._clock()))),
+            'version': 1, 'observed_at': counter(wall),
             'channels': channels,
             'recent_failures': [r for value in recent if (r := self._diagnostic_record(value)) is not None],
         }
 
     def _note_storage_error(self, error, stage):
         """Fixed classes only: exception text can contain credentials and paths."""
+        at = counter(self._clock())
+        if at is None:
+            # Error reporting must not mask a resolved COMMIT or replace a
+            # historical diagnostic with a fabricated observation timestamp.
+            return
         code = 'unknown'
         if stage == 'worker':
             code = 'worker_exception'
@@ -1288,7 +1719,7 @@ class DeliveryStore:
                 code = 'os_error'
         elif isinstance(error, (ValueError, KeyError, TypeError, ImportError)):
             code = 'invalid_state'
-        self._storage_error = {'at': max(0, min(MAX_COUNTER, int(self._clock()))),
+        self._storage_error = {'at': at,
                                'stage': stage, 'code': code}
 
     def worker_failed(self, error):
@@ -1315,7 +1746,9 @@ class DeliveryStore:
             self._stopping = True
             if self._db is not None:
                 def apply():
-                    self._control["clean"] = bool(clean and not self._gap and not self._rebaseline and not self._one(
+                    self._control['session_closed'] = bool(clean and self._pending_addition_epoch is None)
+                    self._control["clean"] = bool(clean and not self._gap and not self._rebaseline
+                        and not self._control['absence_pending'] and not self._one(
                         "SELECT 1 FROM receipt WHERE state='in_flight' LIMIT 1"))
                 self._transaction(uuid.uuid4().hex, apply)
             self._closed = True

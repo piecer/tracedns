@@ -31,6 +31,9 @@ async function login(page, username = 'admin', password = 'test-admin-password')
   await page.fill('#password', password);
   await page.click('#login-submit');
   await expect(page).not.toHaveURL(/login\.html/);
+  // URL commit can precede the new document's load handlers. Do not click
+  // controls or attach post-login request counters to the departing document.
+  await page.waitForLoadState('load');
 }
 
 for(const scenario of ['backlog', 'acked', 'overflow', 'degraded']) {
@@ -57,7 +60,7 @@ for(const scenario of ['backlog', 'acked', 'overflow', 'degraded']) {
       expect(await panel.locator('*').count()).toBeLessThanOrEqual(24);
       const accessible = await panel.ariaSnapshot();
       expect(accessible).toContain('Notification delivery');
-      expect(accessible).toContain('Observation continues');
+      expect(accessible).toContain('Observation policy: continue');
       await testInfo.attach('delivery-accessibility', {body:accessible, contentType:'text/plain'});
       await panel.screenshot({path:testInfo.outputPath(`delivery-${scenario}-1280.png`)});
       await page.setViewportSize({width:390,height:900});
@@ -73,7 +76,7 @@ test('polling recovers from HTTP and malformed failures while keeping last good 
     await page.clock.install();
     let mode = 'http';
     let calls = 0;
-    await page.route('**/delivery-health', async route => {
+    await page.route('**/delivery-health*', async route => {
       calls++;
       if(mode === 'http') return route.fulfill({status:503, body:'<img src=x onerror=alert(1)>PRIVATE-ERROR'});
       if(mode === 'invalid') return route.fulfill({body:'not json PRIVATE-ERROR'});
@@ -95,7 +98,8 @@ test('polling recovers from HTTP and malformed failures while keeping last good 
     await expect(page.locator('#deliveryHealth')).not.toContainText('PRIVATE-ERROR');
     mode = 'good';
     await page.clock.runFor(15001);
-    await expect(page.locator('#deliveryStatus')).not.toContainText('unavailable');
+    await expect(page.locator('#deliveryStatus')).not.toContainText('Delivery health unavailable');
+    await expect(page.locator('#deliveryStatus')).toContainText('progress unavailable on this server');
     expect(calls).toBe(4);
   });
 });
@@ -103,7 +107,7 @@ test('polling recovers from HTTP and malformed failures while keeping last good 
 test('oversized bodies and out-of-range integer tokens fail closed', async ({page}) => {
   await owner('backlog', async url => {
     let mutation = 'oversized';
-    await page.route('**/delivery-health', async route => {
+    await page.route('**/delivery-health*', async route => {
       const response = await route.fetch();
       const data = await response.json();
       let body = JSON.stringify(data);
@@ -126,6 +130,7 @@ test('delayed auth cannot compress the interval between actual health requests',
   await owner('backlog', async url => {
     await page.goto(url + '/login.html');
     await login(page);
+    await expect(page.locator('#deliveryDetails')).toContainText('Pending: 2');
     await page.clock.install();
     await page.addInitScript(() => {
       const original = window.fetch;
@@ -139,7 +144,7 @@ test('delayed auth cannot compress the interval between actual health requests',
     const blocked = new Promise(resolve => { release = resolve; });
     await page.route('**/auth/me', async route => { await blocked; await route.continue(); });
     let calls = 0;
-    await page.route('**/delivery-health', route => { calls++; return route.continue(); });
+    await page.route('**/delivery-health*', route => { calls++; return route.continue(); });
     await page.reload();
     await page.clock.runFor(8000);
     release();
@@ -358,7 +363,7 @@ test('real viewer makes no health requests; operator may read but not edit alert
         await expect(client).toHaveURL(/login\.html/);
         await client.clock.install();
         let calls = 0;
-        client.on('request', r => { if(r.url().endsWith('/delivery-health')) calls++; });
+        client.on('request', r => { if(r.url().includes('/delivery-health')) calls++; });
         await login(client, 'delivery-' + role, 'changed-password');
         await expect(client.locator('#current-user')).toContainText('delivery-' + role);
         if(role === 'viewer') {
@@ -379,7 +384,7 @@ test('real viewer makes no health requests; operator may read but not edit alert
 test('strict malformed fields, unsafe counts and unknown loss do not become zero or HTML', async ({page}) => {
   await owner('backlog', async url => {
     let mode = 'missing';
-    await page.route('**/delivery-health', async route => {
+    await page.route('**/delivery-health*', async route => {
       const response = await route.fetch();
       const h = await response.json();
       if(mode === 'missing') delete h.pending;
@@ -428,7 +433,7 @@ test('permission revocation stops polling rather than repeatedly emitting 403', 
     await login(page);
     await expect(page.locator('#deliveryDetails')).toContainText('Pending: 2');
     let denied = 0;
-    await page.route('**/delivery-health', route => { denied++; return route.fulfill({status:403, body:'PRIVATE-DENIAL'}); });
+    await page.route('**/delivery-health*', route => { denied++; return route.fulfill({status:403, body:'PRIVATE-DENIAL'}); });
     await page.clock.runFor(15001);
     await expect(page.locator('#deliveryHealth')).toBeHidden();
     await page.clock.runFor(61000);
@@ -443,7 +448,7 @@ test('delivery starts unknown and absent owner is never healthy or zero', async 
     await expect(page.locator('#deliveryHealth')).toBeVisible();
     await expect(page.locator('#deliveryStatus')).toContainText('unavailable');
     await expect(page.locator('#deliveryDetails')).toContainText('Unknown');
-    await expect(page.locator('#deliveryHealth')).toContainText('Observation continues');
+    await expect(page.locator('#deliveryHealth')).toContainText('Observation policy: continue');
     await expect(page.locator('#deliveryHealth')).not.toContainText('0');
     await expect(page.locator('#deliveryHealth button')).toHaveCount(0);
   });

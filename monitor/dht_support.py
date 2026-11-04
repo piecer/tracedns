@@ -26,12 +26,20 @@ def checkpoint(history):
             'confirmed_at': history.get('current', {}).get('DHT', {}).get('ts', 0)}
 
 
-def restore_checkpoint(domain, value):
+def restore_checkpoint(domain, value, *, previous=None):
     """Reverify the bounded ledger evidence outside shared locks."""
     from dht_query import reconcile_dht
+    prior = reconcile_dht(previous, {'records': []}, domain.dht_public_key)['state']
     if value['state'] is None:
+        if prior['highest_seq'] is not None:
+            raise ValueError('checkpoint rollback')
         return None, None
     state = reconcile_dht(value['state'], {'records': []}, domain.dht_public_key)['state']
+    high = int(state['highest_seq']) if state['highest_seq'] is not None else -1
+    old_high = int(prior['highest_seq']) if prior['highest_seq'] is not None else -1
+    if high < old_high or (high == old_high and any(
+            variant not in state['variants'] for variant in prior['variants'])):
+        raise ValueError('checkpoint rollback')
     last = state['last_confirmed']
     record = (reconcile_dht(None, {'records': [last]}, domain.dht_public_key)['record']
               if last is not None else None)

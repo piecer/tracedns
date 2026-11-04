@@ -59,7 +59,16 @@ def test_main_owns_delivery_startup_health_and_cleanup(tmp_path, monkeypatch, fa
     assert 'runtime' in captured, 'actual startup must create per-app delivery owner'
     owner = captured['runtime']
     if failure != 'local':
-        assert captured['delivery_health'].__self__ is owner.store
+        assert captured['delivery_health'].__self__ is owner
+        composed = captured['delivery_health'](include_progress=True)
+        worker_progress = owner.worker.progress_snapshot()
+        assert {k: v for k, v in composed['progress'].items() if k != 'channels'} == {
+            k: v for k, v in worker_progress.items() if k != 'channels'}
+        for channel in ('teams', 'misp'):
+            assert composed['progress']['channels'][channel] == {
+                **worker_progress['channels'][channel], 'state': 'disabled'}
+        assert composed['lookup'] == owner._lookup_health
+        assert composed['acked_total'] == owner.store.health_snapshot()['acked_total']
         assert captured['config_service'].delivery_runtime is owner
     assert owner.stopping
     assert owner.store._closed

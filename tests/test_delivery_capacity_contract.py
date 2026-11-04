@@ -35,6 +35,7 @@ EXPECTED_DEFAULTS = {
     'target_ips': 4096, 'baseline_items': 8192, 'baseline_bytes': 2097152,
     'grace_items': 8192, 'grace_bytes': 2097152,
     'reappearance_items': 8192, 'reappearance_bytes': 2097152,
+    'failed_addition_items': 4096, 'failed_addition_bytes': 2097152,
     'recent_items': 4096, 'recent_bytes': 1048576,
     'terminal_items': 256, 'terminal_bytes': 131072,
     'batch_items': 60, 'batch_bytes': 24576, 'pages': 16384,
@@ -143,17 +144,20 @@ def assert_pending(app):
         assert len(encoded(payload['body'])) <= DEFAULT_LIMITS['batch_bytes']
 
 
-def candidate_cost(ip):
+def candidate_cost(ip, source):
     # The reservation rule is intentionally checked against all real admitted rows.
     payload_bytes = len(encoded({'entries': [[ip, DOMAIN, 'A']]}))
-    return {'misp': payload_bytes + 4096,
-            'teams': payload_bytes + 4096 + DEFAULT_LIMITS['batch_bytes']}
+    source_bytes = len(encoded(source))
+    return {'misp': payload_bytes + 4096 + source_bytes,
+            'teams': payload_bytes + 4096 + source_bytes + DEFAULT_LIMITS['batch_bytes']}
 
 
 def check_costs(receipts):
     for row in receipts:
         assert row['payload'].encode() == encoded({'entries': [[row['ip'], DOMAIN, 'A']]})
-        assert row['reserved'] == candidate_cost(row['ip'])[row['channel']]
+        source = (row['source_target'], row['source_incarnation'], row['source_signature'])
+        assert source[0] == DOMAIN and len(source[1]) == 32 and len(source[2]) == 64
+        assert row['reserved'] == candidate_cost(row['ip'], source)[row['channel']]
 
 
 def provider_records(transport):
@@ -300,7 +304,8 @@ def test_C05_exact_defaults_first_binding_capacity(tmp_path, monkeypatch):
             before = snapshot(app, 4096, transport)
             check_costs(before['receipts'])
             new_ip = pool[index]
-            needed = candidate_cost(new_ip)
+            needed = candidate_cost(new_ip, (DOMAIN, before['cursor'][0]['incarnation'],
+                                             before['cursor'][0]['signature']))
             ips = pool[:index + 1]
             assert len(set(ips) - set(json.loads(before['cursor'][0]['ips']))) == 1
             assert len(encoded([[new_ip, DOMAIN, 'A']])) <= DEFAULT_LIMITS['unit_bytes']
@@ -351,7 +356,8 @@ def test_C05_smaller_count_cap_isolates_count_dimension(tmp_path, monkeypatch):
         check_costs(before['receipts'])
         assert before['health']['capacity']['used_receipts'] == 2
         ips.append('198.18.128.2')
-        needed = candidate_cost(ips[-1])
+        needed = candidate_cost(ips[-1], (DOMAIN, before['cursor'][0]['incarnation'],
+                                         before['cursor'][0]['signature']))
         assert before['health']['capacity']['used_payload_bytes'] + sum(needed.values()) <= 8388608
         assert before['health']['capacity']['used_receipts'] + 1 <= 3
         assert before['health']['capacity']['used_receipts'] + 2 > 3

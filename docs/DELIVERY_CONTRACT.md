@@ -14,6 +14,169 @@ There is **no PREPARED state, history commit token, history finalization gate, o
 
 Non-goals: canonical history migration, a broker, multiple delivery workers, multi-host leases, manual replay/rebind/cancel endpoints, exactly-once remote delivery, a new monitoring platform, or the parent's independently owned MISP HTTP/TLS patch.
 
+## 2026 resilience substep 3a — delivery-only recovery
+
+This substep implements **resumption of already-durable delivery**, not completion of
+all Stage-3 detector recovery. It supersedes the full-scan dependency for dispatch
+in the historical recovery description below. Independent acceptance is a separate
+campaign gate; this section describes the candidate behavior, not that verdict.
+
+- The production worker invokes `DeliveryRuntime.maintain_delivery(now)` under its
+  existing pass gate, before `worker_enter` and dispatch. Zero-provider-call passes
+  still perform local maintenance. A busy store yields without waiting through a
+  second runtime/worker lock acquisition. Active callbacks, stopping and closed
+  owners cannot be reclaimed; stop fences before waiting for recovery SQL. Shutdown
+  sealing remains after actual worker and producer quiescence, before clean close.
+- `DeliveryStore.recover_delivery(now, max_claims=8)` resolves the single uncertain
+  transaction through independent read-only epoch/operation proof before any new
+  write. It recovers at most eight abandoned leaders plus their already-bounded
+  members per invocation. Claims remain fenced through all remaining pages. The
+  ordinary FIFO indexes remain unchanged; an abandoned-leader partial index is
+  enrolled lazily inside the first applicable resolved recovery/bootstrap transaction.
+- Recovery preserves attempts, durable provider-call reservations, frozen Teams
+  bytes, binding/FIFO, provider-auth blocks and retry deadlines. Interrupted MISP
+  mutations restart with an authoritative read. Healthy idle recovery performs no
+  SQL; failed storage maintenance uses monotonic 1/2/4/8/16/30-second capped backoff, while
+  healthy remaining pages may advance on the next pass. SQLite busy timeout is
+  bounded; kernel I/O/fsync is not claimed to have a hard deadline.
+- A committed-but-unreturned ACK is not resent; a rolled-back ACK remains eligible
+  for conservative retry. Remote acceptance followed by failed ACK can still cause
+  at-least-once Teams duplicates. Unknown recovery commits adopt only their captured
+  process loss checkpoint, including at counter saturation, without erasing losses
+  accumulated afterward. Repeated unresolved source identity does not count twice.
+- Claim/ACK faults fence dispatch without invalidating intact detector cursors.
+  An observation arriving before safe recovery can still create an actual source
+  GAP. Delivery maintenance never rebases cursors,
+  changes full baseline/grace, or edits DHT pending/checkpoint evidence. Dispatch
+  can therefore progress while legacy coverage stays conservative. Substep 3b
+  also adopts an exactly proved absence COMMIT's durable readiness on readback.
+- Transient startup open failure retries the same ledger and ownership/sentinel
+  checks, then uses authority-validated bootstrap and attaches the actual registry
+  without a completed scan. An empty file created by this very store before a
+  failed first connect can finish initialization; missing established, replaced,
+  or invalid ledgers are not deleted/recreated. Healthy passes do not rehydrate
+  target projections. Pending per-channel apply notifications retain their exact
+  originating revision; stale local adapter validation cannot overwrite a newer
+  published registry or repair epoch. Adapter validation remains outside config,
+  repository and SQL locks, with a detached registry during application.
+
+## 2026 resilience substep 3b — independent target addition recovery
+
+This candidate supersedes the historical all-cursor/full-scan recovery description
+below for the **owned production lookup path**. Independent review and integration
+remain separate gates. The no-owner helpers retain `recover_gap` compatibility;
+their arbitrary full-map argument is not production source authority.
+
+- Schema 1 gains an additive cursor `addition_epoch` column (legacy default empty)
+  and one global control epoch. Cursor INSERTs name every column. Epoch bytes count
+  against cursor storage limits; no second target map or unbounded pending journal
+  is allocated. A gap allocates one pending token, persisted by safe maintenance;
+  repeated failed recovery does not rotate it. A failure on an already-pending
+  target alone does not invalidate ready peers.
+- The engine emits fresh provider positives incrementally and a separate complete
+  target boundary when all **configured required providers** have accepted eligible
+  outcomes. Successful empty is a boundary; cached union, errors, timeouts and
+  forced provider subsets are not. This happens at individual target finish, not
+  the full-scan barrier, retaining original lease/version/decoder authority.
+- A pending cursor consumes its first fresh complete projection and operation
+  silently, including known eligible loss accounting and returned suppression
+  holds. No outage backlog is admitted. Later fresh additions from ready A proceed
+  even if B fails forever. Partial evidence cannot complete pending A, but ready
+  A retains incremental positives from its healthy providers. Retained old values
+  do not count as fresh losses or cancel grace. Live-gap accounting uses genuine
+  before evidence; unclean restart compares durable consumed evidence.
+- `rebaseline_absence` is reached only through generation-valid complete-full
+  runtime admission and requires durable target readiness. It preserves cursor
+  operations/epochs, retains baseline/grace recovery distinctions, consumes known
+  overdue losses without replay and preserves non-sliding reappearance holds.
+  Empty configured generations still require a real completed scan. Readback of
+  an unknown absence COMMIT adopts its result, not its transaction body.
+- Clean close cannot mark detector coverage clean while absence is outstanding.
+  A separate session-closed bit preserves ready target epochs across intentional
+  close/reopen without discharging pending absence. Unclean or mismatched-authority
+  startup establishes a new recovery epoch; accounting incompleteness stays sticky.
+  Unrelated config saves preserve ready cursors. Failed configuration retirement is
+  retried against current committed authority by production maintenance, once needed,
+  independently of source completion; healthy idle never rehydrates projections.
+- Before a new DHT lookup, the same-target owner may restore an exactly re-read,
+  finalized durable checkpoint through the real signature decoder. It revalidates
+  original lease/version and pending state after decoding and never lowers known
+  highwater. Restoration is not a fresh observation and sends no alerts. Unknown
+  or unacknowledged pending tickets remain fenced; safe exact-ticket cancellation
+  and explicit retirement remain the only discard authorities. Collector quiescence,
+  same-target serialization and stop-before-ledger-close rules are unchanged.
+
+Delivery's eight-leader recovery page, four lookup controllers plus bounded provider
+population, queues, attempt/backoff limits and three-second stop allowance are
+unchanged. No stage-4 HTTP/UI changes are included. All-provider failure for one
+target can indefinitely delay that target's rebase; it cannot freeze ready peers.
+Kernel I/O is not forcibly interrupted, unknown lost observations cannot be counted
+exactly, and remote acceptance/ACK ambiguity remains at-least-once.
+
+## Bounded terminal-failure reappearance exception
+
+Observation-based reappearance suppression remains the default. A fresh actual
+return, `(managed_ips - before_ips) & fresh_positive_ips`, may bypass **only** the
+unexpired target/projection `reappearance` hold for a destination whose earlier
+Added receipt has an explicit durable terminal-failure marker. The marker must
+match target, current tracked cursor incarnation, projection signature, IP,
+channel and exact destination binding. Missing or unknown proof grants nothing.
+The independent **60-second recent gate and global removal grace still apply**.
+Failure or credential repair while continuously present never creates new work.
+
+- New domain Added receipts carry immutable `source_target`,
+  `source_incarnation`, and `source_signature`; their compact UTF-8 encoded tuple
+  is included in each receipt's reserved bytes. Removed/legacy receipts have
+  NULL source context. Source identity is never derived from labels or an IP.
+- `failed_addition` stores only the six-field identity, producing receipt ID and
+  deterministic encoded byte count. It holds no payload, credential, URL, raw
+  error or ACK history. Each actual Teams member retains its own identity, even
+  in a multi-target batch. Terminal publication and receipt deletion share the
+  existing transaction. Payload rejection, finite-attempt exhaustion and
+  provider-work exhaustion use the same terminal path. ACK clears an older/equal
+  exact marker; an older producing receipt cannot replace/clear a newer marker.
+- Existing unsealed, pending, retry-wait, in-flight and configuration-blocked
+  Added obligations for the exact identity fence this exception. No retry due
+  time, attempt, provider-call reservation, FIFO order or auth-repair fence is
+  reset. A completion after a suppressed pending return can establish failure
+  proof, but only a later genuine disappearance/return can use it.
+- Compute one destination-selective plan for the whole source unit, including
+  ordinary new IPs and exceptional returns. Count unique eligible entries for
+  unit limits and all selected receipts/bytes for queue limits. Admit all or
+  consume all as exact per-channel loss; never admit one channel's prefix.
+  GAP lower bounds use the same destination predicate, not IP count multiplied
+  by enabled channels. Unreadable proof remains unknown/incomplete.
+- A fresh return consumes its old marker even when an independent gate,
+  disabled binding or capacity loss prevents delivery. Unchanged positives keep
+  proof. Rebaseline consumes fresh positive opportunities without replay;
+  still-absent proof survives only while its original tracked authority survives.
+  Target retirement, changed projection, regenerated incarnation and untracked
+  cursors prune proof without deleting admitted work. Expired holds are removed
+  on ordinary observation maintenance; their proof is conservatively retained
+  within the finite metadata cap until a consumed transition/authority change.
+  Expiry alone never enqueues work; repeated absence never slides the deadline.
+- The separate caps are **4,096 markers / 2 MiB encoded metadata**. Preserve
+  existing evidence on overflow, omit the new marker, mark tracking/accounting
+  incomplete and finish the terminal outcome normally. Lost optional evidence
+  is not permission to resend. Actual SQL/page/I/O failures still roll back the
+  transaction and use existing storage/GAP/unknown-COMMIT fencing. Independent
+  exact transaction readback covers marker, cursor, receipt and counter effects
+  together. These logical limits do not guarantee physical SQLite page fit.
+- Schema-1 migration adds the table and nullable columns idempotently without
+  changing epoch/sentinel. No legacy receipt source backfill or inferred failure
+  from terminal summaries, recent keys or raw history is performed. Already
+  discarded pre-upgrade failures **cannot be recovered by this exception**.
+  Clean restart preserves represented proof; unclean restart rebaselines
+  additions and does not replay past positives. Full rebase with regenerated
+  incarnations discards old proof rather than transferring authority.
+
+This is a local **terminal outcome**, not proof that a remote side effect never
+happened. At-least-once remote delivery/ACK ambiguity remains. There is no new
+replay endpoint, background metadata worker, ACK ledger or public health field;
+the existing closed 4-KiB health projection and 4,096 outstanding-receipt cap are
+unchanged. Candidate implementation and independent integration acceptance remain
+separate gates.
+
 ## 2. What the accepted application actually does
 
 All locations below are in the accepted snapshot, not the concurrently changing root checkout.
@@ -56,6 +219,7 @@ Create a constant-size owner-only `delivery.initialized` sentinel containing sch
 | Last completed full baseline | **8,192 distinct IPs**, **2 MiB**, including labels. Stored independently of domain cursor movement. |
 | Pending removal grace | **8,192 IPs**, **2 MiB**, including original `missing_since`, labels and optional conservative recovery hold. |
 | Independent reappearance suppression | **8,192 target/configuration/IP entries**, **2 MiB** encoded metadata. Deadline is first disappearance + **86,400 seconds**; repeated absence does not refresh it. Expire and consume returned entries before capacity admission; overflow preserves existing holds and marks tracking/accounting incomplete. |
+| Explicit failed-Added proof | **4,096 exact target/incarnation/projection/IP/channel/binding markers**, **2 MiB** encoded metadata including producing receipt ID. Optional evidence; overflow is visible incompleteness, never permission or a blocked terminal outcome. No independent TTL or ACK history. |
 | Recent 60-second duplicate suppression | **4,096 keys**, **1 MiB**. Expire before evaluating capacity. Suppression is not an ACK and never extends a retry's life. |
 | Terminal diagnostics | At most **256** sanitized summaries, at most **7 days**, at most **128 KiB**; discard payloads only after receipts terminal. Fixed cumulative counters survive summary pruning. |
 | Control / counters | **64 KiB** logical reserve, constant number of rows and closed reason/channel enums. Queue fullness cannot consume this reserve. This is NOT a guarantee of disk space for a later filesystem write. |
@@ -76,7 +240,8 @@ The spool allowance is a deployment resource budget, not protection against file
 - `baseline`: the last valid completed-full active IP/label map. Do not derive it from `cursor`, which may be ahead because a full cycle crashed halfway.
 - `grace`: IP, labels, `missing_since`, optional `not_before`, per-expiry identity.
 - `reappearance`: target, projection signature, IP, expiry and encoded byte count. Durable addition suppression only, never global removal evidence. Added idempotently to schema-1 ledgers without changing the epoch or existing rows.
-- `receipt`: immutable source-operation UUID/item/action/channel/binding, compact payload, creation sequence, state, attempt count, due time, current attempt token, bounded MISP phase/progress, operation count. **No cascading foreign key to cursor/target.**
+- `receipt`: immutable source-operation UUID/item/action/channel/binding, nullable source target/incarnation/projection for new domain Added receipts, compact payload, creation sequence, state, attempt count, due time, current attempt token, bounded MISP phase/progress, operation count. Source-context bytes are reserved. **No cascading foreign key to cursor/target.**
+- `failed_addition`: bounded exact failed-Added identities and producing receipt IDs; independent of terminal diagnostic retention. No inferred legacy rows.
 - `batch`: Teams immutable membership/body and claim state; at most one open partial builder for the current cycle/binding/action. Member receipts remain the capacity unit.
 - `recent`: the bounded 60-second suppression keys.
 - `terminal`: bounded sanitized diagnostics. Reuse constant control counters rather than a row per loss.
@@ -134,7 +299,8 @@ For an oversized completed-full baseline or insufficient grace storage, retain e
   query must not turn a returning IP into a new addition merely because no full
   reconciliation could create `grace`. A previously unseen IP remains eligible;
   suppression is keyed by target and provider/decoder projection, not every
-  occurrence of an IP across unrelated targets.
+  occurrence of an IP across unrelated targets. The explicit terminal-failure
+  exception above applies per destination only; successful siblings remain held.
 - Persist suppression through clean/unclean restart and same-authority recovery,
   without extending its expiry or turning it into a removal deadline. Retire
   holds with their target or changed projection. Failed writes roll back holds,
@@ -203,6 +369,8 @@ Per-destination independence: Teams success plus MISP failure persists Teams ACK
 Keep FIFO across `(binding, IP)`, including different domains referring to the same MISP event/IP. A delayed removal cannot run after a later addition for that destination/IP. Blocked/retrying predecessors hold later conflicting work; other IPs/channels continue. A terminal predecessor releases order, without permission for later manual replay. A Teams batch may be claimed only when all its members satisfy predecessor order; do not reorder its sealed contents to hide a blocked item.
 
 Teams: one persisted partial batch per cycle/action/binding, seal at cycle end for a normal small cycle; seal a full 60-item or 24-KiB chunk early for larger cycles and carry the remainder into the next bounded chunk. Restart seals persisted unsealed partial cycles without recollection. Seal failure retains admitted rows/byte reservations; observation proceeds. Freeze title/body/local timestamp for retry. Explicit 2xx is ACK of webhook acceptance, not human receipt; 3xx is not success and redirects are not followed.
+
+Small Teams tails also become eligible for a partial seal **300 seconds (five minutes)** after their oldest durable receipt timestamp, independent of whether the source scan returns. Appending a younger entry does not restart this age. Each delivery-worker maintenance pass inspects at most **8** due batches (including an oversized singleton rejected during sealing), retaining the existing 60-item/24-KiB limits, binding identity and FIFO. No-due maintenance is read-only. Existing cycle-end, size-triggered and restart flushing can send earlier. This is a batching-wait threshold checked when the worker next progresses, not a guarantee of remote webhook acknowledgement within five minutes: active provider callbacks, storage fences, retries, destination errors and clock corrections remain distinct constraints. A failed seal retains the admitted bytes and may be retried; it never manufactures an ACK or clears uncertain-commit/shutdown fences.
 
 MISP: new adapter returns typed `acked|continue|retry|blocked|failed` plus a bounded stable reason/phase, never raw response/exception. Validate event identity, expected IP/type and response envelope. Addition ACK requires authoritative existing exact `ip-src` or validated add success; a failed add never becomes locally existing. Removal uses bounded authoritative event read, then one exact matching attribute-ID delete step, then another read. Persist only the current bounded ID/phase and counters; successful deletion is not repeated if a later authoritative read shows it absent. A malformed/missing event is not proof of absence; removal ACK requires a complete valid read with no matching attributes. Each underlying HTTP read/delete counts toward the 32-call pass and 4,096-call lifetime cap. Positive progress can span passes within one workflow attempt; a transient failure starts backoff and a later workflow attempt, not a per-attribute immediate retry loop. Attempt and total-call caps persist across restart.
 

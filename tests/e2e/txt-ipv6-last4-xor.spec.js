@@ -12,6 +12,7 @@ test('pseudo-IPv6 TXT decoder is selectable and survives settings save/reload', 
   await page.fill('#password', 'test-admin-password');
   await page.click('#login-submit');
   await expect(page).not.toHaveURL(/login\.html/);
+  await page.waitForLoadState('load');
   await page.click('#menuDomainVerify');
   await page.selectOption('#verifyDomainType', 'TXT');
   await expect(page.locator(`#verifyTxtDecode option[value="${method}"]`)).toHaveCount(1);

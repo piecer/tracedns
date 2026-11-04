@@ -125,7 +125,7 @@
       'Health last_error prioritizes the oldest blocked item, not necessarily the latest attempt. Compare latest result with latest terminal failure below; a later success does not erase retained failures.',
       'Retained terminal failure groups (latest first, at most 10), not cumulative failure counts. Items is the number of affected destination-items in each group. Failed items are not automatically replayed.',
       'Decoded bytes and attribute counts are observed lower bounds on rejected/truncated reads, not promised total sizes. Unknown details were not recorded, not zero.',
-      `Storage: ${h.storage_ok ? 'available' : 'degraded'} · Worker: ${h.worker_running ? 'running' : 'not running'} · Coverage: ${h.coverage}.`,
+      `Storage: ${h.storage_ok ? 'available' : 'degraded'} · Worker thread/pass: ${h.worker_running ? 'alive; see health progress' : 'not alive; see health progress'} · Historical coverage: ${h.coverage}.`,
       'Storage incident scope: latest observed in this process, volatile and not persisted; not necessarily active now.'
     ];
     if(h.storage_error){

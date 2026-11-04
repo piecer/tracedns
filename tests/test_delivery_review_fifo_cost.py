@@ -15,6 +15,33 @@ from test_delivery_review_components import (
 )
 
 
+def near_capacity_count(*, paired=False):
+    """Independent byte oracle for the unchanged default-budget workload.
+
+    Source incarnation UUIDs have fixed 32-character width; include their new
+    reservation instead of silently increasing the payload cap. In paired mode
+    each item has an older retrying predecessor with the same IP.
+    """
+    def encoded_size(value):
+        return len(json.dumps(value, ensure_ascii=False, sort_keys=True,
+                              separators=(',', ':')).encode())
+
+    used = 0
+    maximum = 1000 if paired else 1999
+    for i in range(maximum):
+        group = i // 250
+        ip = f'198.{19 if paired else 18}.{group}.{i % 250 + 1}'
+        targets = [f'g0-t{group}', f'g1-t{group}'] if paired else ['target' + str(group * 250)]
+        needed = sum(encoded_size({'entries': [[ip, 'example.test', 'A']]}) + 4096 +
+                     encoded_size((target, '0' * 32, 'dns-v1')) for target in targets)
+        if used + needed > 8 * 1024 * 1024:
+            assert used >= .99 * 8 * 1024 * 1024
+            return i
+        used += needed
+    assert used >= .99 * 8 * 1024 * 1024
+    return maximum
+
+
 def measure_claims(path, count, *, config=None):
     transport = Transport(callback=lambda *args: Response({}, 503))
     store, reg, _, _ = make_components(path, transport=transport, config=config)
@@ -71,8 +98,9 @@ def measure_claims(path, count, *, config=None):
 
 
 def test_full_claim_vm_budget_and_indexed_membership_scaling(tmp_path):
-    measures = [measure_claims(tmp_path / str(n), n) for n in (1, 10, 250, 1000, 1999)]
+    measures = [measure_claims(tmp_path / str(n), n) for n in (1, 10, 250, 1000, near_capacity_count())]
     print('CLAIM_MEASUREMENTS=' + json.dumps(measures), flush=True)
+    assert measures[-1]['capacity']['used_payload_bytes'] >= .99 * 8 * 1024 * 1024
     for row in measures:
         assert row['vm_instructions_approx'] <= 200 * row['receipts'] + 10000
     for row in measures:
@@ -93,13 +121,16 @@ def test_teams_all_member_claim_has_bounded_vm_work(tmp_path):
 def test_many_retry_predecessors_do_not_make_correlated_range_scan_quadratic(tmp_path):
     store, reg, _, _ = make_components(tmp_path)
     try:
+        predecessors = near_capacity_count(paired=True)
         for generation in range(2):
             for group in range(4):
-                ips = ['198.19.' + str(group) + '.' + str(i) for i in range(1, 251)]
+                count = min(250, predecessors - group * 250)
+                assert count > 0
+                ips = ['198.19.' + str(group) + '.' + str(i) for i in range(1, count + 1)]
                 assert store.record_domain(observation(ips, target=f'g{generation}-t{group}'),
-                                           AUTH, bindings(reg))['admitted_receipts'] == 250
+                                           AUTH, bindings(reg))['admitted_receipts'] == count
         with sqlite3.connect(store.path) as db:
-            db.execute("UPDATE receipt SET state='retry_wait',due=200 WHERE id<=1000")
+            db.execute("UPDATE receipt SET state='retry_wait',due=200 WHERE id<=?", (predecessors,))
         vm = [0]
 
         def progress():
@@ -110,7 +141,8 @@ def test_many_retry_predecessors_do_not_make_correlated_range_scan_quadratic(tmp
         assert store.claim_next(reg.descriptors()['misp'], 100) is None
         store._db.set_progress_handler(None, 0)
         print('BLOCKED_PREDECESSOR_VM=' + str(vm[0]), flush=True)
-        assert vm[0] <= 200 * 2000 + 10000
-        assert store.health_snapshot()['capacity']['used_receipts'] == 2000
+        assert vm[0] <= 200 * (2 * predecessors) + 10000
+        assert store.health_snapshot()['capacity']['used_receipts'] == 2 * predecessors
+        assert store.health_snapshot()['capacity']['used_payload_bytes'] >= .99 * 8 * 1024 * 1024
     finally:
         close(store)

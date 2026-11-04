@@ -35,6 +35,13 @@ def test_bootstrap_preserves_unknown_keys_effective_cli_and_shutdown_audits(tmp_
         captured['cfg']['_force_resolve_queue'] = [pending]
         raise RuntimeError('fixture stop')
 
+    real_thread = threading.Thread
+
+    def fixture_thread(*args, **kwargs):
+        # Terminal audit is now a real owned execution boundary. Keep unrelated
+        # HTTP/signal/delivery fixtures synthetic without suppressing that worker.
+        return real_thread(*args, **kwargs) if kwargs.get('name') == 'terminal-audit' else Mock()
+
     with ExitStack() as stack:
         stack.enter_context(patch('sys.argv', ['dns_monitor.py', '--config', str(tmp_path / 'cfg'),
                                              '--domains=cli.test', '--servers=cli-dns', '--interval=10', '--max-workers=3']))
@@ -44,7 +51,7 @@ def test_bootstrap_preserves_unknown_keys_effective_cli_and_shutdown_audits(tmp_
         stack.enter_context(patch('dns_monitor.alerts_init', return_value=False))
         stack.enter_context(patch('dns_monitor.make_handler', side_effect=handler))
         stack.enter_context(patch('dns_monitor.ThreadingHTTPServer', return_value=server))
-        stack.enter_context(patch('dns_monitor.threading.Thread', return_value=Mock()))
+        stack.enter_context(patch('dns_monitor.threading.Thread', side_effect=fixture_thread))
         stack.enter_context(patch('dns_monitor.signal.signal'))
         stack.enter_context(patch('dns_monitor.run_full_cycle', side_effect=fail_cycle))
         with pytest.raises(RuntimeError, match='fixture stop'):
@@ -61,6 +68,8 @@ def test_bootstrap_preserves_unknown_keys_effective_cli_and_shutdown_audits(tmp_
     assert shared['_config_revision'] == shared['config_revision'] == 7
     assert shared['_monitor_stopped']
     assert [c.kwargs['outcome'] for c in audit.audit.call_args_list] == ['failure']
+    assert pending['_terminal_audit_done']
+    assert captured['repo'].lookup_runtime.audit.status()['stopped']
     assert stop.is_set()
     server.server_close.assert_called_once()
 
@@ -75,7 +84,7 @@ def test_restart_baseline_uses_chain_storage_keys_and_active_providers(tmp_path,
     domain = {'name': 'x.eth' if kind == 'ENS' else 'x.sol', 'type': kind,
               'ens_text_key': 'record'}
     cfg = {'domains': [domain], 'servers': [], 'ens_rpc_url': 'rpc',
-           'DEFAULT_SNS_PROXY_HOSTS': ['sns']}
+           'DEFAULT_SNS_PROXY_HOSTS': ['sns'], 'alerts': {}}
     path = str(tmp_path / 'cfg')
     history_dir = path + '.history'
     key = domain_storage_name(domain)
@@ -89,6 +98,17 @@ def test_restart_baseline_uses_chain_storage_keys_and_active_providers(tmp_path,
         original_completed(scheduler, snap, accepted=accepted)
         scheduler.stop()
 
+    # A plain empty dict is not source-completeness authority. Exercise the
+    # actual owned engine/repository with an eligible successful-empty provider.
+    from monitor.collect import Collected
+    from models import QueryResult, Snapshot
+    calls = []
+    def collect(domain, server):
+        calls.append(server)
+        return Collected(QueryResult(server=server, domain=domain.name, rtype=kind,
+                                     status='ok', values=[]),
+                         Snapshot(type=kind, values=[], decoded_ips=[], ts=100000))
+
     with ExitStack() as stack:
         stack.enter_context(patch('sys.argv', ['dns_monitor.py', '--config', path]))
         stack.enter_context(patch('security.startup.open_security', return_value=Mock()))
@@ -97,11 +117,11 @@ def test_restart_baseline_uses_chain_storage_keys_and_active_providers(tmp_path,
         stack.enter_context(patch('dns_monitor.alerts_init', return_value=False))
         stack.enter_context(patch('dns_monitor.make_handler', return_value=Mock()))
         stack.enter_context(patch('dns_monitor.ThreadingHTTPServer', return_value=Mock()))
-        stack.enter_context(patch('dns_monitor.threading.Thread', return_value=Mock()))
         stack.enter_context(patch('dns_monitor.signal.signal'))
-        stack.enter_context(patch('dns_monitor.run_full_cycle', return_value={}))
+        stack.enter_context(patch('monitor.engine.collect_snapshot', side_effect=collect))
         stack.enter_context(patch.object(MonitorScheduler, 'completed', completed))
         dns_monitor.main()
+    assert calls == [provider]
     # Stage 3 moves production grace authority to SQLite, not a second JSON
     # writer. Preserve the exact chain-key/active-provider baseline assertion.
     with sqlite3.connect(history_dir + '/delivery.sqlite') as ledger:

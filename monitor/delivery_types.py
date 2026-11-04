@@ -50,6 +50,8 @@ def provider_result(value):
 
 MAX_COUNTER = (1 << 63) - 1
 CHANNELS = ("teams", "misp")
+TEAMS_BATCH_MAX_WAIT_SECONDS = 300
+TEAMS_BATCH_MAINTENANCE_LIMIT = 8
 DEFAULT_LIMITS = {
     "receipts": 4096, "payload_bytes": 8 * 1024 * 1024,
     "unit_items": 256, "unit_bytes": 64 * 1024, "label_bytes": 1024,
@@ -57,6 +59,7 @@ DEFAULT_LIMITS = {
     "target_ips": 4096, "baseline_items": 8192, "baseline_bytes": 2 * 1024 * 1024,
     "grace_items": 8192, "grace_bytes": 2 * 1024 * 1024,
     "reappearance_items": 8192, "reappearance_bytes": 2 * 1024 * 1024,
+    "failed_addition_items": 4096, "failed_addition_bytes": 2 * 1024 * 1024,
     "recent_items": 4096, "recent_bytes": 1024 * 1024,
     "terminal_items": 256, "terminal_bytes": 128 * 1024,
     "batch_items": 60, "batch_bytes": 24 * 1024, "pages": 16384,

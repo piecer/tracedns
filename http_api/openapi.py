@@ -6,7 +6,7 @@ This is documentation, not a second validation or authorization implementation.
 import copy
 
 from http_api.rest import PATTERNS, PREFIX, ROUTES
-from http_api.delivery_health import HEALTH_SCHEMA
+from http_api.delivery_health import HEALTH_SCHEMA, PROGRESS_SCHEMA
 from http_api.delivery_diagnostics import DIAGNOSTICS_SCHEMA
 from http_api.teams_test import REQUEST_SCHEMA as TEAMS_TEST_REQUEST, RESULT_SCHEMA as TEAMS_TEST_RESULT
 
@@ -301,6 +301,13 @@ def openapi_document():
                     'content': {'application/json': {'schema': obj({'snapshot': OBJECT}, ('snapshot',))}}}
                 operation['responses']['422'] = {'description': 'A complete entry cannot fit the prepared response budget; use explicit legacy JSON download.',
                     'content': {'application/json': {'schema': {'$ref': '#/components/schemas/Error'}}}}
+            if path == '/delivery-health':
+                operation['responses']['200']['content']['application/json']['schema'] = {
+                    'oneOf': [HEALTH_SCHEMA, PROGRESS_SCHEMA]}
+                operation.setdefault('parameters', []).append({
+                    'name': 'progress', 'in': 'query', 'required': False,
+                    'schema': {'type': 'string', 'enum': ['1']},
+                    'description': 'Opt in to closed progress version 1. Duplicate/invalid selectors return 400. Omit for the exact legacy shape.'})
             if path == '/teams/test':
                 for status, text in (('409', 'Not sent: saved/applied configuration conflict; reload settings'),
                                      ('429', 'Not sent: test in progress or cooldown; no automatic retry'),
