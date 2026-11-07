@@ -1,34 +1,7 @@
 {
-  "domains": [
-    {
-      "name": "sample-txt.example",
-      "type": "TXT",
-      "txt_decode": "cafebabe_xor_base64"
-    },
-    {
-      "name": "sample-a.example",
-      "type": "A",
-      "a_decode": "xor32_ipv4",
-      "a_xor_key": "E7708E59"
-    },
-    {
-      "name": "2busydrinkingcodeine.eth",
-      "type": "ENS",
-      "ens_text_key": "woah",
-      "ens_decode": "ipv6_last4_xor32",
-      "ens_node": "0xd0fdb3e7840f77136252ff02bc53d577c9b6b9ecacf3ba8f7a4f9f7ba223af30",
-      "ens_resolver": "0xf29100983e058b709f3d539b0c765937b804ac15",
-      "ens_options": {
-        "key_u32": "0x6B9E3F2A",
-        "plain_ipv4": true,
-        "suffix_is_port": false
-      }
-    }
-  ],
-  "servers": [
-    "8.8.8.8",
-    "1.1.1.1"
-  ],
-  "ens_rpc_url": "https://ethereum-rpc.publicnode.com",
-  "interval": 1
+  "domains": [],
+  "servers": ["127.0.0.1"],
+  "ens_rpc_url": "",
+  "alerts": {},
+  "interval": 60
 }

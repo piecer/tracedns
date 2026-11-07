@@ -14,6 +14,7 @@ import weakref
 from unittest.mock import patch
 
 import security.derived_redaction as m
+from tests.instrumentation_helpers import temporary_trace, temporary_profile, temporary_opcodes
 from tests.test_stage4_redaction_plan import build, owners, finish
 from tests.test_stage4_redaction_projection import drain
 from tests.test_stage4_redaction_cleanup import allocation_fault, reconciled
@@ -50,70 +51,66 @@ def _initializer_entry_failure(kind):
         if event == 'call' and frame.f_code is m.RedactionBudget.__init__.__code__:
             record['budget_roots'] += 1
 
-    sys.setprofile(census)
-    budget = m.RedactionBudget(deadline=time.monotonic() + 30)
-    source = m.OwnedPayload.admit('public input', budget=budget)
-    plan = build({'api_key': 'secret'}, budget=budget).take() if kind == 'project' else None
-    before = budget.counters()
-    refs = []
-    result = error = None
+    with temporary_profile(census):
+        budget = m.RedactionBudget(deadline=time.monotonic() + 30)
+        source = m.OwnedPayload.admit('public input', budget=budget)
+        plan = build({'api_key': 'secret'}, budget=budget).take() if kind == 'project' else None
+        before = budget.counters()
+        refs = []
+        result = error = None
 
-    def trace(frame, event, arg):
-        if frame.f_code is cls.__init__.__code__:
-            if event == 'call':
-                frame.f_trace_opcodes = True
-            if event == 'opcode' and frame.f_lasti == site.offset and not record['fired']:
-                state = frame.f_locals
-                assert type(state['self']) is cls and state['budget'] is budget
-                record['fields_at_fault'] = sorted(vars(state['self']))
-                refs.append(weakref.ref(state['self']))
-                del state
-                record['fired'] += 1
-                raise MemoryError('single actual initializer helper-entry allocation')
-            return trace
-        return None
+        def trace(frame, event, arg):
+            if frame.f_code is cls.__init__.__code__:
+                if event == 'call':
+                    frame.f_trace_opcodes = True
+                if event == 'opcode' and frame.f_lasti == site.offset and not record['fired']:
+                    state = frame.f_locals
+                    assert type(state['self']) is cls and state['budget'] is budget
+                    record['fields_at_fault'] = sorted(vars(state['self']))
+                    refs.append(weakref.ref(state['self']))
+                    del state
+                    record['fired'] += 1
+                    raise MemoryError('single actual initializer helper-entry allocation')
+                return trace
+            return None
 
-    try:
-        sys.settrace(trace)
         try:
-            if kind == 'encode':
-                result = m.Encoding(source, budget=budget)
-            elif kind == 'project':
-                result = m.Projector(plan, source, budget=budget)
+            with temporary_opcodes(cls.__init__.__code__, trace):
+                try:
+                    if kind == 'encode':
+                        result = m.Encoding(source, budget=budget)
+                    elif kind == 'project':
+                        result = m.Projector(plan, source, budget=budget)
+                    else:
+                        result = m.OwnedPayload.admit_sliced(['public input'], budget=budget)
+                except BaseException as exc:
+                    error = (type(exc).__name__, str(exc))
+                    exc.__traceback__ = exc.__context__ = exc.__cause__ = None
+            record.update(error=error, before=before, after=budget.counters())
+            assert record['fired'] == record['budget_roots'] == 1
+            assert budget.counters() == before
+            assert source._pins == 0 and (plan is None or plan._pins == 0)
+            assert budget._active is None and budget._hold_worker == budget._hold_metadata == 0
+            if result is None:
+                assert refs[0]() is None
+                assert error is not None and (error[0] == 'MemoryError' or error == ('Reject', 'invalid')), error
             else:
-                result = m.OwnedPayload.admit_sliced(['public input'], budget=budget)
-        except BaseException as exc:
-            error = (type(exc).__name__, str(exc))
-            exc.__traceback__ = exc.__context__ = exc.__cause__ = None
+                assert result.status == 'invalid' and result._lease is None
+                for _ in range(2):
+                    assert result.slice() == 'invalid'
+                    assert result.take() is None
+                    result.discard()
+                    assert result.counters()['status'] == 'invalid'
+            # Unrelated work remains admissible in the same naturally continuing ledger.
+            following = m.OwnedPayload.admit('following', budget=budget)
+            following.close()
         finally:
-            sys.settrace(None)
-        record.update(error=error, before=before, after=budget.counters())
-        assert record['fired'] == record['budget_roots'] == 1
-        assert budget.counters() == before
-        assert source._pins == 0 and (plan is None or plan._pins == 0)
-        assert budget._active is None and budget._hold_worker == budget._hold_metadata == 0
-        if result is None:
-            assert refs[0]() is None
-            assert error is not None and (error[0] == 'MemoryError' or error == ('Reject', 'invalid')), error
-        else:
-            assert result.status == 'invalid' and result._lease is None
-            for _ in range(2):
-                assert result.slice() == 'invalid'
-                assert result.take() is None
-                result.discard()
-                assert result.counters()['status'] == 'invalid'
-        # Unrelated work remains admissible in the same naturally continuing ledger.
-        following = m.OwnedPayload.admit('following', budget=budget)
-        following.close()
-    finally:
-        sys.settrace(None)
-        sys.setprofile(None)
-        source.close()
-        if plan is not None:
-            plan.close()
-        record['after_public_cleanup'] = budget.counters()
-        CONSTRUCTOR_RECEIPTS.append(record)
-    reconciled(budget)
+            source.close()
+            if plan is not None:
+                plan.close()
+            record['after_public_cleanup'] = budget.counters()
+            CONSTRUCTOR_RECEIPTS.append(record)
+        reconciled(budget)
 
 
 def test_encoding_initializer_entry_is_effect_free():
@@ -138,120 +135,116 @@ def _constructor_diagnostic_failure(kind, phase):
         if event == 'call' and frame.f_code is m.RedactionBudget.__init__.__code__:
             record['budget_roots'] += 1
 
-    sys.setprofile(census)
-    budget = m.RedactionBudget(deadline=time.monotonic() + 30)
-    source = m.OwnedPayload.admit('public input', budget=budget)
-    plan = build({'api_key': 'secret'}, budget=budget).take() if kind == 'project' else None
-    cfg = {'api_key': 'secret'}
-    lock, model = owners(cfg)
-    blocker = None
-    if phase == 'capacity':
-        blocker = budget.reserve(metadata=budget.metadata_capacity - budget.counters()['metadata_bytes'] - m.HEADER)
-    elif phase == 'closed':
-        budget.close()
-    before = budget.counters()
-    refs = [weakref.ref(source)]
-    if plan is not None:
-        refs.append(weakref.ref(plan))
-    source_ref = weakref.ref(model)
-    expected = 'capacity' if phase == 'capacity' else 'deadline' if phase == 'deadline' else 'invalid'
-    result = error = None
-    target = cls._initialize_control if phase == 'partial' else cls.__init__
-    marker = ('self.preflights = []' if kind == 'project' else 'self.found = set()' if kind == 'builder'
-              else 'self._pinned = [None, None]' if kind == 'encode'
-              else 'self._pinned = []') if phase == 'partial' else 'self.gen = self.run(value)'
-    if phase in ('partial', 'later'):
-        lines, start = inspect.getsourcelines(target)
-        matches = [start + i for i, text in enumerate(lines) if marker in text]
-        assert len(matches) == 1
-        current_line = None
-        sites = []
-        for instruction in dis.get_instructions(target):
-            if instruction.starts_line is not None:
-                current_line = instruction.starts_line
-            allocating = (instruction.opname == 'BUILD_LIST' if phase == 'partial' and kind != 'builder'
-                          else instruction.opname in ('CALL_FUNCTION', 'CALL_METHOD', 'CALL'))
-            if current_line == matches[0] and allocating:
-                sites.append(instruction)
-        # Projector and Encoding select the actually reached arm below.
-        assert sites
-        record['sites'] = [{'offset': site.offset, 'opcode': site.opname, 'line': matches[0]} for site in sites]
-    else:
-        sites = []
-
-    def trace(frame, event, arg):
-        if frame.f_code is target.__code__:
-            if event == 'call':
-                frame.f_trace_opcodes = True
-            if event == 'opcode' and frame.f_lasti in {site.offset for site in sites} and not record['fired']:
-                owner = frame.f_locals['self']
-                assert type(owner) is cls and owner.budget is budget
-                if phase == 'partial':
-                    assert owner._lease is None
-                    assert budget._hold_worker > 0 and budget._hold_metadata > 0
-                    assert not budget._lock._is_owned()
-                record['fields_at_fault'] = sorted(vars(owner))
-                record['fired_offset'] = frame.f_lasti
-                del owner
-                record['fired'] += 1
-                raise MemoryError('single actual partial initialization allocation')
-            return trace
-        return None
-
-    try:
-        with patch.object(m.time, 'monotonic', return_value=budget.deadline if phase == 'deadline' else time.monotonic()):
-            sys.settrace(trace)
-            try:
-                if kind == 'encode':
-                    result = m.Encoding(source, budget=budget)
-                elif kind == 'project':
-                    result = m.Projector(plan, source, budget=budget)
-                elif kind == 'builder':
-                    result = m.Builder(cfg, lock, model, budget=budget)
-                else:
-                    result = m.OwnedPayload.admit_sliced(['public input'], budget=budget)
-            except BaseException as exc:
-                error = (type(exc).__name__, str(exc))
-                exc.__traceback__ = exc.__context__ = exc.__cause__ = None
-            finally:
-                sys.settrace(None)
-            record.update(error=error, before=before, after=budget.counters())
-            assert record['budget_roots'] == 1
-            assert record['fired'] == (1 if phase in ('partial', 'later') else 0)
-            if phase != 'later':
-                assert budget.counters() == before
-            assert source._pins == 0 and (plan is None or plan._pins == 0)
-            assert budget._active is None and budget._hold_worker == budget._hold_metadata == 0
-            if result is None:
-                assert error == ('Reject', expected) or (phase in ('partial', 'later') and error[0] == 'MemoryError'), error
-            else:
-                assert result.status == expected and result._lease is None
-                for _ in range(2):
-                    assert result.slice() == expected
-                    assert result.take() is None
-                    result.discard()
-                    if kind == 'builder':
-                        assert result.seal_slice() == expected
-                    assert result.counters()['status'] == expected
-                if phase == 'partial':
-                    assert not any(type(value) in (list, dict, set) for value in vars(result).values())
-    finally:
-        sys.settrace(None)
-        sys.setprofile(None)
-        source.close()
+    with temporary_profile(census):
+        budget = m.RedactionBudget(deadline=time.monotonic() + 30)
+        source = m.OwnedPayload.admit('public input', budget=budget)
+        plan = build({'api_key': 'secret'}, budget=budget).take() if kind == 'project' else None
+        cfg = {'api_key': 'secret'}
+        lock, model = owners(cfg)
+        blocker = None
+        if phase == 'capacity':
+            blocker = budget.reserve(metadata=budget.metadata_capacity - budget.counters()['metadata_bytes'] - m.HEADER)
+        elif phase == 'closed':
+            budget.close()
+        before = budget.counters()
+        refs = [weakref.ref(source)]
         if plan is not None:
-            plan.close()
-        if blocker is not None:
-            blocker.close()
-        record['after_public_cleanup'] = budget.counters()
-        CONSTRUCTOR_RECEIPTS.append(record)
-    # The caller owns these references until this point; diagnostics must not.
-    source = plan = cfg = lock = model = None
-    # Opcode tracing can leave this observer frame's locals snapshot stale.
-    # Refresh it after retiring caller references; retain no frame/dict oracle.
-    sys._getframe().f_locals
-    assert all(ref() is None for ref in refs) and source_ref() is None
-    reconciled(budget)
+            refs.append(weakref.ref(plan))
+        source_ref = weakref.ref(model)
+        expected = 'capacity' if phase == 'capacity' else 'deadline' if phase == 'deadline' else 'invalid'
+        result = error = None
+        target = cls._initialize_control if phase == 'partial' else cls.__init__
+        marker = ('self.preflights = []' if kind == 'project' else 'self.found = set()' if kind == 'builder'
+                  else 'self._pinned = [None, None]' if kind == 'encode'
+                  else 'self._pinned = []') if phase == 'partial' else 'self.gen = self.run(value)'
+        if phase in ('partial', 'later'):
+            lines, start = inspect.getsourcelines(target)
+            matches = [start + i for i, text in enumerate(lines) if marker in text]
+            assert len(matches) == 1
+            current_line = None
+            sites = []
+            for instruction in dis.get_instructions(target):
+                if instruction.starts_line is not None:
+                    current_line = instruction.starts_line
+                allocating = (instruction.opname == 'BUILD_LIST' if phase == 'partial' and kind != 'builder'
+                              else instruction.opname in ('CALL_FUNCTION', 'CALL_METHOD', 'CALL'))
+                if current_line == matches[0] and allocating:
+                    sites.append(instruction)
+            # Projector and Encoding select the actually reached arm below.
+            assert sites
+            record['sites'] = [{'offset': site.offset, 'opcode': site.opname, 'line': matches[0]} for site in sites]
+        else:
+            sites = []
+
+        def trace(frame, event, arg):
+            if frame.f_code is target.__code__:
+                if event == 'call':
+                    frame.f_trace_opcodes = True
+                if event == 'opcode' and frame.f_lasti in {site.offset for site in sites} and not record['fired']:
+                    owner = frame.f_locals['self']
+                    assert type(owner) is cls and owner.budget is budget
+                    if phase == 'partial':
+                        assert owner._lease is None
+                        assert budget._hold_worker > 0 and budget._hold_metadata > 0
+                        assert not budget._lock._is_owned()
+                    record['fields_at_fault'] = sorted(vars(owner))
+                    record['fired_offset'] = frame.f_lasti
+                    del owner
+                    record['fired'] += 1
+                    raise MemoryError('single actual partial initialization allocation')
+                return trace
+            return None
+
+        try:
+            with patch.object(m.time, 'monotonic', return_value=budget.deadline if phase == 'deadline' else time.monotonic()):
+                with temporary_opcodes(target.__code__, trace):
+                    try:
+                        if kind == 'encode':
+                            result = m.Encoding(source, budget=budget)
+                        elif kind == 'project':
+                            result = m.Projector(plan, source, budget=budget)
+                        elif kind == 'builder':
+                            result = m.Builder(cfg, lock, model, budget=budget)
+                        else:
+                            result = m.OwnedPayload.admit_sliced(['public input'], budget=budget)
+                    except BaseException as exc:
+                        error = (type(exc).__name__, str(exc))
+                        exc.__traceback__ = exc.__context__ = exc.__cause__ = None
+                record.update(error=error, before=before, after=budget.counters())
+                assert record['budget_roots'] == 1
+                assert record['fired'] == (1 if phase in ('partial', 'later') else 0)
+                if phase != 'later':
+                    assert budget.counters() == before
+                assert source._pins == 0 and (plan is None or plan._pins == 0)
+                assert budget._active is None and budget._hold_worker == budget._hold_metadata == 0
+                if result is None:
+                    assert error == ('Reject', expected) or (phase in ('partial', 'later') and error[0] == 'MemoryError'), error
+                else:
+                    assert result.status == expected and result._lease is None
+                    for _ in range(2):
+                        assert result.slice() == expected
+                        assert result.take() is None
+                        result.discard()
+                        if kind == 'builder':
+                            assert result.seal_slice() == expected
+                        assert result.counters()['status'] == expected
+                    if phase == 'partial':
+                        assert not any(type(value) in (list, dict, set) for value in vars(result).values())
+        finally:
+            source.close()
+            if plan is not None:
+                plan.close()
+            if blocker is not None:
+                blocker.close()
+            record['after_public_cleanup'] = budget.counters()
+            CONSTRUCTOR_RECEIPTS.append(record)
+        # The caller owns these references until this point; diagnostics must not.
+        source = plan = cfg = lock = model = None
+        # Opcode tracing can leave this observer frame's locals snapshot stale.
+        # Refresh it after retiring caller references; retain no frame/dict oracle.
+        sys._getframe().f_locals
+        assert all(ref() is None for ref in refs) and source_ref() is None
+        reconciled(budget)
 
 
 def test_encoding_partial_initializer_has_safe_diagnostics():
@@ -282,6 +275,7 @@ def test_sliced_admission_initial_and_later_refusal(phase):
 
 def test_rejected_admission_fault_retires_lease_and_active():
     """H3: a failed admission must not strand its unreturned lease or token."""
+    previous_trace = sys.gettrace()
     budget = m.RedactionBudget(deadline=time.monotonic() + 30)
     sibling = budget.reserve(worker=50000, metadata=10000)
     refs = []
@@ -311,7 +305,7 @@ def test_rejected_admission_fault_retires_lease_and_active():
     source.close()
     sibling.close()
     reconciled(budget)
-    assert sys.gettrace() is None
+    assert sys.gettrace() is previous_trace
 
 
 def test_mint_is_provisionally_held_outside_lock_and_rechecked():
@@ -495,13 +489,11 @@ def test_public_drop_keeps_last_pin_charge_and_never_holds_locks():
         return trace
 
     def run():
-        sys.settrace(trace)
-        try:
-            source.close()
-        except BaseException as exc:
-            failures.append(type(exc).__name__)
-        finally:
-            sys.settrace(None)
+        with temporary_trace(trace):
+            try:
+                source.close()
+            except BaseException as exc:
+                failures.append(type(exc).__name__)
 
     worker = threading.Thread(target=run)
     worker.start()
@@ -678,12 +670,9 @@ def test_postcommit_frame_retirement_revocation_keeps_delivered_handle():
             frame.f_locals['_retirement_observer_only'] = Retirement()
             events.append('committed-return')
 
-    sys.setprofile(profile)
-    try:
+    with temporary_profile(profile):
         output = operation.take()
         events.append('caller-receipt')
-    finally:
-        sys.setprofile(None)
     assert events == ['committed-return', 'retirement', 'caller-receipt']
     assert refs[0]() is output
     assert output._value == b'"text"' and not output._lease.closed

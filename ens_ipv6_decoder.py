@@ -16,8 +16,8 @@ def main() -> int:
     parser.add_argument(
         "ens_name",
         nargs="?",
-        default="ukranianhorseriding.eth",
-        help="ENS name to query (default: ukranianhorseriding.eth)",
+        default="",
+        help="ENS name to query (required unless --ens-node is supplied)",
     )
     parser.add_argument("--rpc", required=True, help="Ethereum mainnet RPC URL")
     parser.add_argument(
@@ -57,6 +57,8 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+    if not args.ens_name.strip() and not args.ens_node.strip():
+        parser.error("an explicit ens_name or --ens-node is required")
 
     try:
         if args.ens_options:

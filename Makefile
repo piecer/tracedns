@@ -2,13 +2,24 @@ PYTHON ?= $(if $(VIRTUAL_ENV),$(VIRTUAL_ENV)/bin/python3,$(if $(wildcard .venv/b
 PIP := $(PYTHON) -m pip
 RUFF ?= $(shell command -v ruff 2>/dev/null || true)
 
-.PHONY: install test botnet-coverage run lint e2e
+.PHONY: install test security-regression botnet-coverage run lint e2e
 
 install:
 	$(PIP) install -r requirements.txt
 
 test:
 	$(PYTHON) -m pytest -q tests
+
+# Replay version-controlled evidence only: no live DNS/RPC/MISP/Teams required.
+# CI executes this inside scripts/ci/loopback_only.sh to enforce that boundary.
+security-regression:
+	$(PYTHON) -m pytest -v -ra \
+		tests/test_ens_decoder.py tests/test_ens_static_mapping.py \
+		tests/test_ens_sha256_hmac_xor.py tests/test_ens_authenticated_integration.py \
+		tests/test_dht_protocol_regressions.py tests/test_dht_monitor.py \
+		tests/test_dht_state_regressions.py tests/test_ip_removal_grace.py \
+		tests/test_reappearance_suppression.py tests/test_regex_safety.py \
+		tests/test_ip_list_external_lookup_policy.py
 
 botnet-coverage:
 	@set -eu; \

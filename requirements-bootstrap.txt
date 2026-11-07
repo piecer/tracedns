@@ -1,0 +1,2 @@
+# Upgrade only a new candidate/tools venv, never the running service environment.
+pip==26.3

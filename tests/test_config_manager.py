@@ -145,14 +145,20 @@ class TestConfigManager(unittest.TestCase):
         self.assertNotEqual(cm.domain_identity(out[0]), cm.domain_identity(out[1]))
         self.assertNotEqual(cm.domain_storage_name(out[0]), cm.domain_storage_name(out[1]))
 
-    def test_example_config_uses_generic_last4_xor32_decoder(self):
-        config = json.loads((Path(ROOT) / "dns_config.json_example").read_text(encoding="utf-8"))
-        self.assertEqual(config.get("ens_rpc_url"), "https://ethereum-rpc.publicnode.com")
-        targets = [
-            target
-            for target in config["domains"]
-            if target.get("name") == "2busydrinkingcodeine.eth" and target.get("ens_text_key") == "woah"
-        ]
+    def test_preserved_corpus_config_uses_generic_last4_xor32_decoder(self):
+        # Observed targets belong to offline evidence, not the deployment sample.
+        artifact = json.loads(
+            (Path(ROOT) / "docs/ens/ipv6-last4-xor32-decoder.json").read_text(encoding="utf-8")
+        )
+        targets = cm.normalize_domains([{
+            "name": artifact["ens_name"],
+            "type": "ENS",
+            "ens_text_key": artifact["text_key"],
+            "ens_decode": artifact["runtime_method_name"],
+            "ens_node": artifact["ens_node"],
+            "ens_resolver": artifact["resolver"],
+            "ens_options": artifact["decoder_options"],
+        }])
         self.assertEqual(len(targets), 1)
         self.assertEqual(
             targets[0],

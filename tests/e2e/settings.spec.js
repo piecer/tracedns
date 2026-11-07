@@ -19,6 +19,7 @@ test('settings shows full names, dates, safe editing and narrow reflow', async (
   await page.fill('#password', 'test-admin-password');
   await page.click('#login-submit');
   await expect(page).not.toHaveURL(/login\.html/);
+  await page.waitForLoadState('load');
   const initial = await config(page);
   await config(page, {revision: initial.revision, domains: [
     {name: longName, type: 'A'},

@@ -10,6 +10,7 @@ test('authenticated ENS decoder is selectable and its options survive UI save/re
   await page.fill('#password', 'test-admin-password');
   await page.click('#login-submit');
   await expect(page).not.toHaveURL(/login\.html/);
+  await page.waitForLoadState('load');
   await page.click('#menuDomainVerify');
   await page.selectOption('#verifyDomainType', 'ENS');
   await expect(page.locator(`#verifyEnsDecode option[value="${corpus.runtime_method_name}"]`)).toHaveCount(1);
