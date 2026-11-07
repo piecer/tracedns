@@ -163,11 +163,11 @@ test('private CA control validates, preserves blank, clears explicitly and keeps
     const {execFileSync} = require('node:child_process');
     const fs = require('node:fs');
     const path = require('node:path');
-    const dir = fs.mkdtempSync(path.join(process.env.TMPDIR, 'delivery-ca-browser-'));
+    const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'delivery-ca-browser-'));
     const bundle = path.join(dir, 'PRIVATE-CA-CANARY.pem');
-    const cert = execFileSync(process.env.PYTHON || '.venv/bin/python', ['-c', 'from requests.certs import where; print(where())'], {encoding:'utf8'}).trim();
-    fs.copyFileSync(cert, bundle);
     try {
+      const cert = execFileSync(process.env.PYTHON || '.venv/bin/python', ['-c', 'from requests.certs import where; print(where())'], {encoding:'utf8'}).trim();
+      fs.copyFileSync(cert, bundle);
       await page.goto(url + '/login.html');
       await login(page);
       await page.click('#menuSettings');

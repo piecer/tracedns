@@ -6,6 +6,7 @@ async function login(page, user, password) {
   await page.fill('#password', password);
   await page.click('#login-submit');
   await expect(page).not.toHaveURL(/login\.html/);
+  await page.waitForLoadState('load');
 }
 async function api(page, path, data) {
   return page.evaluate(async ({path, data}) => {

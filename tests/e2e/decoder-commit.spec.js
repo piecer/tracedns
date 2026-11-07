@@ -10,6 +10,7 @@ test('decoder catalog revision preserves both drafts and applies committed CRUD 
   await page.fill('#password', 'test-admin-password');
   await page.click('#login-submit');
   await expect(page).not.toHaveURL(/login\.html/);
+  await page.waitForLoadState('load');
   await page.evaluate(async () => {
     const config = await (await fetch('/config')).json();
     await fetch('/config', {method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -78,6 +79,7 @@ test('committed warning stays visible without treating the settings save as roll
   await page.fill('#password', 'test-admin-password');
   await page.click('#login-submit');
   await expect(page).not.toHaveURL(/login\.html/);
+  await page.waitForLoadState('load');
   await page.click('#menuSettings');
   await page.click('#settingsTabAlerts');
   // Await the startup load rather than racing a second GET against the draft.
