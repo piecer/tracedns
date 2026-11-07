@@ -15,38 +15,57 @@ A lightweight DNS monitoring toolkit for extracting indicators from TXT records 
 
 ## Requirements
 
-- Python 3.10+ (tested with Python 3.12 on Linux)
+- Python 3.11+ (Linux verification matrix: Python 3.11 and 3.12)
 
-Install Python dependencies:
+Install Python dependencies inside a new virtual environment (see Quick Start):
 
 ```bash
-pip3 install -r requirements.txt
+python3 -m pip install -r requirements-bootstrap.txt
+python3 -m pip install -r requirements.txt
 ```
 
 Notes:
 - VirusTotal lookups (optional) are implemented via `requests` in `vt_lookup.py` (no special VT SDK required).
 - MISP integration requires `PyMISP` (included in `requirements.txt`).
+- To enable ENS alongside MISP, install `requirements-ens.txt` in the same
+  environment with normal dependency resolution; do not use `--no-deps`.
+- Existing Python 3.10 deployments need a separately validated Python 3.11+
+  environment before switching. Preserve the old environment and consistent
+  state backups; installing this candidate does not authorize a service restart.
 - GeoIP country fallback (optional) for IP similarity analysis: install `geoip2` and provide a MaxMind mmdb path via `GEOIP_MMDB_PATH` (env) or `geoip_mmdb_path` in `dns_config.json`.
 
 ## Quick Start
 
-1. Clone or copy the repository into your workspace.
-2. Edit `dns_config.json` to add domains, DNS servers, interval, alerting and any `custom_decoders` you want.
-
-Run the monitor:
+Use a fresh checkout and virtual environment. The example has no monitored
+targets, no external integrations, and only a loopback DNS server. Never
+overwrite an existing deployment's configuration or account database.
 
 ```bash
 cd tracedns
-python3 dns_monitor.py
+python3.12 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements-bootstrap.txt
+python -m pip install -r requirements.txt
+cp -n dns_config.json_example dns_config.json
+# Password is prompted, never passed in an argument.
+python -m security.cli --db ./local-security/auth.sqlite bootstrap admin
+python dns_monitor.py --config dns_config.json --security-db ./local-security/auth.sqlite --http-host 127.0.0.1 --http-port 8000 --insecure-http
 ```
 
-Useful flags:
+Open `http://127.0.0.1:8000` on the same machine and sign in. This local-only
+HTTP example is not suitable for remote access; use the HTTPS setup below for
+deployment. Add only targets you explicitly intend to monitor, and configure
+your DNS resolver and integrations before enabling them. `--max-workers`
+controls per-domain parallel queries.
+
+Replay preserved evidence without querying live indicators:
 
 ```bash
-python3 dns_monitor.py --http-port 8000 --max-workers 16
+make security-regression
 ```
 
-- `--max-workers` controls per-domain parallel DNS queries across configured DNS servers (performance tuning).
+This checks fixed corpora and state-preservation regressions, not detection
+rates on unseen infrastructure. CI runs tests in a loopback-only network.
 
 ## Multi-user access and audit
 
@@ -165,7 +184,7 @@ Example for monitoring a plain IPv4 ENS record:
   "ens_rpc_url": "https://<mainnet-rpc>",
   "domains": [
     {
-      "name": "xorisgayilovekidsandihatemilfs.eth",
+      "name": "replace-with-your-target.invalid",
       "type": "ENS",
       "ens_text_key": "Host",
       "ens_decode": "ipv4_literals"
@@ -174,7 +193,9 @@ Example for monitoring a plain IPv4 ENS record:
 }
 ```
 
-Do not rename config keys unless you know the code depends on them.
+Replace the reserved placeholder with your explicitly selected ENS target.
+Observed names and original records are preserved in `docs/ens/`; deployment
+examples are not a target subscription. Do not rename config keys.
 
 ## Custom Decoder DSL (overview)
 
@@ -219,12 +240,17 @@ Custom decoders use a constrained, validated list of steps (no arbitrary code ex
 Use `ens_ipv6_decoder.py` to read an ENS text record (default key: `ipv6`) via an Ethereum RPC endpoint and decode values into IPv4s with selectable ENS decode methods.
 
 ```bash
-python3 ens_ipv6_decoder.py --rpc https://<mainnet-rpc>
+python3 ens_ipv6_decoder.py "$ENS_NAME" --rpc "$ENS_RPC_URL"
 ```
 
-Optional flags:
+Set `ENS_NAME` and `ENS_RPC_URL` to an explicitly selected target and RPC URL.
+Existing callers that supplied only `--rpc` must add the name or `--ens-node`;
+RPC-only invocation exits with status 2 before any query. If both name and
+node are supplied, the explicit node takes precedence (the name is a label).
 
-- `ens_name` positional arg (default: `ukranianhorseriding.eth`)
+Target and optional flags:
+
+- `ens_name` positional arg or `--ens-node` is required; there is no default target.
 - `--key <text-key>` to read another ENS text key
 - `--decode-method <method>` to choose ENS decode method (default: `ipv6_5to8_xor`)
 - `--ens-node <bytes32>` to query a raw ENS nodehash instead of `namehash(ens_name)`
@@ -250,4 +276,4 @@ Contributions are welcome. Please open issues or PRs with focused changes. When 
 
 ## License & Authors
 
-This repository is maintained by the project owner. Add a license file if you plan to publish publicly.
+This repository is maintained by the project owner and distributed under the [MIT](LICENSE) license.

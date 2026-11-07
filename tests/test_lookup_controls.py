@@ -113,10 +113,20 @@ def test_one_worker_cannot_run_healthy_target_until_physical_return(tmp_path, mo
             entered.set()
             assert release.wait(10)
         return success(domain, server)
+    # Four target controllers race even with one provider worker. Establish the
+    # named occupant before allowing the second controller to request a slot.
+    run_domain_cycle = engine.run_domain_cycle
+    def ordered_cycle(**kwargs):
+        if kwargs['target_lease'].name == 'second.example':
+            assert entered.wait(2)
+        return run_domain_cycle(**kwargs)
+    monkeypatch.setattr(engine, 'run_domain_cycle', ordered_cycle)
     monkeypatch.setattr(engine, 'collect_snapshot', collect)
     thread, results, errors = background_scan(app)
     try:
         assert entered.wait(2)
+        # Exercise real provider contention, not a controller still at the gate.
+        assert wait_for(lambda: app.lookup.status()['provider_queued'] == 1)
         assert calls == ['first.example'] and app.lookup.status()['active'] == 1
         release.set()
         thread.join(3)

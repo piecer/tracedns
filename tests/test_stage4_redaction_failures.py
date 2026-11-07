@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 import security.derived_redaction as m
+from tests.instrumentation_helpers import temporary_trace
 from tests.test_stage4_redaction_plan import build, owners, finish
 from tests.test_stage4_redaction_projection import drain
 
@@ -413,18 +414,16 @@ def test_active_owner_quiescence(phase, action):
         return trace
 
     def work():
-        sys.settrace(trace)
-        try:
-            # Discovery of the projector's buffer can require multiple slices.
-            for _ in range(10000):
-                result = method()
-                if entered.is_set() or x.status not in ('more', 'captured'):
-                    results.append(result)
-                    break
-        except BaseException as exc:
-            errors.append(type(exc).__name__)
-        finally:
-            sys.settrace(None)
+        with temporary_trace(trace):
+            try:
+                # Discovery of the projector's buffer can require multiple slices.
+                for _ in range(10000):
+                    result = method()
+                    if entered.is_set() or x.status not in ('more', 'captured'):
+                        results.append(result)
+                        break
+            except BaseException as exc:
+                errors.append(type(exc).__name__)
 
     thread = threading.Thread(target=work)
     thread.start()
@@ -576,14 +575,11 @@ def test_allocation_at_internal_materialization_is_terminal(phase, method, marke
             raise MemoryError('synthetic materialization failure')
         return trace
 
-    try:
-        sys.settrace(trace)
+    with temporary_trace(trace):
         if isinstance(x, m.Builder):
             finish(x)
         else:
             drain(x)
-    finally:
-        sys.settrace(None)
     try:
         assert fired
         assert x.status == 'invalid'
@@ -698,13 +694,11 @@ def test_operation_bookkeeping_allocation_failure_is_terminal(marker):
         return trace
 
     try:
-        sys.settrace(trace)
-        try:
-            x.slice()
-        except MemoryError:
-            pass
-        finally:
-            sys.settrace(None)
+        with temporary_trace(trace):
+            try:
+                x.slice()
+            except MemoryError:
+                pass
         assert fired
         assert x.status == 'invalid'
         assert x._lease is None

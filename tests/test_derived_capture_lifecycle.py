@@ -1,5 +1,4 @@
 """Shared admission, quiescence and one-fault bridge regressions."""
-import sys
 import time
 import threading
 import inspect
@@ -13,6 +12,7 @@ import pytest
 
 from http_api.read_capture import Capture, CaptureBudget
 from security.derived_redaction import HEADER, RedactionBudget
+from tests.instrumentation_helpers import temporary_trace, temporary_profile, temporary_opcodes
 from tests.test_derived_capture import api, bridge_for, finish
 from tests.test_stage4_capture_progress import actual_source
 
@@ -35,8 +35,7 @@ def test_continuous_real_plan_capture_decode_admission_custody():
                 prepaid=unit._lease.worker >= HEADER + 131072 + 128 + unit.unit_bytes,
                 active=budget.counters()['active']))
 
-    sys.setprofile(observation)
-    try:
+    with temporary_profile(observation):
         for _ in range(20000):
             phase = unit.phase
             status = unit.slice()
@@ -55,8 +54,6 @@ def test_continuous_real_plan_capture_decode_admission_custody():
             paid.append(dict(phase=phase, next_phase=unit.phase, **counts))
             if status != 'more':
                 break
-    finally:
-        sys.setprofile(None)
     assert status == 'done'
     assert transfer_debits and all(row['prepaid'] for row in transfer_debits)
     output = unit.take()
@@ -95,14 +92,11 @@ def test_single_fault_transition_retires_aliases_before_bridge_debit(boundary):
                 aliases_gone=unit.capture is unit.decoder is unit.graph is unit.encoded is unit.admission is unit.output is None,
                 funded=budget.counters()['worker_bytes'] >= unit._lease.worker,
                 metadata_funded=budget.counters()['metadata_bytes'] >= unit._lease.metadata))
-    sys.setprofile(observe)
-    try:
+    with temporary_profile(observe):
         with one_fault(method, marker, {'CALL_METHOD', 'CALL'}):
             for _ in range(20000):
                 if unit.slice() != 'more':
                     break
-    finally:
-        sys.setprofile(None)
     assert unit.status in ('capacity', 'invalid')
     assert observations and all(all(o.values()) for o in observations)
     assert unit.take() is None
@@ -304,11 +298,10 @@ def one_fault(method, marker, opnames, owner=None, occurrence=None, unwrap=True)
             return trace
         return None
 
-    sys.settrace(trace)
     try:
-        yield record, references
+        with temporary_opcodes(method.__code__, trace):
+            yield record, references
     finally:
-        sys.settrace(None)
         FAULTS.append(record)
         assert record['fired'] == 1
 
@@ -498,11 +491,8 @@ def test_bridge_controller_refused_before_capture_allocation():
         if event == 'call' and frame.f_code is Capture.__init__.__code__:
             entered.append(True)
 
-    sys.setprofile(observer)
-    try:
+    with temporary_profile(observer):
         unit = m.CapturedPayload(owners, 'current', ('d000.test',), capture_budget=attempt, budget=ledger)
-    finally:
-        sys.setprofile(None)
     assert entered == [], 'Capture controller allocated before bridge admission'
     assert unit.status == 'capacity'
     assert ledger.counters() == before
@@ -960,16 +950,12 @@ def test_shared_original_deadline_after_wait_or_action(path, boundary, expired):
             return trace
 
         def work():
-            sys.setprofile(profile)
-            sys.settrace(trace)
-            try:
-                results.append(invoke())
-            except BaseException as exc:
-                errors.append(type(exc).__name__)
-                exc.__traceback__ = exc.__context__ = exc.__cause__ = None
-            finally:
-                sys.settrace(None)
-                sys.setprofile(None)
+            with temporary_profile(profile), temporary_trace(trace):
+                try:
+                    results.append(invoke())
+                except BaseException as exc:
+                    errors.append(type(exc).__name__)
+                    exc.__traceback__ = exc.__context__ = exc.__cause__ = None
 
         thread = threading.Thread(target=work)
         if boundary == 'lock_wait':
