@@ -86,15 +86,20 @@ class MonitorScheduler:
                 job = self._dequeue()
                 if job is None:
                     return None
-                snapshot = self.store._snapshot_locked()
-                snapshot.force_req = job
-                return snapshot
+                if not (self.store.state_repository is not None and job.get('_target_leases') is None):
+                    snapshot = self.store._snapshot_locked()
+                    snapshot.force_req = job
+                    return snapshot
             finally:
                 self.store.condition.release()
         except Exception:
             if job is not None:
                 finish_force(job, 'failure')
             raise
+        # Missing admission authority cannot be repaired by a fresh snapshot.
+        # Submit unlocked and outside the exception handler: never retry a failed submit.
+        finish_force(job, 'failure')
+        return None
 
     def stop(self):
         # Publish before a possibly blocked source admission's config lock.

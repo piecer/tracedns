@@ -632,17 +632,26 @@ class Builder(_SerialOwner):
     def own_key(self, key):
         if type(key) is not str:
             raise Reject('invalid')
-        self._lease.reserve(metadata=128 + 8 * len(key))
+        charge = 128 + 8 * len(key)
+        self._lease.reserve(metadata=charge)
         self.metadata_peak = max(self.metadata_peak, self._lease.metadata)
-        data = bytearray()
-        for i in range(0, len(key), 1024):
-            # The catalog/path key visit covers its first chunk only.
-            if i:
-                self.visit()
-            if time.monotonic() >= self.slice_end:
-                raise Reject('deadline')
-            data.extend(key[i:i + 1024].encode('utf8'))
-        return data.decode('utf8')
+        try:
+            data = bytearray()
+            for i in range(0, len(key), 1024):
+                # The catalog/path key visit covers its first chunk only.
+                if i:
+                    self.visit()
+                if time.monotonic() >= self.slice_end:
+                    raise _SliceFull()
+                data.extend(key[i:i + 1024].encode('utf8'))
+            return data.decode('utf8')
+        except _SliceFull as exc:
+            # No frame edge owns this partial copy. Retire it before returning
+            # its charge, including when the visit allowance caused the yield.
+            data = None
+            exc.__traceback__ = exc.__context__ = exc.__cause__ = None
+        self._lease.release(metadata=charge)
+        raise _SliceFull() from None
 
     def roots(self):
         if len(self.config) > 512 - self._slice_visits:
@@ -682,7 +691,7 @@ class Builder(_SerialOwner):
                 for key, child in value.items():
                     self.visit()
                     if time.monotonic() >= self.slice_end:
-                        raise Reject('deadline')
+                        raise _SliceFull()
                     if type(key) is not str:
                         raise Reject('invalid')
                     if key == part:
@@ -770,7 +779,7 @@ class Builder(_SerialOwner):
                 else:
                     for j, (key, child) in enumerate(value.items()):
                         if time.monotonic() >= self.slice_end:
-                            raise Reject('deadline')
+                            raise _SliceFull()
                         self.visit()
                         if j == index:
                             break
