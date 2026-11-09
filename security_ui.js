@@ -13,6 +13,13 @@
     finally { if (button) button.disabled = false; }
   };
   const button = (text, fn) => { const el = node('button', text); el.type = 'button'; el.onclick = act(fn); return el; };
+  // Credential forms start inert in HTML, including when scripts fail to load.
+  // Call only after auth readiness; install prevention before enabling submit.
+  const credentialForm = (id, fn) => {
+    const form = $(id);
+    form.onsubmit = act(fn);
+    form.querySelectorAll('button[type="submit"]').forEach(el => { el.disabled = false; });
+  };
   const signOut = async () => { await A.json('/auth/logout', {}); location.replace('/login.html'); };
   function nav(user) {
     if ($('security-nav')) return;
@@ -24,7 +31,7 @@
     const logout = button('Sign out', signOut); logout.id = 'logout'; el.append(logout); document.body.prepend(el);
   }
   async function login() {
-    $('login-form').onsubmit = act(async () => {
+    credentialForm('login-form', async () => {
       const result = await A.json('/auth/login', {username:$('username').value,password:$('password').value});
       $('password').value = '';
       location.replace(result.user.must_change_password ? '/account.html' : '/dns_frontend.html');
@@ -33,7 +40,7 @@
   async function account(user) {
     $('password-required').hidden = !user.must_change_password;
     $('session-section').hidden = !!user.must_change_password;
-    $('password-form').onsubmit = act(async () => {
+    credentialForm('password-form', async () => {
       if ($('new-password').value !== $('confirm-password').value) throw new Error('New passwords do not match.');
       await A.json('/auth/password', {current_password:$('current-password').value,new_password:$('new-password').value});
       $('password-form').reset(); location.replace('/login.html');
@@ -71,12 +78,12 @@
         tr.append(actions); $('users').append(tr);
       }
     };
-    $('create-user-form').onsubmit = act(async () => {
+    credentialForm('create-user-form', async () => {
       await A.json('/admin/users',Object.fromEntries(new FormData($('create-user-form'))));
       $('create-user-form').reset(); status('User created. Password change required at next sign-in.'); await refresh();
     });
     $('reset-cancel').onclick = () => { $('reset-password').value = ''; $('reset-dialog').close(); };
-    $('reset-password-form').onsubmit = act(async () => {
+    credentialForm('reset-password-form', async () => {
       await A.json(`/admin/users/${encodeURIComponent(resetId)}/reset`,{password:$('reset-password').value});
       $('reset-password').value = ''; $('reset-dialog').close(); status('Temporary password set.'); await refresh();
     });

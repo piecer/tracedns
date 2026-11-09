@@ -1,0 +1,3 @@
+# ENS and MISP must resolve together without --no-deps.
+-r requirements.txt
+web3==7.16.0

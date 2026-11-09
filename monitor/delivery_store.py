@@ -56,6 +56,7 @@ class DeliveryStore:
         self._closed = False
         self._new_file_identity = None
         self._unresolved = None
+        self._cleanup_pending = False
         self._worker_thread = False
         self._worker_active = False
         self._stopping = False
@@ -103,6 +104,8 @@ class DeliveryStore:
             self.enter_gap("delivery_storage", {})
 
     def _one(self, sql, args=()):
+        if self._cleanup_pending:
+            raise sqlite3.OperationalError('transaction cleanup pending')
         cur = self._db.execute(sql, args)
         try:
             return cur.fetchone()
@@ -110,6 +113,8 @@ class DeliveryStore:
             cur.close()
 
     def _execute(self, sql, args=()):
+        if self._cleanup_pending:
+            raise sqlite3.OperationalError('transaction cleanup pending')
         cur = self._db.execute(sql, args)
         try:
             return cur.rowcount
@@ -303,7 +308,7 @@ class DeliveryStore:
 
     def retire_dht(self, target):
         with self._lock:
-            if self._db is not None and not self._closed and not self._one(
+            if self._db is not None and not self._closed and self._unresolved is None and not self._one(
                     "SELECT 1 FROM dht_state WHERE target=?", (target,)):
                 return True
             ok, _, _ = self._transaction(uuid.uuid4().hex, lambda: self._execute(
@@ -312,7 +317,8 @@ class DeliveryStore:
 
     def prune_dht(self, active):
         with self._lock:
-            if self._db is not None and not self._closed and not self._one("SELECT 1 FROM dht_state LIMIT 1"):
+            if (self._db is not None and not self._closed and self._unresolved is None
+                    and not self._one("SELECT 1 FROM dht_state LIMIT 1")):
                 return True
             def apply():
                 last = ''
@@ -446,6 +452,10 @@ class DeliveryStore:
     def _resolve_unresolved(self):
         if self._unresolved is None:
             return
+        if self._cleanup_pending:
+            self._rollback_transaction()
+            if self._cleanup_pending:
+                raise sqlite3.OperationalError('transaction cleanup pending')
         pending = self._unresolved
         saved = self._validated_control(pending['epoch'])
         if saved.get('last_transaction') == pending['operation']:
@@ -563,11 +573,38 @@ class DeliveryStore:
                 self.enter_gap("delivery_storage", {})
             return {"ledger_committed": ok}
 
-    def _transaction(self, operation, fn, *, cancelled=None, kind='ledger', checkpoint=None, captured=None):
+    def _rollback_transaction(self):
+        # A rollback exception is not evidence of either closure or refusal.
+        # Keep the writer quarantined until its native state proves closure;
+        # the independent durable marker cannot establish that fact.
+        self._cleanup_pending = True
+        error = None
+        try:
+            self._db.rollback()
+        except (sqlite3.Error, OSError, ValueError) as rollback_error:
+            error = rollback_error
+        try:
+            self._cleanup_pending = self._db.in_transaction is not False
+        except (sqlite3.Error, OSError, ValueError, AttributeError):
+            pass
+        return error
+
+    def _change_count(self):
+        try:
+            value = self._db.total_changes
+            return value if type(value) is int and value >= 0 else None
+        except (AttributeError, sqlite3.Error, OSError, ValueError, TypeError):
+            return None
+
+    def _transaction(self, operation, fn, *, cancelled=None, kind='ledger', checkpoint=None, captured=None,
+                     allow_noop=False):
         """A fixed last-transaction UUID resolves commit errors independently.
 
         Only one writer owned by this object exists. No subsequent write is
         permitted before this readback; unknown outcomes halt admission/claims.
+        Only the post-source optional seal may elide an unchanged control write.
+        Its no-write errors resolve conservatively against the prior marker;
+        they never certify a new durable operation, even after a real commit.
         """
         if self._unresolved is not None:
             return False, None, True
@@ -584,9 +621,13 @@ class DeliveryStore:
             if cancelled is not None and cancelled():
                 raise _DHTCancelled()
             stage = 'transaction_body'
+            changes = self._change_count() if allow_noop else None
             result = fn()
-            self._control["last_transaction"] = operation
-            self._save_control()
+            no_write = (changes is not None and self._change_count() == changes
+                        and self._control == before)
+            if not no_write:
+                self._control["last_transaction"] = operation
+                self._save_control()
             self._fault("before_commit")
             if cancelled is not None and cancelled():
                 raise _DHTCancelled()
@@ -595,36 +636,32 @@ class DeliveryStore:
             committed = True
             self._fault("after_commit")
         except (_DHTCancelled, sqlite3.Error, OSError, ValueError) as error:
+            rollback_error = self._rollback_transaction()
             if isinstance(error, _DHTCancelled):
-                try:
-                    self._db.rollback()
-                except (sqlite3.Error, OSError, ValueError) as rollback_error:
+                if rollback_error is not None:
                     error = rollback_error
-                else:
+                elif not self._cleanup_pending:
                     self._control = before
                     return False, 'cancelled', False
             self._note_storage_error(error, stage)
             try:
-                self._db.rollback()
-            except sqlite3.Error:
-                pass
-            try:
                 saved = self._validated_control(before['epoch'])
-                if saved.get("last_transaction") == operation:
-                    self._control = saved
-                    self._safe_refresh()
-                    return True, result, False
-                self._control = before
-                return False, None, False
+                if not self._cleanup_pending:
+                    if saved.get("last_transaction") == operation:
+                        self._control = saved
+                        self._safe_refresh()
+                        return True, result, False
+                    self._control = before
+                    return False, None, False
             except (sqlite3.Error, OSError, ValueError, TypeError) as error:
                 self._note_storage_error(error, 'transaction_readback')
-                self._control = before
-                self._unresolved = {"operation": operation, "epoch": before['epoch'], "losses": {},
-                                    "kind": kind, "checkpoint": copy.deepcopy(checkpoint),
-                                    "captured": copy.deepcopy(captured),
-                                    "newer_losses": {c: 0 for c in CHANNELS}}
-                self._claims_halted = True
-                return False, None, True
+            self._control = before
+            self._unresolved = {"operation": operation, "epoch": before['epoch'], "losses": {},
+                                "kind": kind, "checkpoint": copy.deepcopy(checkpoint),
+                                "captured": copy.deepcopy(captured),
+                                "newer_losses": {c: 0 for c in CHANNELS}}
+            self._halt_delivery()
+            return False, None, True
         if committed:
             self._safe_refresh()
         return True, result, False
@@ -966,7 +1003,8 @@ class DeliveryStore:
             if admitted:
                 # Optional chunk sealing is a separate transaction: a renderer
                 # fault cannot roll back previously admitted observations.
-                self._transaction(uuid.uuid4().hex, lambda: self._seal(observation["cycle_id"], partial=False))
+                self._transaction(uuid.uuid4().hex, lambda: self._seal(observation["cycle_id"], partial=False),
+                                  allow_noop=True)
             return self._result("missed" if missed else ("admitted" if admitted else "consumed"),
                                 admitted, missed, True)
 

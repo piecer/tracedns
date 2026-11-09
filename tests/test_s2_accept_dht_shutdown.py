@@ -301,7 +301,9 @@ def test_blocked_force_audit_does_not_stop_full_admissions(tmp_path, monkeypatch
     job = enqueue(app, ['force.example'])
     entered, release = threading.Event(), threading.Event()
     calls = []
+    audit_entry = {}
     def audit(*args, **kwargs):
+        audit_entry.update(thread=threading.current_thread().name, calls=list(calls))
         entered.set()
         assert release.wait(12)
     job['_security_store'].audit.side_effect = audit
@@ -315,9 +317,10 @@ def test_blocked_force_audit_does_not_stop_full_admissions(tmp_path, monkeypatch
         progressed = wait_for(lambda: 'target-23.example' in calls, seconds=1)
         # status is sampled before releasing the arbitrary audit callback.
         observed = {'calls_before_rescue': list(calls), 'status': app.lookup.status(),
-                    'last_full_target_dispatched': progressed, 'audit_released': release.is_set()}
+                    'last_full_target_dispatched': progressed, 'audit_released': release.is_set(),
+                    'audit_entry': audit_entry}
         (tmp_path / 'audit-progress-observation.json').write_text(json.dumps(observed, indent=2))
-        assert progressed, 'synchronous force terminal audit blocked full target admission with physical provider capacity free'
+        assert progressed, f'full admission missed its deadline while audit remained blocked: {observed!r}'
     finally:
         cleanup(app, thread, release)
     assert not errors and results[0].complete

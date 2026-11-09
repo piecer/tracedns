@@ -1,0 +1,4 @@
+# Install in a separate tools environment; do not alter application resolution.
+ruff==0.17.1
+pip-audit==2.10.1
+PyYAML==6.0.3

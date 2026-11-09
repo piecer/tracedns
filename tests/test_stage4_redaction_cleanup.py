@@ -1,7 +1,6 @@
 """Single allocating-fault cleanup regressions; no malformed ledger doubles."""
 import inspect
 import os
-import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -9,6 +8,7 @@ from contextlib import contextmanager
 import pytest
 
 import security.derived_redaction as m
+from tests.instrumentation_helpers import temporary_trace
 from tests.test_stage4_redaction_plan import finish, owners
 from tests.test_stage4_redaction_projection import drain
 
@@ -32,11 +32,10 @@ def allocation_fault(method, old, new, predicate=lambda frame: True):
             raise MemoryError('one-shot allocating RHS')
         return trace
 
-    sys.settrace(trace)
     try:
-        yield state
+        with temporary_trace(trace):
+            yield state
     finally:
-        sys.settrace(None)
         FAULT_RECEIPTS.append({**state, 'nodeid': os.environ.get('PYTEST_CURRENT_TEST'),
                                'method': method.__qualname__, 'old': old, 'new': new,
                                'source': m.__file__})
@@ -205,14 +204,12 @@ def test_pin_cleanup_fault_preserves_reachable_transfer(phase):
         return trace
 
     def run():
-        sys.settrace(trace)
-        try:
-            results.append(method())
-        except BaseException as exc:
-            errors.append(type(exc).__name__)
-            exc.__traceback__ = exc.__context__ = exc.__cause__ = None
-        finally:
-            sys.settrace(None)
+        with temporary_trace(trace):
+            try:
+                results.append(method())
+            except BaseException as exc:
+                errors.append(type(exc).__name__)
+                exc.__traceback__ = exc.__context__ = exc.__cause__ = None
 
     worker = threading.Thread(target=run)
     worker.start()

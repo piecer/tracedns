@@ -118,6 +118,7 @@ class LookupRuntime:
         work.deadline = min(work.deadline, self.clock() + provider_budget(work.domain))
         self.active_providers.append(work)
         self._last_provider_target = work.lease.name
+        self.condition.notify_all()
         return work
 
     def cancelled(self, work):
@@ -207,6 +208,7 @@ class LookupRuntime:
             while pending or not exhausted:
                 ready = []
                 with self.condition:
+                    changed = False
                     revoked = (self.stopping or self.repository.delivery_runtime.stopping
                                or not self.repository.valid(lease))
                     expired = self.clock() >= deadline
@@ -228,15 +230,19 @@ class LookupRuntime:
                         pending.append(work)
                         self.singleflight.add(work.key)
                         self.provider_queue.append(work)
+                        changed = True
                     for work in list(pending):
                         late = self.clock() >= work.deadline
                         if revoked or late:
+                            if not work.cancelled:
+                                changed = True
                             work.cancelled = True
                             error = TimeoutError() if late and work.started and not revoked else NotDispatched()
                             ready.append((work.server, None, error, work))
                         elif work.done:
                             ready.append((work.server, work.value, work.error, work))
-                    self.condition.notify_all()
+                    if changed:
+                        self.condition.notify_all()
                     if not ready:
                         self.condition.wait(.05)
                 for server, value, error, work in ready:
@@ -274,6 +280,7 @@ class LookupRuntime:
                         self.condition.wait(.05)
                 self.targets.remove(work)
                 self.active_targets.append(work)
+                self.condition.notify_all()
             try:
                 work.result = engine.run_domain_cycle(**work.kwargs, lookup_runtime=self,
                                                        target_deadline=work.deadline)
@@ -322,6 +329,7 @@ class LookupRuntime:
                             ens_rpc_url=snapshot.ens_rpc_url, sns_proxy_hosts=snapshot.sns_proxy_hosts)
                         force = OwnedScan(args, snapshot=snapshot)
                 with self.condition:
+                    changed = False
                     scans = [full] + ([force] if force is not None else [])
                     if self.stopping:
                         self.fence()
@@ -332,13 +340,17 @@ class LookupRuntime:
                     for work in list(self.active_targets):
                         expired = self.clock() >= work.deadline
                         if work.done or expired:
+                            if not work.settled:
+                                changed = True
                             self._settle(work, incomplete=expired or work.error is not None)
                         if work.done:
                             self.active_targets.remove(work)
+                            changed = True
                     for work in list(self.targets):
                         if self.clock() >= work.deadline:
                             self._settle(work, incomplete=True)
                             self.targets.remove(work)
+                            changed = True
                     # Retain lazy cursors, not an expanded scan x provider queue.
                     # Reserve four ready entries for an arriving force envelope.
                     for scan in reversed(scans):
@@ -354,7 +366,9 @@ class LookupRuntime:
                             self.targets.append(work)
                             queued += 1
                             scan.pending += 1
-                    self.condition.notify_all()
+                            changed = True
+                    if changed:
+                        self.condition.notify_all()
                     self.condition.wait(.05)
                 if force is not None and force.exhausted and not force.pending:
                     force.finish_force()

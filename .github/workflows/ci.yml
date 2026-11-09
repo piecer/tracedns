@@ -1,0 +1,200 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  schedule:
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+  npm_config_audit: 'false'
+  npm_config_fund: 'false'
+  npm_config_update_notifier: 'false'
+
+jobs:
+  unit:
+    name: unit (Python ${{ matrix.python }}, ${{ matrix.profile }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        # Candidate support; actual deployment/support promotion is separate.
+        python: ['3.11', '3.12']
+        profile: [base, ens]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install candidate and browser fixtures (network allowed)
+        run: |
+          mkdir -p artifacts
+          exec > >(tee artifacts/install.log) 2>&1
+          python -m venv .venv
+          .venv/bin/python -m pip install -r requirements-bootstrap.txt
+          python -m venv "$RUNNER_TEMP/ci-tools"
+          "$RUNNER_TEMP/ci-tools/bin/python" -m pip install -r requirements-bootstrap.txt
+          "$RUNNER_TEMP/ci-tools/bin/python" -m pip install -r requirements-ci.txt
+          requirement=requirements.txt
+          if [[ '${{ matrix.profile }}' == ens ]]; then requirement=requirements-ens.txt; fi
+          .venv/bin/python -m pip install -r "$requirement"
+          if [[ '${{ matrix.profile }}' == ens ]]; then
+            .venv/bin/python -c 'from web3 import Web3; from pymisp import PyMISP'
+          fi
+          .venv/bin/python -m pip check
+          .venv/bin/python -m pip freeze --all > artifacts/freeze.txt
+          .venv/bin/python -VV
+          node --version
+          npm --version
+          npm ci
+          npx playwright install --with-deps chromium
+          echo "PYTHON=$PWD/.venv/bin/python" >> "$GITHUB_ENV"
+      - name: Canonical unit tests (loopback only)
+        env:
+          PYTEST_ADDOPTS: -ra --junitxml=artifacts/unit.xml
+        run: bash scripts/ci/loopback_only.sh make test 2>&1 | tee artifacts/unit.log
+      - name: Security corpus (loopback only)
+        env:
+          PYTEST_ADDOPTS: --junitxml=artifacts/security-regression.xml
+        run: bash scripts/ci/loopback_only.sh make security-regression 2>&1 | tee artifacts/security-regression.log
+      - name: Relationship coverage floor (loopback only)
+        if: matrix.python == '3.12' && matrix.profile == 'ens'
+        env:
+          PYTEST_ADDOPTS: -ra --junitxml=artifacts/coverage.xml
+        run: bash scripts/ci/loopback_only.sh make botnet-coverage 2>&1 | tee artifacts/coverage.log
+      - name: Preserve results and skip reasons
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: unit-${{ matrix.python }}-${{ matrix.profile }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: '3.12'
+      - name: Install pinned tools (network allowed)
+        run: |
+          mkdir -p artifacts
+          python -m venv "$RUNNER_TEMP/ci-tools"
+          "$RUNNER_TEMP/ci-tools/bin/python" -m pip install -r requirements-bootstrap.txt
+          "$RUNNER_TEMP/ci-tools/bin/python" -m pip install -r requirements-ci.txt 2>&1 | tee artifacts/install.log
+      - name: Canonical lint (loopback only)
+        run: bash scripts/ci/loopback_only.sh make lint RUFF="$RUNNER_TEMP/ci-tools/bin/ruff" 2>&1 | tee artifacts/lint.log
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: lint
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+  browser:
+    name: browser (Chromium)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install candidate and Chromium (network allowed)
+        run: |
+          mkdir -p artifacts
+          exec > >(tee artifacts/install.log) 2>&1
+          python -m venv .venv
+          .venv/bin/python -m pip install -r requirements-bootstrap.txt
+          .venv/bin/python -m pip install -r requirements-ens.txt
+          .venv/bin/python -m pip check
+          .venv/bin/python -m pip freeze --all > artifacts/freeze.txt
+          npm ci
+          npx playwright install --with-deps chromium
+          echo "PYTHON=$PWD/.venv/bin/python" >> "$GITHUB_ENV"
+      - name: Chromium fixtures (loopback only)
+        env:
+          PLAYWRIGHT_JUNIT_OUTPUT_FILE: artifacts/browser.xml
+        run: bash scripts/ci/loopback_only.sh npm run test:e2e -- --reporter=line,junit 2>&1 | tee artifacts/browser.log
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: chromium
+          path: |
+            artifacts/
+            test-results/
+          if-no-files-found: error
+          retention-days: 14
+
+  # Blocking on PRs/pushes AND weekly after the dependency patch is integrated.
+  # No continue-on-error, service-error waiver, empty-report success or ignore IDs.
+  dependency-audit:
+    name: dependency-audit (Python ${{ matrix.python }}, ${{ matrix.profile }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12']
+        profile: [base, ens]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install clean app and separate auditor (network allowed)
+        run: |
+          mkdir -p artifacts
+          exec > >(tee artifacts/install.log) 2>&1
+          python -m venv .venv
+          .venv/bin/python -m pip install -r requirements-bootstrap.txt
+          python -m venv "$RUNNER_TEMP/ci-tools"
+          "$RUNNER_TEMP/ci-tools/bin/python" -m pip install -r requirements-bootstrap.txt
+          "$RUNNER_TEMP/ci-tools/bin/python" -m pip install -r requirements-ci.txt
+          requirement=requirements.txt
+          if [[ '${{ matrix.profile }}' == ens ]]; then requirement=requirements-ens.txt; fi
+          .venv/bin/python -m pip install -r "$requirement"
+      - name: Strict complete audit (network allowed)
+        run: bash scripts/ci/audit_environment.sh "$PWD/.venv/bin/python" "$RUNNER_TEMP/ci-tools/bin/pip-audit" "$PWD/artifacts/audit" 2>&1 | tee artifacts/audit.log
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: audit-${{ matrix.python }}-${{ matrix.profile }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30

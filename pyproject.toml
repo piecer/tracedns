@@ -1,6 +1,6 @@
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py311"
 
 # Keep the lint gate focused on real correctness issues the P0-2 fix and the
 # request_limits module can satisfy today:

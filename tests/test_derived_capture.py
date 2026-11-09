@@ -4,7 +4,6 @@ import importlib
 import importlib.util
 import json
 import time
-import sys
 import tracemalloc
 import inspect
 from unittest.mock import patch
@@ -12,6 +11,7 @@ import pytest
 
 from http_api.read_capture import CaptureBudget
 from security.derived_redaction import Builder, Encoding, OwnedPayload, Projector, RedactionBudget
+from tests.instrumentation_helpers import temporary_trace
 from tests.test_stage4_capture_progress import actual_source
 
 MEASUREMENTS = []
@@ -286,11 +286,8 @@ def test_actual_inner_work_single_phase_and_complete_progress(value):
         for _ in range(20000):
             phase = unit.phase
             per = dict.fromkeys(per, 0)
-            sys.settrace(trace)
-            try:
+            with temporary_trace(trace):
                 status = unit.slice()
-            finally:
-                sys.settrace(None)
             for key, count in per.items():
                 maxima[key] = max(maxima[key], count)
             assert per['decoder_steps'] <= 512
