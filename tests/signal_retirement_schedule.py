@@ -38,7 +38,7 @@ EXPECTED_LINES = {
         67: 'os.kill(os.getpid(), signal.SIGTERM)',
         104: 'out, err = process.communicate(timeout=5)',
     },
-    'monitor/lookup_runtime.py': {281: 'work.error = error', 282: "work.kwargs['cycle_quality'].append(False)"},
+    'monitor/lookup_runtime.py': {288: 'work.error = error', 289: "work.kwargs['cycle_quality'].append(False)"},
     'monitor/repository.py': {197: 'with self._coord, state_lock():', 198: 'root_sizes = (len(self.current), len(self.history))'},
     'monitor/signal_stop.py': {33: 'self.requested = True', 47: 'self._stop()'},
     'dns_monitor.py': {350: 'shutdown_deadline = time.monotonic() + 3'},
@@ -238,9 +238,9 @@ class Observer:
             elif event == 'line' and line == 56:
                 self.emit('writer_config_acquired', config_owned=frame.f_locals['captured']['lock']._is_owned())
         elif name == '_controller':
-            if event == 'line' and line == 281:
+            if event == 'line' and line == 288:
                 self.emit('controller_error_assignment_entry', exception_type=type(frame.f_locals['error']).__name__)
-            elif event == 'line' and line == 282:
+            elif event == 'line' and line == 289:
                 self.emit('controller_work_error_assigned', exception_type=type(frame.f_locals['work'].error).__name__)
         elif name == 'capture' and main and self.gated_main:
             if event == 'line' and line == 197:
