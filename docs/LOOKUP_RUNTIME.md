@@ -24,7 +24,7 @@ they are not the production scheduling path.
   ticket has one mailbox. Completed-but-unconsumed and overdue-running tickets
   still occupy physical capacity.
 - Monotonic logical provider budgets are DNS 5 seconds, ENS 30 seconds, SNS 20
-  seconds, and DHT's configured duration plus 5 seconds. Target eligibility ends
+  seconds, RPC 35 seconds, and DHT's configured duration plus 5 seconds. Target eligibility ends
   75 seconds after ready-queue admission, including time waiting for capacity.
   Exact-boundary and later results are ineligible. Unstarted/deferred work is
   incomplete coverage, not a query error.
@@ -81,7 +81,12 @@ admitted without waiting for another provider. Fresh-positive evidence merges
 only admitted queried providers; cached values are never fresh force evidence.
 Incomplete coverage cannot activate NXDOMAIN absence. A genuinely complete
 empty/NXDOMAIN result can still follow the existing authoritative absence policy.
-The legacy no-owner three-failure eviction semantics remain unchanged.
+The legacy no-owner three-failure eviction semantics remain unchanged for DNS,
+ENS and SNS. RPC, like DHT, retains last-authenticated evidence after failure.
+RPC is one logical provider with fixed public-endpoint fallback. Its transport
+uses per-attempt 8-second cooperative budgets, 1-KiB chunks, an 8-KiB identity-only
+response cap, TLS verification, no proxy/redirect, and the original owner deadline.
+See [RPC tracking](RPC_TRACKING.md) for authentication and role separation.
 
 `CycleResult.complete` describes the selected scan's coverage. Its
 `target_complete` mapping describes the targets visited by that scan, and
@@ -160,6 +165,14 @@ jobs once as failure. Audit start failure leaves the original queue intact and
 reports incomplete rather than spawning replacements. Main cleans signal/HTTP/
 housekeeping resources before bounded source/audit draining and does not close
 the live owner's ledger. Repeated stop can report completion after actual return.
+
+The lock-free signal handler delegates to `scheduler.stop_and_wake` on the normal
+signal coordinator thread. After publishing the stop latch and fencing, that
+thread retains the condition-wake obligation until a contending config holder
+releases the lock; it does not retry until audit retirement completes. The owned
+scheduler's ordinary `stop()` remains nonblocking on config contention for pump
+and audit-retirement callers. Bridge close retains its bounded join and reports
+incomplete while the coordinator is still waiting; a wake is not proof of drain.
 
 ## Acceptance coverage
 

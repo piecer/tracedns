@@ -37,6 +37,10 @@ def domain_identity(value):
     if isinstance(value, dict):
         name = str(value.get('name', '')).strip().rstrip('.').lower()
         typ = str(value.get('type') or 'A').strip().upper() or 'A'
+        if typ == 'RPC':
+            from rpc_query import PROFILE
+            label = str(value.get('name', '')).strip().lower()
+            return f"{label}|RPC|{value.get('rpc_profile', PROFILE)}"
         if typ == 'DHT':
             label = str(value.get('name', '')).strip().lower()
             return f"{label}|DHT|{str(value.get('dht_public_key') or '').lower()}"
@@ -57,6 +61,10 @@ def domain_storage_name(value):
     if isinstance(value, dict):
         name = str(value.get('name', '')).strip().rstrip('.')
         typ = str(value.get('type') or 'A').strip().upper() or 'A'
+        if typ == 'RPC':
+            from rpc_query import PROFILE
+            label = str(value.get('name', '')).strip()
+            return f"{label} [RPC:{value.get('rpc_profile', PROFILE)}]"
         if typ == 'DHT':
             label = str(value.get('name', '')).strip()
             return f"{label} [DHT:{str(value.get('dht_public_key') or '').lower()}]"
@@ -92,6 +100,29 @@ def validate_dht_domain(value):
     # The existing reversible history filename must fit one filesystem component.
     if len(quote(domain_storage_name(value), safe='.-_|').encode('ascii')) + 5 > 255:
         raise ValueError('DHT display label is too long for a history filename')
+
+
+def validate_rpc_domain(value):
+    """Admit only the read-only built-in RPC profile; names are display labels."""
+    from rpc_query import PROFILE
+    from urllib.parse import quote
+    label = value.get('name')
+    if (type(label) is not str or not label.strip() or len(label) > 253 or
+            any(ord(char) < 32 or ord(char) == 127 for char in label)):
+        raise ValueError('invalid RPC display label')
+    if value.get('rpc_profile', PROFILE) != PROFILE:
+        raise ValueError('rpc_invalid_profile')
+    if any(key.startswith('rpc_') and key != 'rpc_profile' for key in value):
+        raise ValueError('unsupported RPC option')
+    if len(quote(domain_storage_name(value), safe='.-_|').encode('ascii')) + 5 > 255:
+        raise ValueError('RPC display label is too long for a history filename')
+
+
+def validate_rpc_domains(values):
+    items = values if isinstance(values, list) else [values]
+    for item in items:
+        if isinstance(item, dict) and str(item.get('type') or '').upper() == 'RPC':
+            validate_rpc_domain(item)
 
 
 def validate_dht_domains(values):
@@ -224,6 +255,9 @@ def normalize_domains(value):
         if not name:
             continue
         d = {'name': name, 'type': typ}
+        if typ == 'RPC':
+            from rpc_query import PROFILE
+            d['rpc_profile'] = it.get('rpc_profile', PROFILE)
         if typ == 'DHT':
             # Preserve invalid values too: admission must reject, not repair them.
             d['dht_public_key'] = it.get('dht_public_key')

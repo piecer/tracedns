@@ -14,9 +14,10 @@ from copy import deepcopy
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from config_manager import domain_identity
+from rpc_query import PROFILE as DEFAULT_RPC_PROFILE
 
 
-RecordType = str  # 'A' | 'TXT' | 'ENS' | 'SNS' | 'DHT' | 'MIXED'
+RecordType = str  # 'A' | 'TXT' | 'ENS' | 'SNS' | 'DHT' | 'RPC' | 'MIXED'
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,7 @@ class DomainSpec:
     sns_options: Optional[Dict[str, Any]] = None
     dht_public_key: Optional[str] = None
     dht_options: Optional[Dict[str, Any]] = None
+    rpc_profile: Optional[str] = DEFAULT_RPC_PROFILE
 
 
 @dataclass
@@ -59,10 +61,12 @@ class Snapshot:
     dht_public_key: Optional[str] = None
     dht_options: Optional[Dict[str, Any]] = None
     dht_record: Optional[Dict[str, Any]] = None
+    rpc_profile: Optional[str] = None
+    rpc_record: Optional[Dict[str, Any]] = None
 
     def managed_ips(self) -> Set[str]:
         r = str(self.type or '').upper()
-        if r in ('TXT', 'ENS', 'SNS', 'DHT'):
+        if r in ('TXT', 'ENS', 'SNS', 'DHT', 'RPC'):
             return {str(x).strip() for x in (self.decoded_ips or []) if str(x or '').strip()}
         if r == 'A':
             # A-type with post-process enabled stores transformed IPs in values.
@@ -102,7 +106,7 @@ class Snapshot:
             out['sns_decode'] = self.sns_decode
         if isinstance(self.sns_options, dict) and self.sns_options:
             out['sns_options'] = self.sns_options
-        for key in ('dht_public_key', 'dht_options', 'dht_record'):
+        for key in ('dht_public_key', 'dht_options', 'dht_record', 'rpc_profile', 'rpc_record'):
             if d.get(key) is not None:
                 out[key] = d[key]
         return out
@@ -132,6 +136,8 @@ class Snapshot:
             dht_public_key=obj.get('dht_public_key'),
             dht_options=deepcopy(obj.get('dht_options')),
             dht_record=deepcopy(obj.get('dht_record')),
+            rpc_profile=obj.get('rpc_profile'),
+            rpc_record=deepcopy(obj.get('rpc_record')),
         )
         return snap
 
@@ -257,6 +263,7 @@ def coerce_domains(domains: List[Any]) -> List[DomainSpec]:
                     sns_options=d.get('sns_options') if isinstance(d.get('sns_options'), dict) else None,
                     dht_public_key=d.get('dht_public_key'),
                     dht_options=deepcopy(d.get('dht_options')),
+                    rpc_profile=d.get('rpc_profile', DEFAULT_RPC_PROFILE),
                 )
             )
         else:
@@ -275,6 +282,7 @@ def coerce_domains(domains: List[Any]) -> List[DomainSpec]:
             'ens_node': ds.ens_node,
             'ens_resolver': ds.ens_resolver,
             'dht_public_key': ds.dht_public_key,
+            'rpc_profile': ds.rpc_profile,
         })
         if ident in seen:
             continue

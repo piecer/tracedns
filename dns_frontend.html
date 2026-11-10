@@ -210,7 +210,7 @@
   <h3>🧪 Domain Verify &amp; Add</h3>
   <p style="color:#5b6a77;margin-bottom:10px;">Validate DNS behavior first, review type/IP/VT results, then add to monitoring config.</p>
   <div class="domain-verify-grid">
-    <label>Domain / DHT display label
+    <label>Domain / DHT or RPC display label
       <input id="verifyDomainName" type="text" placeholder="example.com" />
     </label>
     <label>Record Type
@@ -221,6 +221,7 @@
         <option value="ENS">ENS</option>
         <option value="SNS">SNS</option>
         <option value="DHT">DHT (BEP44 signed DNS)</option>
+        <option value="RPC">RPC (Polygon AES-GCM C2)</option>
       </select>
     </label>
     <label>TXT Decode
@@ -246,6 +247,11 @@
     </label>
     <label>SNS Options (JSON)
       <input id="verifySnsOptions" type="text" placeholder='{"key_u32":"0x00400454"}' />
+    </label>
+    <label hidden>RPC profile
+      <select id="verifyRpcProfile" disabled aria-describedby="verifyRpcHelp">
+        <option value="polygon_aes_gcm_v1">Polygon AES-128-GCM (rpc.txt)</option>
+      </select>
     </label>
     <label hidden>DHT public key
       <textarea id="verifyDhtPublicKey" class="dht-public-key" rows="3" spellcheck="false" disabled aria-describedby="verifyDhtHelp" placeholder="64 hexadecimal characters; no prefix or whitespace"></textarea>
@@ -273,6 +279,7 @@
   </div>
   <p id="verifyDhtHelp" class="field-help" hidden>Read-only BEP44 signed DNS lookup via the server. No C2 contact or republish; VT enrichment is disabled for DHT precheck. The public key is not secret; the name is a display label, not necessarily a DNS name. No DNS server, ENS RPC or SNS proxy is required. Allowed lookup options: duration, max_queries, timeout, rate, concurrency, max_nodes, bootstraps. A valid target can be registered even if no record is found. Bounded lookup coverage cannot prove absence or deletion, and signed DNS is not proof of actual C2 activity.</p>
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 10px;">
+    <p id="verifyRpcHelp" class="field-help" hidden>Read-only Polygon contract lookup with AES-128-GCM authentication. The name is a display label; public RPC endpoints, contract, selector and sample key are built in. Only authenticated C2 entries become managed IPs. Relay, download and mining settings stay separate. No C2 contact or VT enrichment. A valid profile can be added even if the current lookup fails.</p>
     <button id="runDomainVerifyBtn">🔬 Validate Domain</button>
     <button id="addVerifiedDomainBtn">➕ Add Verified Domain</button>
     <button id="clearDomainVerifyBtn">🧹 Clear</button>

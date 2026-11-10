@@ -3,7 +3,7 @@
 requests==2.34.2
 argon2-cffi>=23.1,<26
 dnspython==2.9.2
-cryptography>=43,<51  # Ed25519 verification for read-only BEP44 DHT tracking
+cryptography>=43,<51  # Ed25519 DHT verification and AES-GCM RPC config authentication
 PyNaCl==1.6.2  # libsodium point validation rejects unauthenticating low-order DHT keys
 PyMISP==2.4.198
 

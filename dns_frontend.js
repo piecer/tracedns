@@ -380,6 +380,9 @@ function domainConfigIdentity(domainObj){
   }
   const name = normalizeDomainName(domainObj.name);
   const type = String(domainObj.type || 'A').trim().toUpperCase() || 'A';
+  if(type === 'RPC'){
+    return `${String(domainObj.name || '').trim().toLowerCase()}|RPC|${domainObj.rpc_profile ?? 'polygon_aes_gcm_v1'}`;
+  }
   if(type === 'DHT'){
     // A DHT name is a display label, not a DNS name (a trailing dot is literal).
     const label = String(domainObj.name || '').trim().toLowerCase();
@@ -400,6 +403,9 @@ function domainConfigIdentity(domainObj){
 
 function domainStorageName(target){
   const name = String(typeof target === 'string' ? target : (target && target.name) || '').trim();
+  if(target && String(target.type || '').toUpperCase() === 'RPC'){
+    return `${name} [RPC:${target.rpc_profile ?? 'polygon_aes_gcm_v1'}]`;
+  }
   if(target && String(target.type || '').toUpperCase() === 'DHT'){
     return `${name} [DHT:${String(target.dht_public_key || '').toLowerCase()}]`;
   }
@@ -549,6 +555,11 @@ function updateDomainVerifyInputMode(){
   const isEnsOnly = t === 'ENS';
   const isSnsOnly = t === 'SNS';
   const isDhtOnly = t === 'DHT';
+  const isRpcOnly = t === 'RPC';
+  const rpcProfile = document.getElementById('verifyRpcProfile');
+  if(rpcProfile){ rpcProfile.disabled = !isRpcOnly; rpcProfile.parentElement.hidden = !isRpcOnly; }
+  const rpcHelp = document.getElementById('verifyRpcHelp');
+  if(rpcHelp) rpcHelp.hidden = !isRpcOnly;
   ['verifyDhtPublicKey', 'verifyDhtOptions'].forEach(id=>{
     const el = document.getElementById(id);
     if(el){ el.disabled = !isDhtOnly; el.parentElement.hidden = !isDhtOnly; }
@@ -556,14 +567,14 @@ function updateDomainVerifyInputMode(){
   const dhtHelp = document.getElementById('verifyDhtHelp');
   if(dhtHelp) dhtHelp.hidden = !isDhtOnly;
   const addButton = document.getElementById('addVerifiedDomainBtn');
-  if(addButton) addButton.textContent = isDhtOnly ? 'Add DHT target' : '➕ Add Verified Domain';
+  if(addButton) addButton.textContent = isDhtOnly ? 'Add DHT target' : (isRpcOnly ? 'Add RPC target' : '➕ Add Verified Domain');
   ['verifyAnalyzeDecoders', 'verifyDecoderTopN', 'verifyIncludeVt', 'verifyVtBudget', 'verifyVtWorkers'].forEach(id=>{
     const el = document.getElementById(id);
-    if(el) el.disabled = isDhtOnly;
+    if(el) el.disabled = isDhtOnly || isRpcOnly;
   });
-  txtEl.disabled = isAOnly || isEnsOnly || isSnsOnly || isDhtOnly;
-  aEl.disabled = isTxtOnly || isEnsOnly || isSnsOnly || isDhtOnly;
-  xorEl.disabled = isTxtOnly || isEnsOnly || isSnsOnly || isDhtOnly;
+  txtEl.disabled = isAOnly || isEnsOnly || isSnsOnly || isDhtOnly || isRpcOnly;
+  aEl.disabled = isTxtOnly || isEnsOnly || isSnsOnly || isDhtOnly || isRpcOnly;
+  xorEl.disabled = isTxtOnly || isEnsOnly || isSnsOnly || isDhtOnly || isRpcOnly;
   ensKeyEl.disabled = !isEnsOnly;
   ensDecodeEl.disabled = !isEnsOnly;
   ensOptionsEl.disabled = !isEnsOnly;
@@ -609,6 +620,7 @@ function renderDomainVerifySummary(result){
     const target = result.domain_object || result.domain_obj || {};
     lines.push(dhtEvidenceText({...target, ...result}, result.dht_observation));
   }
+  if(selectedType === 'RPC') lines.push(rpcEvidenceText(result, result.rpc_observation));
   if(notes.length){
     lines.push(`Notes: ${notes.join(' | ')}`);
   }
@@ -867,8 +879,8 @@ async function runDomainVerify(){
     }
     snsOptions = parsedSnsOptions.value;
   }
-  const includeVt = type !== 'DHT' && !!((document.getElementById('verifyIncludeVt') || {}).checked);
-  const analyzeDecoders = type !== 'DHT' && !!((document.getElementById('verifyAnalyzeDecoders') || {}).checked);
+  const includeVt = !['DHT','RPC'].includes(type) && !!((document.getElementById('verifyIncludeVt') || {}).checked);
+  const analyzeDecoders = !['DHT','RPC'].includes(type) && !!((document.getElementById('verifyAnalyzeDecoders') || {}).checked);
   const decoderTopN = parseBoundedInt((document.getElementById('verifyDecoderTopN') || {}).value, 8, 1, 50);
   const vtBudget = parseBoundedInt((document.getElementById('verifyVtBudget') || {}).value, 200, 0, 5000);
   const vtWorkers = parseBoundedInt((document.getElementById('verifyVtWorkers') || {}).value, 8, 1, 32);
@@ -882,6 +894,7 @@ async function runDomainVerify(){
         domain: domain,
         type: type,
         ...dhtFields,
+        ...(type === 'RPC' ? {rpc_profile:document.getElementById('verifyRpcProfile').value} : {}),
         txt_decode: txtDecode,
         a_decode: aDecode,
         a_xor_key: aXorKey,
@@ -917,6 +930,9 @@ async function runDomainVerify(){
       const status = String((j.dht_observation || {}).status || 'unknown');
       const confirmed = ['initial', 'updated', 'unchanged'].includes(status);
       setDomainVerifyStatus(`Validation complete — DHT lookup: ${status}; ${j.can_add === false ? 'configuration cannot be added' : 'configuration can be added (not proof of retrieval)'}`, confirmed && j.can_add !== false ? 'ok' : 'err');
+    }else if(type === 'RPC'){
+      const status = String((j.rpc_observation || {}).status || 'error');
+      setDomainVerifyStatus(`Validation complete — RPC lookup: ${status}; configuration can be added`, status === 'authenticated' ? 'ok' : 'err');
     }else{
       setDomainVerifyStatus(j.can_add === false ? 'Validation complete (no addable IP)' : 'Validation complete', j.can_add === false ? 'err' : 'ok');
     }
@@ -3008,7 +3024,7 @@ function addDomainRow(obj, metadata){
   const sel = document.createElement('select');
   sel.className = 'domain-type';
   // Expand supported record type list
-  ['A','TXT','ENS','SNS','DHT','AAAA','CNAME','MX','NS','SRV','CAA'].forEach(t=>{ const o = document.createElement('option'); o.value=t; o.text=t; sel.appendChild(o); });
+  ['A','TXT','ENS','SNS','DHT','RPC','AAAA','CNAME','MX','NS','SRV','CAA'].forEach(t=>{ const o = document.createElement('option'); o.value=t; o.text=t; sel.appendChild(o); });
   if(obj && obj.type) sel.value = obj.type.toUpperCase();
   tdType.appendChild(sel);
 
@@ -3158,6 +3174,24 @@ function addDomainRow(obj, metadata){
   updateDhtKeyDisplay();
   inpDhtKey.addEventListener('input', updateDhtKeyDisplay);
 
+  const tdRpcProfile = document.createElement('td');
+  const selRpcProfile = document.createElement('select');
+  selRpcProfile.className = 'rpc-profile';
+  const rpcOption = document.createElement('option');
+  rpcOption.value = 'polygon_aes_gcm_v1';
+  rpcOption.textContent = 'Polygon AES-128-GCM (rpc.txt)';
+  selRpcProfile.appendChild(rpcOption);
+  if(obj && obj.rpc_profile && obj.rpc_profile !== rpcOption.value){
+    const unknown = document.createElement('option');
+    unknown.value = obj.rpc_profile; unknown.textContent = obj.rpc_profile;
+    selRpcProfile.appendChild(unknown);
+  }
+  selRpcProfile.value = (obj && obj.rpc_profile) || rpcOption.value;
+  tdRpcProfile.appendChild(selRpcProfile);
+  const rpcHelp = document.createElement('p');
+  rpcHelp.className = 'field-help';
+  rpcHelp.textContent = 'Read-only Polygon eth_call → AES-128-GCM → C2 IP:port. Fixed public RPC fallback; no ENS RPC setting required. Relay, download and mining roles are not C2. No C2 contact.';
+
   // Toggle decoder fields by record type
   const toggleDecodeInputs = function(){
     const typ = (sel.value || 'A').toUpperCase();
@@ -3166,6 +3200,8 @@ function addDomainRow(obj, metadata){
     const isENS = typ === 'ENS';
     const isSNS = typ === 'SNS';
     const isDHT = typ === 'DHT';
+    selRpcProfile.disabled = typ !== 'RPC';
+    rpcHelp.hidden = typ !== 'RPC';
     inpDhtKey.disabled = !isDHT;
     inpDhtOptions.disabled = !isDHT;
     dhtKeyDisplay.hidden = !isDHT;
@@ -3178,7 +3214,7 @@ function addDomainRow(obj, metadata){
     inpEnsOptions.disabled = !(isENS || isSNS);
     inpEnsNode.disabled = !isENS;
     inpEnsResolver.disabled = !isENS;
-    [selDecode, selADecode, inpAKey, inpEnsKey, selEnsDecode, inpEnsOptions, inpEnsNode, inpEnsResolver, inpDhtKey, inpDhtOptions].forEach(control=>{
+    [selDecode, selADecode, inpAKey, inpEnsKey, selEnsDecode, inpEnsOptions, inpEnsNode, inpEnsResolver, inpDhtKey, inpDhtOptions, selRpcProfile].forEach(control=>{
       if(control.parentElement.tagName === 'LABEL') control.parentElement.hidden = control.disabled;
     });
   };
@@ -3254,7 +3290,7 @@ function addDomainRow(obj, metadata){
   summary.textContent = 'View / edit configuration';
   const fields = document.createElement('div');
   fields.className = 'domain-editor-grid';
-  [[tdName,'Domain name / DHT display label'], [tdType,'Record type'], [tdTxtDecode,'TXT decoder'], [tdADecode,'A decoder'], [tdAKey,'A XOR key'], [tdEnsKey,'ENS / SNS record key'], [tdEnsDecode,'ENS / SNS decoder'], [tdEnsOptions,'Decoder options (JSON)'], [tdEnsNode,'ENS node'], [tdEnsResolver,'ENS resolver'], [tdDhtKey,'DHT public key'], [tdDhtOptions,'DHT lookup options (JSON)']].forEach(([cell, title])=>{
+  [[tdName,'Domain name / DHT or RPC display label'], [tdType,'Record type'], [tdTxtDecode,'TXT decoder'], [tdADecode,'A decoder'], [tdAKey,'A XOR key'], [tdEnsKey,'ENS / SNS record key'], [tdEnsDecode,'ENS / SNS decoder'], [tdEnsOptions,'Decoder options (JSON)'], [tdEnsNode,'ENS node'], [tdEnsResolver,'ENS resolver'], [tdDhtKey,'DHT public key'], [tdDhtOptions,'DHT lookup options (JSON)'], [tdRpcProfile,'RPC profile']].forEach(([cell, title])=>{
     const label = document.createElement('label');
     label.textContent = title;
     const control = cell.firstChild;
@@ -3262,7 +3298,7 @@ function addDomainRow(obj, metadata){
     label.hidden = control.disabled;
     fields.appendChild(label);
   });
-  detail.append(summary, fields, dhtHelp);
+  detail.append(summary, fields, dhtHelp, rpcHelp);
   card.append(heading, dhtKeyDisplay, dates, detail, del);
   tr.appendChild(card);
   inp.addEventListener('input', ()=>{ name.textContent = inp.value || 'New target'; });
@@ -3329,6 +3365,7 @@ function collectDomainsFromUI(excludedRow){
   rows.forEach(r=>{
     if(r === excludedRow) return;
     const typ = ((r.querySelector('.domain-type') || {}).value || 'A').toUpperCase();
+    if(typ === 'RPC' && !String((r.querySelector('.domain-name') || {}).value || '').trim()) throw new Error('RPC display label is required');
     let dht = null;
     if(typ === 'DHT'){
       dht = parseDhtInputs((r.querySelector('.dht-public-key') || {}).value, (r.querySelector('.dht-options') || {}).value);
@@ -3351,6 +3388,8 @@ function collectDomainsFromUI(excludedRow){
       if(typ === 'DHT'){
         delete obj.dht_options;
         Object.assign(obj, dht.value);
+      } else if(typ === 'RPC'){
+        obj.rpc_profile = r.querySelector('.rpc-profile').value;
       } else if(typ === 'TXT'){
         if(txt_decode) obj.txt_decode = txt_decode;
       } else if(typ === 'A'){
@@ -3586,8 +3625,43 @@ function managedIpsForResult(info){
   const values = Array.isArray(info.values) ? info.values : [];
   const decoded = Array.isArray(info.decoded_ips) ? info.decoded_ips : [];
   const type = String(info.type || 'A').toUpperCase();
-  if(type === 'DHT' || type === 'TXT') return decoded;
+  if(type === 'DHT' || type === 'TXT' || type === 'RPC') return decoded;
   return type === 'A' ? values : values.concat(decoded);
+}
+
+function rpcEvidenceText(info, observation){
+  const record = info.rpc_record || {};
+  const obs = observation || {};
+  const endpoints = info.decoded_endpoints || record.decoded_endpoints || [];
+  const lines = [
+    `Latest RPC attempt: ${obs.status || 'unknown'}${obs.reason ? ' — '+obs.reason : ''}`,
+    endpoints.length ? `Last authenticated C2 endpoints: ${endpoints.join(', ')}` : 'No authenticated C2 configuration available.',
+    'Last authenticated data is retained after failed lookups; it is not proof of current reachability.',
+    `Profile: ${info.rpc_profile || record.profile || 'polygon_aes_gcm_v1'}`,
+    `Chain: Polygon (${record.chain_id || 137}) / block: ${record.block || 'latest'}`,
+    `Contract: ${record.contract || 'unknown'} / selector: ${record.selector || 'unknown'}`,
+    `Authentication: ${record.authentication || 'not verified'}`,
+    `Source RPC (not C2): ${record.source_rpc || 'unknown'}`,
+    `Auxiliary roles (not C2): ${JSON.stringify(record.roles || {})}`,
+    'No C2 contact. Public RPC observation is not independent chain-finality proof.'
+  ];
+  if(record.plaintext) lines.push(`Authenticated plaintext:\n${record.plaintext}`);
+  return lines.join('\n');
+}
+
+function renderRpcEvidence(cell, info, observation){
+  const text = rpcEvidenceText(info, observation);
+  const summary = document.createElement('div');
+  summary.textContent = text.split('\n').slice(0,3).join('\n');
+  const details = document.createElement('details');
+  const title = document.createElement('summary');
+  title.textContent = 'RPC identity, auxiliary roles and plaintext';
+  const evidence = document.createElement('pre');
+  evidence.textContent = text;
+  details.append(title, evidence);
+  cell.className = 'rpc-evidence';
+  cell.replaceChildren(summary, details);
+  cell.removeAttribute('title');
 }
 
 function formatDhtSequence(seq){
@@ -3664,6 +3738,8 @@ function aggregateResultsByDomain(results){
       dht_public_keys: new Set(),
       dht_targets: new Set(),
       dht_sequences: new Set(),
+      decoded_endpoints: new Set(),
+      rpc_record: null,
       ts: 0
     };
     Object.keys(srvMap).forEach(server=>{
@@ -3683,6 +3759,8 @@ function aggregateResultsByDomain(results){
       if(rtype === 'TXT' && info.txt_decode) acc.txt_decodes.add(String(info.txt_decode));
       if(rtype === 'A' && info.a_decode) acc.a_decodes.add(String(info.a_decode));
       if(rtype === 'A' && info.a_xor_key) acc.a_xor_keys.add(String(info.a_xor_key));
+      (info.decoded_endpoints || []).forEach(endpoint=>acc.decoded_endpoints.add(String(endpoint)));
+      if(rtype === 'RPC' && info.rpc_record) acc.rpc_record = info.rpc_record;
       if(rtype === 'DHT'){
         if(info.dht_public_key) acc.dht_public_keys.add(String(info.dht_public_key));
         const record = info.dht_record || {};
@@ -3721,7 +3799,9 @@ function aggregateResultsByDomain(results){
       a_xor_keys: Array.from(acc.a_xor_keys).sort(),
       dht_public_keys: Array.from(acc.dht_public_keys).sort(),
       dht_targets: Array.from(acc.dht_targets).sort(),
-      dht_sequences: Array.from(acc.dht_sequences).sort()
+      dht_sequences: Array.from(acc.dht_sequences).sort(),
+      decoded_endpoints: Array.from(acc.decoded_endpoints).sort(),
+      ...(acc.rpc_record ? {rpc_record:acc.rpc_record, rpc_profile:acc.rpc_record.profile} : {})
     };
   });
   return out;
@@ -3812,6 +3892,7 @@ async function refreshResults(){
       const observation = (domainMeta[d] || {}).dht_observation;
       const rowType = String(info.type || (observation ? 'DHT' : 'A')).toUpperCase();
       const hasDht = rowType === 'DHT' || recordTypes.includes('DHT') || !!observation;
+      const hasRpc = rowType === 'RPC' || recordTypes.includes('RPC');
       const hasTxt = rowType === 'TXT' || rowType === 'MIXED' || recordTypes.includes('TXT');
 
       const tr = document.createElement('tr');
@@ -3839,6 +3920,7 @@ async function refreshResults(){
       if(hasDht){
         renderDhtEvidence(tdMethod, info, observation, d);
       }
+      if(hasRpc) renderRpcEvidence(tdMethod, info, (domainMeta[d] || {}).rpc_observation);
 
       const tdServers = document.createElement('td');
       tdServers.className = 'wrap-cell';
@@ -4011,7 +4093,16 @@ async function loadHistory(domain){
     events.forEach(h=>{
       const t = formatUnixTsLocal(h.ts);
       if(h.new && h.old){
-        lines.push(`${t} [${h.server}] (${h.type}) ${ (h.old.values||[]).join(',') } -> ${ (h.new.values||[]).join(',') }`);
+        if(String(h.type).toUpperCase() === 'RPC'){
+          lines.push(`${t} [${h.server}] (${h.type}) C2 ${ (h.old.decoded_endpoints||[]).join(',') || '(none)' } -> ${ (h.new.decoded_endpoints||[]).join(',') || '(none)' }`);
+          for(const side of ['old', 'new']){
+            const snapshot = h[side];
+            lines.push(`  ${side} raw ABI: ${ (snapshot.values||[]).join(',') }`);
+            lines.push(`  ${side} RPC provenance (auxiliary roles are not C2): ${JSON.stringify({profile:snapshot.rpc_profile, record:snapshot.rpc_record||{}})}`);
+          }
+        } else {
+          lines.push(`${t} [${h.server}] (${h.type}) ${ (h.old.values||[]).join(',') } -> ${ (h.new.values||[]).join(',') }`);
+        }
       } else if(h.values){
         lines.push(`${t} [${h.server}] (${h.type}) ${ (h.values||[]).join(',') }`);
       } else {

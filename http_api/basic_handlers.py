@@ -41,7 +41,7 @@ def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Di
 
     sources = dict(current_results)
     for domain, meta in (history_meta_map or {}).items():
-        if isinstance(meta, dict) and isinstance(meta.get('dht_observation'), dict):
+        if isinstance(meta, dict) and any(isinstance(meta.get(key), dict) for key in ('dht_observation', 'rpc_observation')):
             sources.setdefault(domain, {})
     for d, m in sources.items():
         if include_raw:
@@ -149,6 +149,11 @@ def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Di
                 if record.get('seq') is not None:
                     agg_entry['dht_sequences'].add(str(record['seq']))
 
+            if rtype == 'RPC' and entry is not None:
+                for key in ('rpc_profile', 'rpc_record'):
+                    if info.get(key) is not None:
+                        entry[key] = deepcopy(info[key])
+
             if include_raw:
                 data[d][srv] = entry
 
@@ -163,6 +168,8 @@ def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Di
                 pass
 
         meta = (history_meta_map or {}).get(d) or {}
+        if not agg_entry['record_types'] and isinstance(meta.get('rpc_observation'), dict):
+            agg_entry['record_types'].add('RPC')
         if not agg_entry['record_types'] and isinstance(meta.get('dht_observation'), dict):
             agg_entry['record_types'].add('DHT')
             key = (meta.get('dht_state') or {}).get('public_key')
@@ -204,6 +211,8 @@ def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Di
 
         if 'DHT' in record_types:
             method_parts.append('DHT: signed DNS (BEP44)')
+        if 'RPC' in record_types:
+            method_parts.append('RPC: Polygon / AES-128-GCM')
         data_agg[d] = {
             'type': domain_type,
             'record_types': record_types,
@@ -233,6 +242,13 @@ def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Di
             if len(records) == 1:
                 data_agg[d]['dht_record'] = deepcopy(records[0])
 
+        if 'RPC' in record_types:
+            records = [info['rpc_record'] for info in m.values()
+                       if isinstance(info, dict) and isinstance(info.get('rpc_record'), dict)]
+            if len(records) == 1:
+                data_agg[d]['rpc_record'] = deepcopy(records[0])
+                data_agg[d]['rpc_profile'] = records[0].get('profile')
+
     domain_meta = {}
     for d, meta in (history_meta_map or {}).items():
         if not isinstance(meta, dict) or not meta:
@@ -245,6 +261,8 @@ def _build_results_payload(current_results: Dict[str, Any], history_meta_map: Di
         }
         if isinstance(meta.get('dht_observation'), dict):
             domain_meta[d]['dht_observation'] = deepcopy(meta['dht_observation'])
+        if isinstance(meta.get('rpc_observation'), dict):
+            domain_meta[d]['rpc_observation'] = deepcopy(meta['rpc_observation'])
 
     payload = {'results_agg': data_agg, 'domain_meta': domain_meta}
     if include_raw:

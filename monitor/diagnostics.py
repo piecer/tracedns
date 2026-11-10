@@ -21,6 +21,9 @@ QUERY_REASONS = frozenset({
     'rpc_not_connected', 'registry_init_failed', 'resolver_lookup_reverted',
     'resolver_lookup_failed', 'resolver_missing', 'resolver_contract_init_failed',
     'resolver_text_reverted', 'resolver_text_failed', 'record_empty',
+    'rpc_invalid_profile', 'rpc_invalid_abi', 'rpc_auth_failed', 'rpc_invalid_plaintext',
+    'rpc_timeout', 'rpc_http_status', 'rpc_content_encoding', 'rpc_read_timeout_unavailable',
+    'rpc_body_limit', 'rpc_invalid_json', 'rpc_response_error', 'rpc_no_c2',
 })
 
 
@@ -55,6 +58,6 @@ def query_error(exc, *, ens_name=None):
 
 
 def provider_label(rtype, slot):
-    kind = {'ENS': 'ens', 'SNS': 'sns', 'DHT': 'dht'}.get(rtype, 'dns')
+    kind = {'ENS': 'ens', 'SNS': 'sns', 'DHT': 'dht', 'RPC': 'rpc'}.get(rtype, 'dns')
     slot = slot if type(slot) is int and 0 <= slot <= 65535 else 0
     return f'{kind}:{slot}'

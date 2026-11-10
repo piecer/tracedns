@@ -20,6 +20,7 @@ class Collected:
     query: QueryResult
     snapshot: Optional[Snapshot]
     dht_observation: Optional[dict] = None
+    rpc_observation: Optional[dict] = None
 
 
 
@@ -40,6 +41,27 @@ def _collect_snapshot(domain: DomainSpec, server: str, *, cancelled=None) -> Col
     """
     name = domain.name
     rtype = str(domain.type or 'A').upper()
+
+    if rtype == 'RPC':
+        from rpc_query import PROFILE, PROVIDER, fetch_rpc_config
+        from config_manager import validate_rpc_domain
+        try:
+            profile = PROFILE if domain.rpc_profile is None else domain.rpc_profile
+            validate_rpc_domain({'name': name, 'rpc_profile': profile})
+            record = fetch_rpc_config(profile)
+            checkpoint()
+            snap = Snapshot(type='RPC', values=[record['raw_result']],
+                            decoded_ips=record['decoded_ips'], decoded_endpoints=record['decoded_endpoints'],
+                            rpc_profile=profile, rpc_record=record, ts=int(time.time()))
+            return Collected(QueryResult(server=PROVIDER, domain=name, rtype='RPC',
+                                         status='ok', values=snap.values), snap,
+                             rpc_observation={'status': 'authenticated', 'observed_at': snap.ts,
+                                              'attempts': record['attempts']})
+        except Exception as error:
+            return Collected(QueryResult(server=PROVIDER, domain=name, rtype='RPC',
+                                         status='error', values=[], error=query_error(error)), None,
+                             rpc_observation={'status': 'error', 'observed_at': int(time.time()),
+                                              'reason': query_error(error)})
 
     if rtype == 'DHT':
         from dht_query import fetch_dht_records, reconcile_dht

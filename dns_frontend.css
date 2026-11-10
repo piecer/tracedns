@@ -410,6 +410,9 @@ tbody tr:hover{background:#f0f8fb;}
 #resultsTable .dht-evidence,#resultsTable .dht-identifier{vertical-align:top;}
 #resultsTable .dht-evidence details{margin-top:8px;white-space:normal;}
 #resultsTable .dht-evidence pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;margin:8px 0 0;}
+#resultsTable .rpc-evidence{vertical-align:top;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;overflow:visible;text-overflow:clip;min-width:180px;max-width:320px;user-select:text;}
+#resultsTable .rpc-evidence details{margin-top:8px;white-space:normal;}
+#resultsTable .rpc-evidence pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;margin:8px 0 0;}
 #resultsTable .dht-evidence,#resultsTable .dht-identifier{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;overflow:visible;text-overflow:clip;min-width:180px;max-width:320px;user-select:text;}
 #domainSettingsStatus{overflow-wrap:anywhere;font-weight:600;color:#155d74;}
 @media(max-width:600px){

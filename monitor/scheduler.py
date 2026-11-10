@@ -134,3 +134,14 @@ class MonitorScheduler:
             for job in pending:
                 finish_force(job, 'failure')
         return owner is None or (not owner.backlog and not owner.status()['pending'])
+
+    def stop_and_wake(self):
+        """Normal signal coordinator only: retain the wake, not audit retirement."""
+        try:
+            return self.stop()
+        finally:
+            # stop() must remain nonblocking for pump/audit callers. Its False
+            # also covers pending audits, so retrying until True can wait forever.
+            # Only the coordinator waits out a config reader to deliver the wake.
+            with self.store.condition:
+                self.store.condition.notify_all()

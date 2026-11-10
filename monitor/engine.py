@@ -86,6 +86,7 @@ _HISTORY_DECODER_KEYS = (
     'ens_node', 'ens_resolver', 'ens_options',
     'sns_decode', 'sns_options',
     'dht_public_key', 'dht_options', 'dht_record',
+    'rpc_profile', 'rpc_record',
 )
 
 
@@ -153,6 +154,7 @@ def _domain_storage_name(domain: DomainSpec) -> str:
         'ens_node': domain.ens_node,
         'ens_resolver': domain.ens_resolver,
         'dht_public_key': domain.dht_public_key,
+        'rpc_profile': domain.rpc_profile,
     })
 
 
@@ -174,6 +176,13 @@ def run_domain_cycle(*, state_repository=None, target_lease=None, cycle_id='',
             args['target_complete'] = False
             if error is None:
                 args['eligible'] = lambda ticket=ticket: not lookup_runtime.cancelled(ticket)
+            elif str(kwargs['domain'].type).upper() == 'RPC':
+                # A started failure may outlive its provider budget, not the
+                # target/owner authority. Never extend success-ticket authority.
+                args['eligible'] = lambda ticket=ticket: (
+                    ticket is not None and ticket.started and not lookup_runtime.stopping
+                    and not state_repository.delivery_runtime.stopping
+                    and lookup_runtime.clock() < target_deadline)
             if str(kwargs['domain'].type).upper() == 'DHT':
                 if error is not None:
                     quality.append(False)
@@ -418,11 +427,23 @@ def _collect_domain_cycle(
                 if not state_repository.valid(target_lease):
                     return []
                 fail_count = mark_query_failure(query_fail_counts, fail_key)
+                if rtype == 'RPC':
+                    history[name].setdefault('meta', {})['rpc_observation'] = {
+                        'status': 'error', 'observed_at': int(time.time()),
+                        'reason': diagnostic_reason(exc),
+                    }
+                    bump_state_version()
             logger.error('Query worker failed; provider=%s consecutive=%s reason=%s',
                          provider_slots.get(submitted_server, provider_label(rtype, 0)),
                          fail_count, diagnostic_reason(exc))
             continue
         label = provider_slots.get(submitted_server, provider_label(rtype, 0))
+        if rtype == 'RPC':
+            with _STATE_LOCK:
+                if not state_repository.valid(target_lease):
+                    return []
+                history[name].setdefault('meta', {})['rpc_observation'] = deepcopy(collected.rpc_observation)
+                bump_state_version()
         if rtype == 'DHT':
             from dht_query import reconcile_dht
             from .dht_support import record_snapshot, attempt_metadata, failure_reason
@@ -482,7 +503,7 @@ def _collect_domain_cycle(
             if fail_count >= 3 and retain_last_good:
                 logger.info('Retained stale snapshot; provider=%s consecutive=%s', label, fail_count)
             # Drop stale snapshot only in the no-owner compatibility path.
-            if fail_count >= 3 and rtype != 'DHT' and not retain_last_good:
+            if fail_count >= 3 and rtype not in ('DHT', 'RPC') and not retain_last_good:
                 ts_fail = int(time.time())
                 with _STATE_LOCK:
                     if not state_repository.valid(target_lease):
