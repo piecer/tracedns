@@ -616,6 +616,26 @@
 </div>
 </div>
 
+<dialog id="deliveryResendDialog" aria-labelledby="deliveryResendHeading" aria-describedby="deliveryResendWarning">
+  <h2 id="deliveryResendHeading">Resend current IPs</h2>
+  <p id="deliveryResendTarget"></p>
+  <p id="deliveryResendWarning">Deliberate duplicate send to saved destinations only. Last-good/current saved observation; no live lookup. No freshness or reachability guarantee. This does not reset history or retry failed queue items.</p>
+  <fieldset>
+    <legend>Saved channels</legend>
+    <label><input id="deliveryResendTeams" type="checkbox" checked /> Teams</label>
+    <label><input id="deliveryResendMisp" type="checkbox" checked /> MISP</label>
+  </fieldset>
+  <p id="deliveryResendSource"></p>
+  <ul id="deliveryResendIPs" aria-label="Complete managed IP preview"></ul>
+  <p id="deliveryResendStatus" role="status" aria-live="polite"></p>
+  <p><a id="deliveryResendHealthLink" href="#deliveryHealth">Delivery health</a> · <a id="deliveryResendDiagnosticsLink" href="#deliveryDiagnostics">Delivery diagnostics</a></p>
+  <div class="delivery-resend-actions">
+    <button id="deliveryResendPreviewBtn" type="button" disabled>Preview</button>
+    <button id="deliveryResendConfirmBtn" type="button" disabled>Confirm resend</button>
+    <button id="deliveryResendCancelBtn" type="button">Cancel / close</button>
+  </div>
+</dialog>
+<script src="/delivery_resend.js"></script>
 <script src="/teams_test.js"></script>
 <script src="/dns_frontend.js"></script>
 <script src="/delivery_diagnostics.js"></script>

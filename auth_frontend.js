@@ -115,6 +115,11 @@
     // cancellation handling above still applies, with no retry here.
     if (method === 'POST' && ['/teams/test','/api/v1/teams/test'].includes(url.pathname) &&
         [409,429,502,503].includes(response.status)) return response;
+    // Only the resend widget consumes these closed refusals. Generic 401/403
+    // handling above/below remains intact; never automatically repeat a POST.
+    if (method === 'POST' && ['/delivery-resend/preview','/delivery-resend',
+        '/api/v1/delivery-resend/preview','/api/v1/delivery-resend'].includes(url.pathname) &&
+        [400,404,409,429,503].includes(response.status)) return response;
     if (!response.ok) {
       const message = response.status === 409 ? 'Conflict: reload this page before saving again.' : response.status === 403 ? 'Permission denied for this action.' : response.status === 401 ? 'Sign-in failed or session expired.' : `Request failed (${response.status}).`;
       auth.message(message); throw new Error(message);

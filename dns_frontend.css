@@ -49,6 +49,26 @@ body{
   min-width:0;
 }
 .delivery-health[hidden]{display:none;}
+#deliveryResendDialog{
+  width:min(640px, calc(100vw - 24px));
+  max-height:calc(100vh - 24px);
+  overflow:auto;
+  margin:auto;
+  padding:20px;
+  border:1px solid var(--line);
+  border-radius:var(--radius-md);
+  color:var(--ink);
+  background:var(--surface);
+  overflow-wrap:anywhere;
+}
+#deliveryResendDialog::backdrop{background:rgba(12,33,46,.55);}
+#deliveryResendDialog p{margin:12px 0;line-height:1.5;}
+#deliveryResendDialog fieldset{padding:8px 14px;border:1px solid var(--line);}
+#deliveryResendDialog fieldset label{display:inline-flex;gap:8px;align-items:center;margin:8px 16px 8px 0;}
+#deliveryResendIPs{max-height:240px;overflow:auto;padding:8px 8px 8px 28px;font-family:var(--font-mono);}
+.delivery-resend-actions{display:flex;flex-wrap:wrap;gap:8px;}
+#deliveryResendDialog button:disabled,.delivery-resend-btn:disabled{opacity:.55;cursor:not-allowed;}
+.delivery-resend-btn[hidden]{display:none;}
 .delivery-health h2{font-size:1.1rem;margin-bottom:8px;}
 .delivery-health p{margin:6px 0;line-height:1.45;}
 #deliveryStatus{font-weight:700;}

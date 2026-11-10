@@ -115,6 +115,11 @@ class SecurityStore:
                  and isinstance(value, (bool, int))}
         if (details or {}).get('role') in ('admin', 'operator', 'viewer'):
             clean['role'] = details['role']
+        resend_id = (details or {}).get('resend_id')
+        if (action in ('post:/delivery-resend/preview', 'post:/delivery-resend') and
+                isinstance(resend_id, str) and len(resend_id) == 32 and
+                all(ch in '0123456789abcdef' for ch in resend_id)):
+            clean['resend_id'] = resend_id
         event_id = secrets.token_hex(16)
         db.execute('INSERT INTO audit_events VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
                    (event_id, self.clock(), actor.get('id'), actor.get('username'),

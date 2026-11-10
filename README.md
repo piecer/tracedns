@@ -12,6 +12,7 @@ A lightweight DNS monitoring toolkit for extracting indicators from TXT records 
 - RPC monitoring: read Polygon contract configuration, authenticate/decrypt AES-128-GCM, and track C2 IP:port separately from relay/download/mining roles. Select `RPC` in Verify/Add or Settings; no ENS configuration or C2 contact. See [RPC setup, offline CLI and evidence](docs/RPC_TRACKING.md).
 - Register, preview, edit and delete safe custom decoders from the web UI; custom decoders persist in `dns_config.json`.
 - Alerts: Teams webhook and MISP integration for newly discovered IPs.
+- Admins can deliberately **Resend current IPs** from each saved target card in Settings: select Teams/MISP, preview the complete saved managed-IP snapshot, then confirm. No live lookup, history deletion or automatic retry; queued is not delivered. See [target resend and uncertainty handling](docs/DELIVERY_RESEND.md).
 - Dashboard UI showing unique IPs and optional VirusTotal lookup (store VT API key in settings).
 
 ## Requirements

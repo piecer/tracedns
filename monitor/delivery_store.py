@@ -6,6 +6,7 @@ coordination, then calls us. A cursor or caller mapping never grants a lease.
 from __future__ import annotations
 
 import copy
+from dataclasses import dataclass
 import errno
 import json
 import math
@@ -24,6 +25,17 @@ from monitor.delivery_types import TEAMS_BATCH_MAX_WAIT_SECONDS, TEAMS_BATCH_MAI
 
 class _DHTCancelled(Exception):
     pass
+
+
+@dataclass
+class _TransactionResolution:
+    """Intent-owned proof, shared only with its single unresolved transaction.
+
+    The store publishes once under _lock, after successful native cleanup and
+    validated control/readback. No callback, I/O or foreign lock is involved;
+    failed resolution leaves this false and retains the unresolved fence.
+    """
+    rolled_back: bool = False
 
 
 class DeliveryStore:
@@ -236,6 +248,10 @@ class DeliveryStore:
         # Authoritative DHT evidence shares this ledger's application owner.
         self._execute("CREATE TABLE IF NOT EXISTS dht_state (target TEXT PRIMARY KEY, "
                       "data TEXT NOT NULL, pending TEXT, bytes INTEGER NOT NULL)")
+        self._execute("CREATE TABLE IF NOT EXISTS manual_resend (request_id TEXT PRIMARY KEY, "
+                      "actor_id TEXT NOT NULL, target TEXT NOT NULL, created REAL NOT NULL, "
+                      "source TEXT NOT NULL, channels TEXT NOT NULL, ip_count INTEGER NOT NULL, "
+                      "receipt_count INTEGER NOT NULL)")
 
     def load_dht_checkpoint(self, target, *, settled=False):
         with self._lock:
@@ -459,6 +475,8 @@ class DeliveryStore:
         pending = self._unresolved
         saved = self._validated_control(pending['epoch'])
         if saved.get('last_transaction') == pending['operation']:
+            if pending.get('readback') is not None:
+                pending['readback']()
             if pending['checkpoint'] is not None:
                 if saved.get('loss_checkpoint') != {'process': self._process_id, **pending['checkpoint']}:
                     raise ValueError('invalid loss checkpoint')
@@ -473,6 +491,8 @@ class DeliveryStore:
         for key in ('accounting_complete', 'tracking_complete'):
             saved[key] = saved[key] and self._control[key]
         self._control = saved
+        if pending.get('resolution') is not None:
+            pending['resolution'].rolled_back = saved.get('last_transaction') != pending['operation']
         self._unresolved = None
 
     def _adopt_checkpoint(self, totals, captured, *, newer=None):
@@ -597,7 +617,7 @@ class DeliveryStore:
             return None
 
     def _transaction(self, operation, fn, *, cancelled=None, kind='ledger', checkpoint=None, captured=None,
-                     allow_noop=False):
+                     allow_noop=False, readback=None, resolution=None):
         """A fixed last-transaction UUID resolves commit errors independently.
 
         Only one writer owned by this object exists. No subsequent write is
@@ -635,6 +655,8 @@ class DeliveryStore:
             self._db.commit()
             committed = True
             self._fault("after_commit")
+            if readback is not None:
+                readback()
         except (_DHTCancelled, sqlite3.Error, OSError, ValueError) as error:
             rollback_error = self._rollback_transaction()
             if isinstance(error, _DHTCancelled):
@@ -648,6 +670,8 @@ class DeliveryStore:
                 saved = self._validated_control(before['epoch'])
                 if not self._cleanup_pending:
                     if saved.get("last_transaction") == operation:
+                        if readback is not None:
+                            readback()
                         self._control = saved
                         self._safe_refresh()
                         return True, result, False
@@ -659,7 +683,8 @@ class DeliveryStore:
             self._unresolved = {"operation": operation, "epoch": before['epoch'], "losses": {},
                                 "kind": kind, "checkpoint": copy.deepcopy(checkpoint),
                                 "captured": copy.deepcopy(captured),
-                                "newer_losses": {c: 0 for c in CHANNELS}}
+                                "newer_losses": {c: 0 for c in CHANNELS}, "readback": readback,
+                                "resolution": resolution}
             self._halt_delivery()
             return False, None, True
         if committed:
@@ -1792,3 +1817,27 @@ class DeliveryStore:
             self._closed = True
             self._release()
             return True
+
+    def read_resend(self, request_id):
+        """Independent committed-marker read, including after receipt cleanup."""
+        db = sqlite3.connect(self.path.as_uri() + '?mode=ro', uri=True, timeout=.05)
+        db.row_factory = sqlite3.Row
+        try:
+            cur = db.execute('SELECT * FROM manual_resend WHERE request_id=?', (request_id,))
+            try:
+                row = cur.fetchone()
+                return dict(row) if row is not None else None
+            finally:
+                cur.close()
+        finally:
+            db.close()
+
+    def admit_resend(self, intent, *, guard):
+        from .delivery_resend import admit
+        return admit(self, intent, guard)
+
+    def resend_status(self, request_id):
+        """Use the ordinary unresolved-transaction fence before marker lookup."""
+        with self._lock:
+            self._resolve_unresolved()
+            return self.read_resend(request_id)

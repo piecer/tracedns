@@ -479,3 +479,16 @@ class DeliveryRuntime:
             if probe_stopped:
                 self._teams_test_gate.release()
         return result
+
+    def _resend_coordinator(self):
+        from .delivery_resend import ResendCoordinator
+        with self.config.lock:
+            if not hasattr(self, '_resend'):
+                self._resend = ResendCoordinator(self)
+            return self._resend
+
+    def preview_resend(self, target, channels, expected_revision, *, actor_id):
+        return self._resend_coordinator().preview(target, channels, expected_revision, actor_id)
+
+    def resend_target(self, request_id, *, actor_id):
+        return self._resend_coordinator().confirm(request_id, actor_id)

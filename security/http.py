@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from http_api.request_limits import get_request_body
+from http_api.delivery_resend import PATHS as RESEND_PATHS, MAX_BODY as RESEND_MAX_BODY
 from http_api.utils import send_json
 from security.policy import allowed, external_read
 from security.store import SecurityError
@@ -119,8 +120,10 @@ class HttpSecurity:
                 return send_json(handler, {'csrf_token': self.csrf(signed)})
             data = {}
             if handler.command in ('POST', 'PUT', 'DELETE', 'PATCH'):
-                raw, rejected = get_request_body(handler, max_length=(16384 if path.startswith(('/auth/', '/admin/'))
-                                                                      else handler.max_body_bytes))
+                limit = (16384 if path.startswith(('/auth/', '/admin/')) else handler.max_body_bytes)
+                if path in RESEND_PATHS:
+                    limit = min(limit, RESEND_MAX_BODY)
+                raw, rejected = get_request_body(handler, max_length=limit)
                 if rejected:
                     return
                 try:
@@ -178,11 +181,26 @@ class HttpSecurity:
             # Intent must be durable before any legacy mutation or external lookup.
             audited = handler.command != 'GET' or external_read(path, qs)
             action = handler.command.lower() + ':' + path
+            audit_target = path
+            if path in RESEND_PATHS:
+                from http_api.delivery_resend import load_request
+                try:
+                    data = load_request(raw, path.endswith('/preview'))
+                    audit_target = data.get('target', data.get('request_id', path))
+                except (ValueError, KeyError, TypeError, UnicodeError, RecursionError):
+                    raise SecurityError('Invalid resend request', 400) from None
             if audited:
-                self.event(handler, action, 'started', target=path,
-                           details={'fields': sorted(set(data) - {'password', 'token'})})
+                self.event(handler, action, 'started', target=audit_target,
+                           details={'fields': sorted(set(data) - {'password', 'token'}),
+                                    'resend_id': data.get('request_id') if path in RESEND_PATHS else None})
             original(handler)
-            if audited:
+            if path in RESEND_PATHS and hasattr(handler, '_resend_response'):
+                from http_api.delivery_resend import send_result
+                payload, code = handler._resend_response
+                self.event(handler, action, payload['status'], target=audit_target, status=code,
+                           details={'resend_id': payload['request_id']})
+                send_result(handler, payload, code)
+            elif audited:
                 self.event(handler, action, 'success' if handler._security_status < 400 else 'failure',
                            target=path, status=handler._security_status)
         except SecurityError as exc:
