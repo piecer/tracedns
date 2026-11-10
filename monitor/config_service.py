@@ -109,6 +109,7 @@ class ConfigService:
         with self._writer, self.config_lock:
             try:
                 config_manager.validate_dht_domains(self.shared_config.get('domains', []))
+                config_manager.validate_rpc_domains(self.shared_config.get('domains', []))
             except ValueError as error:
                 raise ConfigError(str(error)) from None
             decoder_registry.publish(prepare_decoders(persistent(self.shared_config)))
@@ -139,6 +140,7 @@ class ConfigService:
         if 'domains' in data:
             try:
                 cm.validate_dht_domains(data['domains'])
+                cm.validate_rpc_domains(data['domains'])
             except ValueError as error:
                 raise ConfigError(str(error)) from None
             prev = cm.normalize_domains(candidate.get('domains', []))

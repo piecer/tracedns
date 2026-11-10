@@ -91,6 +91,23 @@ with TraceDNSClient(os.environ['TRACEDNS_BASE_URL']) as api:
 로컬 개발만 `--allow-loopback-http` 또는 `allow_loopback_http=True`로 HTTP를 허용한다.
 서버가 LAN plaintext 모드여도 이 클라이언트는 원격 HTTP를 허용하지 않는다.
 
+## Polygon RPC 설정 추적
+
+`RPC` 대상은 `{"name":"Polygon config","type":"RPC","rpc_profile":"polygon_aes_gcm_v1"}`
+형식으로 기존 `/config`에 등록한다. name은 DNS 이름이 아닌 표시명이며 profile 생략 시
+같은 기본값을 사용한다. 명시적 null/알 수 없는 profile/임의 RPC URL은 거절한다.
+`/domain-precheck`에는 `name` 대신 `domain`을 보내며 등록은 별도다. 네 공개 Polygon
+RPC를 순서대로 읽고 인증된 C2가 있는 첫 응답을 채택한다. 기존 `/resolve`를 사용할 수
+있으며 RPC 대상에는 DNS servers가 없어도 된다. 반환된 C2에는 접속하지 않는다.
+
+`values`는 원본 ABI, `decoded_ips`는 C2 IP만, `decoded_endpoints`는 IP:port,
+`rpc_record`는 인증된 평문·보조 역할·조회 식별정보를 보존한다. 실패는 빈 성공 결과가
+아니며 마지막 인증 관측을 유지한다. `/results`의
+`domain_meta[storage_name].rpc_observation`으로 최근 시도의 성공/실패를 구분한다.
+RPC precheck는 `include_vt` 요청값과 무관하게 VT 및 디코더 탐색을 끈다.
+35초 논리 조회 한도를 고려해 외부 API 클라이언트의 요청 timeout을 충분히 설정한다.
+계약·제한·예제는 [RPC_TRACKING.md](RPC_TRACKING.md)를 참고한다.
+
 ## 실제 Teams 테스트
 
 Admin만 `POST /api/v1/teams/test` (동일한 legacy 경로: `/teams/test`)를 호출할 수 있다.

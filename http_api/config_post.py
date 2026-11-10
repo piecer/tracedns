@@ -62,7 +62,7 @@ def handle_resolve(ctx: HttpContext, handler) -> None:
     if data is None:
         send_json(handler, {"error": "invalid json"}, 400)
         return
-    from config_manager import domain_identity, normalize_domains, validate_dht_domains
+    from config_manager import domain_identity, normalize_domains, validate_dht_domains, validate_rpc_domains
 
     lock = ctx.config_lock if ctx.config_lock is not None else _NullCtx()
     with lock:
@@ -76,6 +76,7 @@ def handle_resolve(ctx: HttpContext, handler) -> None:
                 return
             try:
                 validate_dht_domains(data['domains'])
+                validate_rpc_domains(data['domains'])
             except ValueError as error:
                 send_json(handler, {'error': str(error)}, 400)
                 return

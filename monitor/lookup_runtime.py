@@ -50,7 +50,7 @@ def provider_budget(domain):
     kind = str(domain.type).upper()
     if kind == 'DHT':
         return float((domain.dht_options or {}).get('duration', 30)) + 5
-    return {'ENS': 30, 'SNS': 20}.get(kind, 5)
+    return {'ENS': 30, 'SNS': 20, 'RPC': 35}.get(kind, 5)
 
 
 class LookupRuntime:

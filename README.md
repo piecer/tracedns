@@ -9,6 +9,7 @@ A lightweight DNS monitoring toolkit for extracting indicators from TXT records 
 - Optional A-record post-processing method (`xor32_ipv4`) with user-supplied XOR key.
 - ENS monitoring: set domain type to `ENS` in Settings, provide `ENS RPC URL`, and optional per-domain `ENS Key` (default `ipv6`) + `ENS Decode` method.
 - DHT monitoring: verify read-only signed DNS records by public key; retain last-confirmed IPs separately from failed/stale/conflicting lookup attempts. See [DHT configuration, limits and evidence](docs/DHT_TRACKING.md).
+- RPC monitoring: read Polygon contract configuration, authenticate/decrypt AES-128-GCM, and track C2 IP:port separately from relay/download/mining roles. Select `RPC` in Verify/Add or Settings; no ENS configuration or C2 contact. See [RPC setup, offline CLI and evidence](docs/RPC_TRACKING.md).
 - Register, preview, edit and delete safe custom decoders from the web UI; custom decoders persist in `dns_config.json`.
 - Alerts: Teams webhook and MISP integration for newly discovered IPs.
 - Dashboard UI showing unique IPs and optional VirusTotal lookup (store VT API key in settings).

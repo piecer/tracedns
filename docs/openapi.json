@@ -109,6 +109,14 @@
           "name": {
             "type": "string"
           },
+          "rpc_profile": {
+            "default": "polygon_aes_gcm_v1",
+            "description": "Read-only fixed Polygon eth_call profile with AES-128-GCM authentication. Built-in public providers; no arbitrary URLs or C2 contact.",
+            "enum": [
+              "polygon_aes_gcm_v1"
+            ],
+            "type": "string"
+          },
           "sns_decode": {
             "type": "string"
           },
@@ -120,7 +128,7 @@
             "type": "string"
           },
           "type": {
-            "description": "DNS record type (A, AAAA, TXT, MX, CNAME, NS, SOA, SRV, CAA, etc.), ENS, SNS or DHT. DHT name is a display label.",
+            "description": "DNS record type (A, AAAA, TXT, MX, CNAME, NS, SOA, SRV, CAA, etc.), ENS, SNS, DHT or RPC. DHT/RPC name is a display label.",
             "type": "string"
           }
         },
@@ -3410,6 +3418,14 @@
                               "name": {
                                 "type": "string"
                               },
+                              "rpc_profile": {
+                                "default": "polygon_aes_gcm_v1",
+                                "description": "Read-only fixed Polygon eth_call profile with AES-128-GCM authentication. Built-in public providers; no arbitrary URLs or C2 contact.",
+                                "enum": [
+                                  "polygon_aes_gcm_v1"
+                                ],
+                                "type": "string"
+                              },
                               "sns_decode": {
                                 "type": "string"
                               },
@@ -3421,7 +3437,7 @@
                                 "type": "string"
                               },
                               "type": {
-                                "description": "DNS record type (A, AAAA, TXT, MX, CNAME, NS, SOA, SRV, CAA, etc.), ENS, SNS or DHT. DHT name is a display label.",
+                                "description": "DNS record type (A, AAAA, TXT, MX, CNAME, NS, SOA, SRV, CAA, etc.), ENS, SNS, DHT or RPC. DHT/RPC name is a display label.",
                                 "type": "string"
                               }
                             },
@@ -3745,6 +3761,14 @@
                             "name": {
                               "type": "string"
                             },
+                            "rpc_profile": {
+                              "default": "polygon_aes_gcm_v1",
+                              "description": "Read-only fixed Polygon eth_call profile with AES-128-GCM authentication. Built-in public providers; no arbitrary URLs or C2 contact.",
+                              "enum": [
+                                "polygon_aes_gcm_v1"
+                              ],
+                              "type": "string"
+                            },
                             "sns_decode": {
                               "type": "string"
                             },
@@ -3756,7 +3780,7 @@
                               "type": "string"
                             },
                             "type": {
-                              "description": "DNS record type (A, AAAA, TXT, MX, CNAME, NS, SOA, SRV, CAA, etc.), ENS, SNS or DHT. DHT name is a display label.",
+                              "description": "DNS record type (A, AAAA, TXT, MX, CNAME, NS, SOA, SRV, CAA, etc.), ENS, SNS, DHT or RPC. DHT/RPC name is a display label.",
                               "type": "string"
                             }
                           },
@@ -4131,6 +4155,14 @@
                             "name": {
                               "type": "string"
                             },
+                            "rpc_profile": {
+                              "default": "polygon_aes_gcm_v1",
+                              "description": "Read-only fixed Polygon eth_call profile with AES-128-GCM authentication. Built-in public providers; no arbitrary URLs or C2 contact.",
+                              "enum": [
+                                "polygon_aes_gcm_v1"
+                              ],
+                              "type": "string"
+                            },
                             "sns_decode": {
                               "type": "string"
                             },
@@ -4142,7 +4174,7 @@
                               "type": "string"
                             },
                             "type": {
-                              "description": "DNS record type (A, AAAA, TXT, MX, CNAME, NS, SOA, SRV, CAA, etc.), ENS, SNS or DHT. DHT name is a display label.",
+                              "description": "DNS record type (A, AAAA, TXT, MX, CNAME, NS, SOA, SRV, CAA, etc.), ENS, SNS, DHT or RPC. DHT/RPC name is a display label.",
                               "type": "string"
                             }
                           },
@@ -8421,7 +8453,7 @@
     },
     "/domain-precheck": {
       "post": {
-        "description": "Run DNS/ENS/SNS queries and optionally VT before registration; does not add a monitoring target. DEFAULT include_vt=true. Prefer explicit false unless external sharing is authorized. AUTO queries TXT+A. Inspect by_server errors/can_add; HTTP 200 is not successful DNS. vt_lookup_budget only bounds decoder-candidate sweep, not initial selected-IP enrichment.",
+        "description": "Run DNS/ENS/SNS/DHT/RPC queries before registration; does not add a monitoring target. DHT/RPC disable VT and decoder sweeps; RPC reads a fixed Polygon AES-GCM C2 profile without contacting C2. Other types DEFAULT include_vt=true; prefer false unless external sharing is authorized. AUTO queries TXT+A. Inspect by_server errors/can_add; HTTP 200 and can_add do not prove a successful lookup. vt_lookup_budget only bounds decoder-candidate sweep, not initial selected-IP enrichment.",
         "operationId": "post_domain_precheck",
         "parameters": [
           {
@@ -8540,6 +8572,14 @@
                     "default": true,
                     "type": "boolean"
                   },
+                  "rpc_profile": {
+                    "default": "polygon_aes_gcm_v1",
+                    "description": "Read-only fixed Polygon eth_call profile with AES-128-GCM authentication. Built-in public providers; no arbitrary URLs or C2 contact.",
+                    "enum": [
+                      "polygon_aes_gcm_v1"
+                    ],
+                    "type": "string"
+                  },
                   "servers": {
                     "oneOf": [
                       {
@@ -8571,7 +8611,8 @@
                       "TXT",
                       "ENS",
                       "SNS",
-                      "DHT"
+                      "DHT",
+                      "RPC"
                     ]
                   },
                   "vt_lookup_budget": {
@@ -11580,6 +11621,14 @@
                             "name": {
                               "type": "string"
                             },
+                            "rpc_profile": {
+                              "default": "polygon_aes_gcm_v1",
+                              "description": "Read-only fixed Polygon eth_call profile with AES-128-GCM authentication. Built-in public providers; no arbitrary URLs or C2 contact.",
+                              "enum": [
+                                "polygon_aes_gcm_v1"
+                              ],
+                              "type": "string"
+                            },
                             "sns_decode": {
                               "type": "string"
                             },
@@ -11591,7 +11640,7 @@
                               "type": "string"
                             },
                             "type": {
-                              "description": "DNS record type (A, AAAA, TXT, MX, CNAME, NS, SOA, SRV, CAA, etc.), ENS, SNS or DHT. DHT name is a display label.",
+                              "description": "DNS record type (A, AAAA, TXT, MX, CNAME, NS, SOA, SRV, CAA, etc.), ENS, SNS, DHT or RPC. DHT/RPC name is a display label.",
                               "type": "string"
                             }
                           },
@@ -11606,7 +11655,7 @@
                     "type": "array"
                   },
                   "servers": {
-                    "description": "Configured DNS resolver subset. DHT uses its one logical provider independently; ENS/SNS require chain providers. These targets may use an empty DNS subset; DNS targets require a configured resolver.",
+                    "description": "Configured DNS resolver subset. DHT/RPC use their logical provider independently; ENS/SNS require chain providers. These targets may use an empty DNS subset; DNS targets require a configured resolver.",
                     "items": {
                       "type": "string"
                     },

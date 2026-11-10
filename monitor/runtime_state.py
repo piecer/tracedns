@@ -47,7 +47,7 @@ def clone_snapshot(snapshot_obj: Any) -> Dict[str, Any]:
     sns_options = snapshot_obj.get('sns_options')
     if isinstance(sns_options, dict) and sns_options:
         out['sns_options'] = dict(sns_options)
-    for key in ('dht_public_key', 'dht_options', 'dht_record'):
+    for key in ('dht_public_key', 'dht_options', 'dht_record', 'rpc_profile', 'rpc_record'):
         if key in snapshot_obj and snapshot_obj[key] is not None:
             out[key] = deepcopy(snapshot_obj[key])
     return out
@@ -68,7 +68,7 @@ def clone_current_results(current_results: Dict[str, Any]) -> Dict[str, Dict[str
 
 def _clone_meta(meta):
     out = dict(meta) if isinstance(meta, dict) else {}
-    for key in ('dht_state', 'dht_observation'):
+    for key in ('dht_state', 'dht_observation', 'rpc_observation'):
         if key in out:
             out[key] = deepcopy(out[key])
     return out

@@ -5,6 +5,9 @@ from .repository import normalized_domain_specs
 
 def providers_for(domain, servers=(), ens_rpc_url=None, sns_proxy_hosts=()):
     kind = str(domain.type or 'A').upper()
+    if kind == 'RPC':
+        from rpc_query import PROVIDER
+        return (PROVIDER,)
     if kind == 'DHT':
         return ('DHT',)
     values = ([ens_rpc_url] if ens_rpc_url else []) if kind == 'ENS' else (

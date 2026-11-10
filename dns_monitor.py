@@ -74,7 +74,7 @@ def _build_initial_new_ip_tuples(rtype, domain, values=None, decoded_ips=None):
     if not domain:
         return []
     r = str(rtype or '').upper()
-    if r in ('TXT', 'ENS', 'SNS', 'DHT'):
+    if r in ('TXT', 'ENS', 'SNS', 'DHT', 'RPC'):
         ips = sorted(set(decoded_ips or []))
     elif r == 'A':
         ips = sorted(set(values or []))
@@ -94,7 +94,7 @@ def _build_changed_new_ip_tuples(
     if not domain:
         return []
     r = str(rtype or '').upper()
-    if r in ('TXT', 'ENS', 'SNS', 'DHT'):
+    if r in ('TXT', 'ENS', 'SNS', 'DHT', 'RPC'):
         added = sorted(set(new_decoded_ips or []) - set(prev_decoded_ips or []))
     elif r == 'A':
         added = sorted(set(new_values or []) - set(prev_values or []))
@@ -310,7 +310,7 @@ def main():
         http_thread.start()
         logger.info("HTTP config UI running on http://%s:%s/", http_host, http_port)
 
-        signal_stop = SignalStopBridge(scheduler.stop)
+        signal_stop = SignalStopBridge(scheduler.stop_and_wake)
         with config_lock:
             shared_config['_signal_stop'] = signal_stop
         signal_stop.start((signal.SIGINT, signal.SIGTERM))
