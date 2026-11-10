@@ -1,5 +1,6 @@
 """Real loopback DNS transport; only the resolver's destination port is replaced."""
 import contextlib
+import errno
 import socket
 import struct
 import threading
@@ -31,12 +32,34 @@ def _chain_response(query, hops=256):
 
 
 @contextlib.contextmanager
+def _dns_sockets():
+    # UDP's ephemeral allocator does not reserve the same port in TCP's namespace.
+    # Retry only fixture admission, never a DNS request or a failed assertion.
+    for attempt in range(16):
+        with contextlib.ExitStack() as resources:
+            try:
+                udp = resources.enter_context(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+                udp.bind(('127.0.0.1', 0))
+                tcp = resources.enter_context(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+                tcp.bind(udp.getsockname())
+            except OSError as exc:
+                if exc.errno != errno.EADDRINUSE or attempt == 15:
+                    raise
+                continue
+            yield udp, tcp
+            return
+
+
+@contextlib.contextmanager
 def _dns_fixture(monkeypatch, mode):
-    udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    udp.bind(('127.0.0.1', 0))
+    with _dns_sockets() as (udp, tcp):
+        with _dns_server(monkeypatch, mode, udp, tcp) as seen:
+            yield seen
+
+
+@contextlib.contextmanager
+def _dns_server(monkeypatch, mode, udp, tcp):
     port = udp.getsockname()[1]
-    tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    tcp.bind(('127.0.0.1', port))
     tcp.listen(2)
     udp.settimeout(0.05)
     tcp.settimeout(0.05)
@@ -104,16 +127,16 @@ def _dns_fixture(monkeypatch, mode):
     monkeypatch.setattr(dns.resolver, 'Resolver', local_resolver)
     threads = [threading.Thread(target=serve, args=(sock, transport))
                for sock, transport in ((udp, 'udp'), (tcp, 'tcp'))]
-    for thread in threads:
-        thread.start()
+    started = []
     try:
+        for thread in threads:
+            thread.start()
+            started.append(thread)
         yield seen
     finally:
         stop.set()
-        for thread in threads:
+        for thread in started:
             thread.join(2)
-        udp.close()
-        tcp.close()
         assert not any(thread.is_alive() for thread in threads)
         assert errors == []
 
