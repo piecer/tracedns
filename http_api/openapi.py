@@ -9,6 +9,10 @@ from http_api.rest import PATTERNS, PREFIX, ROUTES
 from http_api.delivery_health import HEALTH_SCHEMA, PROGRESS_SCHEMA
 from http_api.delivery_diagnostics import DIAGNOSTICS_SCHEMA
 from http_api.teams_test import REQUEST_SCHEMA as TEAMS_TEST_REQUEST, RESULT_SCHEMA as TEAMS_TEST_RESULT
+from http_api.delivery_resend import (
+    PATHS as RESEND_PATHS, PREVIEW_REQUEST_SCHEMA, PREVIEW_RESULT_SCHEMA,
+    CONFIRM_REQUEST_SCHEMA, CONFIRM_RESULT_SCHEMA,
+)
 
 STRING = {'type': 'string'}
 INTEGER = {'type': 'integer'}
@@ -92,6 +96,8 @@ CONFIG = obj({
 DECODER = obj({'revision': REVISION, 'name': STRING, 'decoder_type': {'enum': ['TXT', 'A'], 'default': 'TXT'},
                'steps': {'type': 'array', 'items': OBJECT}}, ('revision', 'name', 'steps'))
 BODIES = {
+    '/delivery-resend/preview': PREVIEW_REQUEST_SCHEMA,
+    '/delivery-resend': CONFIRM_REQUEST_SCHEMA,
     '/teams/test': TEAMS_TEST_REQUEST,
     '/auth/login': obj({'username': STRING, 'password': {'type': 'string', 'writeOnly': True}}, ('username', 'password')),
     '/auth/logout': obj({}),
@@ -161,6 +167,8 @@ for _path in PREPARED_PATHS:
 QUERIES['/ips']['valid_only'] = {'type': 'boolean', 'default': False, 'description': 'Filter before prepared pagination.'}
 QUERIES['/ips']['limit']['description'] = 'Legacy: max 5000/default 500. Prepared: max 200/default 100, further reduced by byte budget.'
 DESCRIPTIONS = {
+    '/delivery-resend/preview': 'Admin-only preview of current saved managed IPs for one saved target and selected Teams/MISP channels. Unique JSON keys; body <=4096 bytes. No live lookup or provider calls. Last-good data is not proof of freshness/reachability. Ready creates an actor-bound 300-second in-memory intent (capacity 128), not delivery. Over 256 IPs or the configured unit budget is refused, never truncated. See docs/DELIVERY_RESEND.md.',
+    '/delivery-resend': 'Admin-only explicit confirmation of exactly the actor-bound preview token. Revalidates configuration, source and destination bindings before atomic durable admission of all channels. Queued is not provider ACK or human receipt. Same actor/token yields already_queued without new work. 30-second per-target cooldown, bounded durable markers (256, 24-hour retention). Pending/blocked work is not reset. No history deletion, automatic retry or arbitrary destinations. Unknown or transport failure must not be interpreted as no commit. See docs/DELIVERY_RESEND.md.',
     '/teams/test': 'Admin-only explicit real Teams test using saved, applied settings at the supplied revision; no draft credentials or message. One in-flight request and a 30-second cooldown after an admitted send. No queued alert replay, ledger/diagnostic-history change, or automatic retry. Accepted means provider acceptance, not human receipt. Timeout/transport failure can mean unknown delivery. See docs/TEAMS_TEST.md.',
     '/delivery-diagnostics': 'Admin/operator-only cached diagnostics (version 1), at most 32768 bytes. No ledger or provider reads. Recent failures retain at most ten terminal failure groups, not cumulative counts; items is each group size. Details may be unknown. Observed response bytes and attribute counts are lower bounds on truncated reads. storage_error is the latest volatile process incident, not necessarily active. Failed items are not automatically replayed. 503 means missing or invalid cache.',
     '/delivery-health': 'Admin/operator-only cached local delivery health, at most 4096 bytes. Observation policy is continue. A 200 response may describe degraded storage, missed notifications or incomplete accounting; it is not a delivery ACK. No provider requests. 503 means the health owner is absent or its cache is invalid. missed_total counts durable destination-item obligations never admitted; missed_unpersisted is the known volatile increment. Incomplete accounting is a lower bound, not zero loss.',
@@ -242,6 +250,8 @@ READ_RESPONSES = {
        for path in ('/auth/activity', '/admin/audit')},
 }
 WRITE_RESPONSES = {
+    '/delivery-resend/preview': PREVIEW_RESULT_SCHEMA,
+    '/delivery-resend': CONFIRM_RESULT_SCHEMA,
     '/teams/test': TEAMS_TEST_RESULT,
     '/auth/login': obj({'user': USER, 'csrf_token': STRING}, ('user', 'csrf_token')),
     '/config': obj({'status': STRING, 'revision': REVISION, 'config': OBJECT, 'warnings': WARNINGS}, ('status', 'revision', 'config', 'warnings')),
@@ -257,7 +267,7 @@ WRITE_RESPONSES = {
 
 
 def roles(path, method):
-    if path.startswith('/admin/') or path in ('/settings', '/teams/test') or (path.startswith('/decoders/custom') and method != 'GET'):
+    if path.startswith('/admin/') or path in RESEND_PATHS or path in ('/settings', '/teams/test') or (path.startswith('/decoders/custom') and method != 'GET'):
         return ['admin']
     if path.startswith('/auth/') or path in ('/', '/openapi.json'):
         return ['viewer', 'operator', 'admin']
@@ -292,6 +302,23 @@ def openapi_document():
             for status in ('400', '413'):
                 operation['responses'][status]['content']['text/plain'] = {'schema': STRING}
             operation['responses']['503']['description'] += '; worker saturation may return an empty body'
+            if path in RESEND_PATHS:
+                result_schema = PREVIEW_RESULT_SCHEMA if path.endswith('/preview') else CONFIRM_RESULT_SCHEMA
+                operation['x-max-body-bytes'] = 4096
+                for status, text in (('400', 'Invalid closed request'), ('404', 'Target not found'),
+                                     ('409', 'Preview/source/configuration/destination conflict; not admitted'),
+                                     ('429', 'Preview capacity or target cooldown; no automatic retry'),
+                                     ('503', 'Unavailable or unknown admission; security/audit may also be unavailable; worker saturation may return an empty body')):
+                    operation['responses'][status]['description'] = text
+                    operation['responses'][status]['content']['application/json']['schema'] = {
+                        'anyOf': [result_schema, {'$ref': '#/components/schemas/Error'}]}
+                operation['responses']['429']['headers'] = {'Retry-After': {
+                    'description': 'Only when bounded retry_after is present. Never automatically resend.',
+                    'schema': {'type': 'integer', 'minimum': 0, 'maximum': 30}}}
+                if path == '/delivery-resend':
+                    operation['responses']['200']['description'] = 'Already queued: original counts, no new work'
+                    operation['responses']['202'] = {'description': 'Durably queued, not delivered',
+                        'content': {'application/json': {'schema': result_schema}}}
             if path in PREPARED_PATHS and method == 'GET':
                 operation['description'] += ' read_mode=background is bounded to 200 display units and 1 MiB; follow page.next_offset. Domain display units are IP-role rows (empty domain counts one).'
                 original = operation['responses']['200']['content']['application/json']['schema']

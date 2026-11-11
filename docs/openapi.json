@@ -8161,6 +8161,2745 @@
         ]
       }
     },
+    "/delivery-resend": {
+      "post": {
+        "description": "Admin-only explicit confirmation of exactly the actor-bound preview token. Revalidates configuration, source and destination bindings before atomic durable admission of all channels. Queued is not provider ACK or human receipt. Same actor/token yields already_queued without new work. 30-second per-target cooldown, bounded durable markers (256, 24-hour retention). Pending/blocked work is not reset. No history deletion, automatic retry or arbitrary destinations. Unknown or transport failure must not be interpreted as no commit. See docs/DELIVERY_RESEND.md.",
+        "operationId": "post_delivery_resend",
+        "parameters": [
+          {
+            "description": "Exact server public origin, scheme + authority; no path.",
+            "in": "header",
+            "name": "Origin",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "request_id": {
+                    "maxLength": 32,
+                    "minLength": 32,
+                    "pattern": "^[0-9a-f]{32}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "request_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "allOf": [
+                    {
+                      "else": {
+                        "else": {
+                          "properties": {
+                            "ip_count": {
+                              "const": 0
+                            },
+                            "reason": {
+                              "enum": [
+                                "configuration_changed",
+                                "delivery_capacity",
+                                "delivery_pending",
+                                "delivery_storage",
+                                "destination_unavailable",
+                                "invalid_request",
+                                "no_managed_ips",
+                                "preview_capacity",
+                                "preview_expired",
+                                "resend_cooldown",
+                                "runtime_unavailable",
+                                "snapshot_changed",
+                                "target_not_found"
+                              ],
+                              "type": "string"
+                            },
+                            "receipt_count": {
+                              "const": 0
+                            }
+                          }
+                        },
+                        "if": {
+                          "properties": {
+                            "status": {
+                              "const": "unknown"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "reason": {
+                              "const": "delivery_unknown"
+                            }
+                          }
+                        }
+                      },
+                      "if": {
+                        "properties": {
+                          "status": {
+                            "enum": [
+                              "queued",
+                              "already_queued"
+                            ]
+                          }
+                        }
+                      },
+                      "then": {
+                        "properties": {
+                          "channels": {
+                            "minItems": 1
+                          },
+                          "ip_count": {
+                            "minimum": 1
+                          },
+                          "reason": {
+                            "type": "null"
+                          },
+                          "receipt_count": {
+                            "minimum": 1
+                          },
+                          "request_id": {
+                            "maxLength": 32,
+                            "minLength": 32,
+                            "pattern": "^[0-9a-f]{32}$",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  ],
+                  "properties": {
+                    "channels": {
+                      "items": {
+                        "enum": [
+                          "teams",
+                          "misp"
+                        ],
+                        "type": "string"
+                      },
+                      "maxItems": 2,
+                      "type": "array",
+                      "uniqueItems": true
+                    },
+                    "ip_count": {
+                      "maximum": 256,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "reason": {
+                      "enum": [
+                        null,
+                        "configuration_changed",
+                        "delivery_capacity",
+                        "delivery_pending",
+                        "delivery_storage",
+                        "delivery_unknown",
+                        "destination_unavailable",
+                        "invalid_request",
+                        "no_managed_ips",
+                        "preview_capacity",
+                        "preview_expired",
+                        "resend_cooldown",
+                        "runtime_unavailable",
+                        "snapshot_changed",
+                        "target_not_found"
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "receipt_count": {
+                      "maximum": 512,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "request_id": {
+                      "maxLength": 32,
+                      "minLength": 32,
+                      "pattern": "^[0-9a-f]{32}$",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "retry_after": {
+                      "maximum": 30,
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "enum": [
+                        "queued",
+                        "already_queued",
+                        "not_queued",
+                        "unknown"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "reason",
+                    "request_id",
+                    "ip_count",
+                    "receipt_count",
+                    "channels",
+                    "retry_after"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Already queued: original counts, no new work"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "allOf": [
+                    {
+                      "else": {
+                        "else": {
+                          "properties": {
+                            "ip_count": {
+                              "const": 0
+                            },
+                            "reason": {
+                              "enum": [
+                                "configuration_changed",
+                                "delivery_capacity",
+                                "delivery_pending",
+                                "delivery_storage",
+                                "destination_unavailable",
+                                "invalid_request",
+                                "no_managed_ips",
+                                "preview_capacity",
+                                "preview_expired",
+                                "resend_cooldown",
+                                "runtime_unavailable",
+                                "snapshot_changed",
+                                "target_not_found"
+                              ],
+                              "type": "string"
+                            },
+                            "receipt_count": {
+                              "const": 0
+                            }
+                          }
+                        },
+                        "if": {
+                          "properties": {
+                            "status": {
+                              "const": "unknown"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "reason": {
+                              "const": "delivery_unknown"
+                            }
+                          }
+                        }
+                      },
+                      "if": {
+                        "properties": {
+                          "status": {
+                            "enum": [
+                              "queued",
+                              "already_queued"
+                            ]
+                          }
+                        }
+                      },
+                      "then": {
+                        "properties": {
+                          "channels": {
+                            "minItems": 1
+                          },
+                          "ip_count": {
+                            "minimum": 1
+                          },
+                          "reason": {
+                            "type": "null"
+                          },
+                          "receipt_count": {
+                            "minimum": 1
+                          },
+                          "request_id": {
+                            "maxLength": 32,
+                            "minLength": 32,
+                            "pattern": "^[0-9a-f]{32}$",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  ],
+                  "properties": {
+                    "channels": {
+                      "items": {
+                        "enum": [
+                          "teams",
+                          "misp"
+                        ],
+                        "type": "string"
+                      },
+                      "maxItems": 2,
+                      "type": "array",
+                      "uniqueItems": true
+                    },
+                    "ip_count": {
+                      "maximum": 256,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "reason": {
+                      "enum": [
+                        null,
+                        "configuration_changed",
+                        "delivery_capacity",
+                        "delivery_pending",
+                        "delivery_storage",
+                        "delivery_unknown",
+                        "destination_unavailable",
+                        "invalid_request",
+                        "no_managed_ips",
+                        "preview_capacity",
+                        "preview_expired",
+                        "resend_cooldown",
+                        "runtime_unavailable",
+                        "snapshot_changed",
+                        "target_not_found"
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "receipt_count": {
+                      "maximum": 512,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "request_id": {
+                      "maxLength": 32,
+                      "minLength": 32,
+                      "pattern": "^[0-9a-f]{32}$",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "retry_after": {
+                      "maximum": 30,
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "enum": [
+                        "queued",
+                        "already_queued",
+                        "not_queued",
+                        "unknown"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "reason",
+                    "request_id",
+                    "ip_count",
+                    "receipt_count",
+                    "channels",
+                    "retry_after"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Durably queued, not delivered"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "allOf": [
+                        {
+                          "else": {
+                            "else": {
+                              "properties": {
+                                "ip_count": {
+                                  "const": 0
+                                },
+                                "reason": {
+                                  "enum": [
+                                    "configuration_changed",
+                                    "delivery_capacity",
+                                    "delivery_pending",
+                                    "delivery_storage",
+                                    "destination_unavailable",
+                                    "invalid_request",
+                                    "no_managed_ips",
+                                    "preview_capacity",
+                                    "preview_expired",
+                                    "resend_cooldown",
+                                    "runtime_unavailable",
+                                    "snapshot_changed",
+                                    "target_not_found"
+                                  ],
+                                  "type": "string"
+                                },
+                                "receipt_count": {
+                                  "const": 0
+                                }
+                              }
+                            },
+                            "if": {
+                              "properties": {
+                                "status": {
+                                  "const": "unknown"
+                                }
+                              }
+                            },
+                            "then": {
+                              "properties": {
+                                "reason": {
+                                  "const": "delivery_unknown"
+                                }
+                              }
+                            }
+                          },
+                          "if": {
+                            "properties": {
+                              "status": {
+                                "enum": [
+                                  "queued",
+                                  "already_queued"
+                                ]
+                              }
+                            }
+                          },
+                          "then": {
+                            "properties": {
+                              "channels": {
+                                "minItems": 1
+                              },
+                              "ip_count": {
+                                "minimum": 1
+                              },
+                              "reason": {
+                                "type": "null"
+                              },
+                              "receipt_count": {
+                                "minimum": 1
+                              },
+                              "request_id": {
+                                "maxLength": 32,
+                                "minLength": 32,
+                                "pattern": "^[0-9a-f]{32}$",
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      ],
+                      "properties": {
+                        "channels": {
+                          "items": {
+                            "enum": [
+                              "teams",
+                              "misp"
+                            ],
+                            "type": "string"
+                          },
+                          "maxItems": 2,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "ip_count": {
+                          "maximum": 256,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "reason": {
+                          "enum": [
+                            null,
+                            "configuration_changed",
+                            "delivery_capacity",
+                            "delivery_pending",
+                            "delivery_storage",
+                            "delivery_unknown",
+                            "destination_unavailable",
+                            "invalid_request",
+                            "no_managed_ips",
+                            "preview_capacity",
+                            "preview_expired",
+                            "resend_cooldown",
+                            "runtime_unavailable",
+                            "snapshot_changed",
+                            "target_not_found"
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "receipt_count": {
+                          "maximum": 512,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "request_id": {
+                          "maxLength": 32,
+                          "minLength": 32,
+                          "pattern": "^[0-9a-f]{32}$",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "retry_after": {
+                          "maximum": 30,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "enum": [
+                            "queued",
+                            "already_queued",
+                            "not_queued",
+                            "unknown"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "reason",
+                        "request_id",
+                        "ip_count",
+                        "receipt_count",
+                        "channels",
+                        "retry_after"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Invalid closed request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authentication required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Role, CSRF, origin, host or password-change restriction"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "allOf": [
+                        {
+                          "else": {
+                            "else": {
+                              "properties": {
+                                "ip_count": {
+                                  "const": 0
+                                },
+                                "reason": {
+                                  "enum": [
+                                    "configuration_changed",
+                                    "delivery_capacity",
+                                    "delivery_pending",
+                                    "delivery_storage",
+                                    "destination_unavailable",
+                                    "invalid_request",
+                                    "no_managed_ips",
+                                    "preview_capacity",
+                                    "preview_expired",
+                                    "resend_cooldown",
+                                    "runtime_unavailable",
+                                    "snapshot_changed",
+                                    "target_not_found"
+                                  ],
+                                  "type": "string"
+                                },
+                                "receipt_count": {
+                                  "const": 0
+                                }
+                              }
+                            },
+                            "if": {
+                              "properties": {
+                                "status": {
+                                  "const": "unknown"
+                                }
+                              }
+                            },
+                            "then": {
+                              "properties": {
+                                "reason": {
+                                  "const": "delivery_unknown"
+                                }
+                              }
+                            }
+                          },
+                          "if": {
+                            "properties": {
+                              "status": {
+                                "enum": [
+                                  "queued",
+                                  "already_queued"
+                                ]
+                              }
+                            }
+                          },
+                          "then": {
+                            "properties": {
+                              "channels": {
+                                "minItems": 1
+                              },
+                              "ip_count": {
+                                "minimum": 1
+                              },
+                              "reason": {
+                                "type": "null"
+                              },
+                              "receipt_count": {
+                                "minimum": 1
+                              },
+                              "request_id": {
+                                "maxLength": 32,
+                                "minLength": 32,
+                                "pattern": "^[0-9a-f]{32}$",
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      ],
+                      "properties": {
+                        "channels": {
+                          "items": {
+                            "enum": [
+                              "teams",
+                              "misp"
+                            ],
+                            "type": "string"
+                          },
+                          "maxItems": 2,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "ip_count": {
+                          "maximum": 256,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "reason": {
+                          "enum": [
+                            null,
+                            "configuration_changed",
+                            "delivery_capacity",
+                            "delivery_pending",
+                            "delivery_storage",
+                            "delivery_unknown",
+                            "destination_unavailable",
+                            "invalid_request",
+                            "no_managed_ips",
+                            "preview_capacity",
+                            "preview_expired",
+                            "resend_cooldown",
+                            "runtime_unavailable",
+                            "snapshot_changed",
+                            "target_not_found"
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "receipt_count": {
+                          "maximum": 512,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "request_id": {
+                          "maxLength": 32,
+                          "minLength": 32,
+                          "pattern": "^[0-9a-f]{32}$",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "retry_after": {
+                          "maximum": 30,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "enum": [
+                            "queued",
+                            "already_queued",
+                            "not_queued",
+                            "unknown"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "reason",
+                        "request_id",
+                        "ip_count",
+                        "receipt_count",
+                        "channels",
+                        "retry_after"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Target not found"
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Method not allowed"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "allOf": [
+                        {
+                          "else": {
+                            "else": {
+                              "properties": {
+                                "ip_count": {
+                                  "const": 0
+                                },
+                                "reason": {
+                                  "enum": [
+                                    "configuration_changed",
+                                    "delivery_capacity",
+                                    "delivery_pending",
+                                    "delivery_storage",
+                                    "destination_unavailable",
+                                    "invalid_request",
+                                    "no_managed_ips",
+                                    "preview_capacity",
+                                    "preview_expired",
+                                    "resend_cooldown",
+                                    "runtime_unavailable",
+                                    "snapshot_changed",
+                                    "target_not_found"
+                                  ],
+                                  "type": "string"
+                                },
+                                "receipt_count": {
+                                  "const": 0
+                                }
+                              }
+                            },
+                            "if": {
+                              "properties": {
+                                "status": {
+                                  "const": "unknown"
+                                }
+                              }
+                            },
+                            "then": {
+                              "properties": {
+                                "reason": {
+                                  "const": "delivery_unknown"
+                                }
+                              }
+                            }
+                          },
+                          "if": {
+                            "properties": {
+                              "status": {
+                                "enum": [
+                                  "queued",
+                                  "already_queued"
+                                ]
+                              }
+                            }
+                          },
+                          "then": {
+                            "properties": {
+                              "channels": {
+                                "minItems": 1
+                              },
+                              "ip_count": {
+                                "minimum": 1
+                              },
+                              "reason": {
+                                "type": "null"
+                              },
+                              "receipt_count": {
+                                "minimum": 1
+                              },
+                              "request_id": {
+                                "maxLength": 32,
+                                "minLength": 32,
+                                "pattern": "^[0-9a-f]{32}$",
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      ],
+                      "properties": {
+                        "channels": {
+                          "items": {
+                            "enum": [
+                              "teams",
+                              "misp"
+                            ],
+                            "type": "string"
+                          },
+                          "maxItems": 2,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "ip_count": {
+                          "maximum": 256,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "reason": {
+                          "enum": [
+                            null,
+                            "configuration_changed",
+                            "delivery_capacity",
+                            "delivery_pending",
+                            "delivery_storage",
+                            "delivery_unknown",
+                            "destination_unavailable",
+                            "invalid_request",
+                            "no_managed_ips",
+                            "preview_capacity",
+                            "preview_expired",
+                            "resend_cooldown",
+                            "runtime_unavailable",
+                            "snapshot_changed",
+                            "target_not_found"
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "receipt_count": {
+                          "maximum": 512,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "request_id": {
+                          "maxLength": 32,
+                          "minLength": 32,
+                          "pattern": "^[0-9a-f]{32}$",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "retry_after": {
+                          "maximum": 30,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "enum": [
+                            "queued",
+                            "already_queued",
+                            "not_queued",
+                            "unknown"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "reason",
+                        "request_id",
+                        "ip_count",
+                        "receipt_count",
+                        "channels",
+                        "retry_after"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Preview/source/configuration/destination conflict; not admitted"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Body too large"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "allOf": [
+                        {
+                          "else": {
+                            "else": {
+                              "properties": {
+                                "ip_count": {
+                                  "const": 0
+                                },
+                                "reason": {
+                                  "enum": [
+                                    "configuration_changed",
+                                    "delivery_capacity",
+                                    "delivery_pending",
+                                    "delivery_storage",
+                                    "destination_unavailable",
+                                    "invalid_request",
+                                    "no_managed_ips",
+                                    "preview_capacity",
+                                    "preview_expired",
+                                    "resend_cooldown",
+                                    "runtime_unavailable",
+                                    "snapshot_changed",
+                                    "target_not_found"
+                                  ],
+                                  "type": "string"
+                                },
+                                "receipt_count": {
+                                  "const": 0
+                                }
+                              }
+                            },
+                            "if": {
+                              "properties": {
+                                "status": {
+                                  "const": "unknown"
+                                }
+                              }
+                            },
+                            "then": {
+                              "properties": {
+                                "reason": {
+                                  "const": "delivery_unknown"
+                                }
+                              }
+                            }
+                          },
+                          "if": {
+                            "properties": {
+                              "status": {
+                                "enum": [
+                                  "queued",
+                                  "already_queued"
+                                ]
+                              }
+                            }
+                          },
+                          "then": {
+                            "properties": {
+                              "channels": {
+                                "minItems": 1
+                              },
+                              "ip_count": {
+                                "minimum": 1
+                              },
+                              "reason": {
+                                "type": "null"
+                              },
+                              "receipt_count": {
+                                "minimum": 1
+                              },
+                              "request_id": {
+                                "maxLength": 32,
+                                "minLength": 32,
+                                "pattern": "^[0-9a-f]{32}$",
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      ],
+                      "properties": {
+                        "channels": {
+                          "items": {
+                            "enum": [
+                              "teams",
+                              "misp"
+                            ],
+                            "type": "string"
+                          },
+                          "maxItems": 2,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "ip_count": {
+                          "maximum": 256,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "reason": {
+                          "enum": [
+                            null,
+                            "configuration_changed",
+                            "delivery_capacity",
+                            "delivery_pending",
+                            "delivery_storage",
+                            "delivery_unknown",
+                            "destination_unavailable",
+                            "invalid_request",
+                            "no_managed_ips",
+                            "preview_capacity",
+                            "preview_expired",
+                            "resend_cooldown",
+                            "runtime_unavailable",
+                            "snapshot_changed",
+                            "target_not_found"
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "receipt_count": {
+                          "maximum": 512,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "request_id": {
+                          "maxLength": 32,
+                          "minLength": 32,
+                          "pattern": "^[0-9a-f]{32}$",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "retry_after": {
+                          "maximum": 30,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "enum": [
+                            "queued",
+                            "already_queued",
+                            "not_queued",
+                            "unknown"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "reason",
+                        "request_id",
+                        "ip_count",
+                        "receipt_count",
+                        "channels",
+                        "retry_after"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Preview capacity or target cooldown; no automatic retry",
+            "headers": {
+              "Retry-After": {
+                "description": "Only when bounded retry_after is present. Never automatically resend.",
+                "schema": {
+                  "maximum": 30,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "allOf": [
+                        {
+                          "else": {
+                            "else": {
+                              "properties": {
+                                "ip_count": {
+                                  "const": 0
+                                },
+                                "reason": {
+                                  "enum": [
+                                    "configuration_changed",
+                                    "delivery_capacity",
+                                    "delivery_pending",
+                                    "delivery_storage",
+                                    "destination_unavailable",
+                                    "invalid_request",
+                                    "no_managed_ips",
+                                    "preview_capacity",
+                                    "preview_expired",
+                                    "resend_cooldown",
+                                    "runtime_unavailable",
+                                    "snapshot_changed",
+                                    "target_not_found"
+                                  ],
+                                  "type": "string"
+                                },
+                                "receipt_count": {
+                                  "const": 0
+                                }
+                              }
+                            },
+                            "if": {
+                              "properties": {
+                                "status": {
+                                  "const": "unknown"
+                                }
+                              }
+                            },
+                            "then": {
+                              "properties": {
+                                "reason": {
+                                  "const": "delivery_unknown"
+                                }
+                              }
+                            }
+                          },
+                          "if": {
+                            "properties": {
+                              "status": {
+                                "enum": [
+                                  "queued",
+                                  "already_queued"
+                                ]
+                              }
+                            }
+                          },
+                          "then": {
+                            "properties": {
+                              "channels": {
+                                "minItems": 1
+                              },
+                              "ip_count": {
+                                "minimum": 1
+                              },
+                              "reason": {
+                                "type": "null"
+                              },
+                              "receipt_count": {
+                                "minimum": 1
+                              },
+                              "request_id": {
+                                "maxLength": 32,
+                                "minLength": 32,
+                                "pattern": "^[0-9a-f]{32}$",
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      ],
+                      "properties": {
+                        "channels": {
+                          "items": {
+                            "enum": [
+                              "teams",
+                              "misp"
+                            ],
+                            "type": "string"
+                          },
+                          "maxItems": 2,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "ip_count": {
+                          "maximum": 256,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "reason": {
+                          "enum": [
+                            null,
+                            "configuration_changed",
+                            "delivery_capacity",
+                            "delivery_pending",
+                            "delivery_storage",
+                            "delivery_unknown",
+                            "destination_unavailable",
+                            "invalid_request",
+                            "no_managed_ips",
+                            "preview_capacity",
+                            "preview_expired",
+                            "resend_cooldown",
+                            "runtime_unavailable",
+                            "snapshot_changed",
+                            "target_not_found"
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "receipt_count": {
+                          "maximum": 512,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "request_id": {
+                          "maxLength": 32,
+                          "minLength": 32,
+                          "pattern": "^[0-9a-f]{32}$",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "retry_after": {
+                          "maximum": 30,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "enum": [
+                            "queued",
+                            "already_queued",
+                            "not_queued",
+                            "unknown"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "reason",
+                        "request_id",
+                        "ip_count",
+                        "receipt_count",
+                        "channels",
+                        "retry_after"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Unavailable or unknown admission; security/audit may also be unavailable; worker saturation may return an empty body"
+          }
+        },
+        "security": [
+          {
+            "csrf": [],
+            "session": []
+          }
+        ],
+        "summary": "POST /delivery-resend",
+        "x-max-body-bytes": 4096,
+        "x-roles": [
+          "admin"
+        ]
+      }
+    },
+    "/delivery-resend/preview": {
+      "post": {
+        "description": "Admin-only preview of current saved managed IPs for one saved target and selected Teams/MISP channels. Unique JSON keys; body <=4096 bytes. No live lookup or provider calls. Last-good data is not proof of freshness/reachability. Ready creates an actor-bound 300-second in-memory intent (capacity 128), not delivery. Over 256 IPs or the configured unit budget is refused, never truncated. See docs/DELIVERY_RESEND.md.",
+        "operationId": "post_delivery_resend_preview",
+        "parameters": [
+          {
+            "description": "Exact server public origin, scheme + authority; no path.",
+            "in": "header",
+            "name": "Origin",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "channels": {
+                    "items": {
+                      "enum": [
+                        "teams",
+                        "misp"
+                      ],
+                      "type": "string"
+                    },
+                    "maxItems": 2,
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "revision": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "target": {
+                    "description": "Exact canonical configuration identity (domain_identity), not a storage label or edited display name. Runtime label-byte limits also apply.",
+                    "maxLength": 4096,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "target",
+                  "channels",
+                  "revision"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "allOf": [
+                    {
+                      "else": {
+                        "properties": {
+                          "reason": {
+                            "enum": [
+                              "configuration_changed",
+                              "delivery_capacity",
+                              "delivery_pending",
+                              "delivery_storage",
+                              "destination_unavailable",
+                              "invalid_request",
+                              "no_managed_ips",
+                              "preview_capacity",
+                              "preview_expired",
+                              "resend_cooldown",
+                              "runtime_unavailable",
+                              "snapshot_changed",
+                              "target_not_found"
+                            ],
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "if": {
+                        "properties": {
+                          "status": {
+                            "const": "ready"
+                          }
+                        }
+                      },
+                      "then": {
+                        "properties": {
+                          "channels": {
+                            "minItems": 1
+                          },
+                          "expires_in_seconds": {
+                            "minimum": 1
+                          },
+                          "ips": {
+                            "minItems": 1
+                          },
+                          "reason": {
+                            "type": "null"
+                          },
+                          "request_id": {
+                            "maxLength": 32,
+                            "minLength": 32,
+                            "pattern": "^[0-9a-f]{32}$",
+                            "type": "string"
+                          },
+                          "source_type": {
+                            "type": "string"
+                          },
+                          "target": {
+                            "description": "Exact canonical configuration identity (domain_identity), not a storage label or edited display name. Runtime label-byte limits also apply.",
+                            "maxLength": 4096,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  ],
+                  "properties": {
+                    "channels": {
+                      "items": {
+                        "enum": [
+                          "teams",
+                          "misp"
+                        ],
+                        "type": "string"
+                      },
+                      "maxItems": 2,
+                      "type": "array",
+                      "uniqueItems": true
+                    },
+                    "expires_in_seconds": {
+                      "maximum": 300,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "ips": {
+                      "items": {
+                        "maxLength": 45,
+                        "minLength": 2,
+                        "type": "string"
+                      },
+                      "maxItems": 256,
+                      "type": "array",
+                      "uniqueItems": true
+                    },
+                    "observed_at": {
+                      "maximum": 9223372036854775807,
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "reason": {
+                      "enum": [
+                        null,
+                        "configuration_changed",
+                        "delivery_capacity",
+                        "delivery_pending",
+                        "delivery_storage",
+                        "delivery_unknown",
+                        "destination_unavailable",
+                        "invalid_request",
+                        "no_managed_ips",
+                        "preview_capacity",
+                        "preview_expired",
+                        "resend_cooldown",
+                        "runtime_unavailable",
+                        "snapshot_changed",
+                        "target_not_found"
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "request_id": {
+                      "maxLength": 32,
+                      "minLength": 32,
+                      "pattern": "^[0-9a-f]{32}$",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "retained": {
+                      "type": "boolean"
+                    },
+                    "retry_after": {
+                      "maximum": 30,
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "source_type": {
+                      "enum": [
+                        null,
+                        "A",
+                        "TXT",
+                        "ENS",
+                        "SNS",
+                        "DHT",
+                        "RPC"
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "enum": [
+                        "ready",
+                        "not_ready"
+                      ],
+                      "type": "string"
+                    },
+                    "target": {
+                      "description": "Exact canonical configuration identity (domain_identity), not a storage label or edited display name. Runtime label-byte limits also apply.",
+                      "maxLength": 4096,
+                      "minLength": 1,
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "reason",
+                    "request_id",
+                    "target",
+                    "source_type",
+                    "ips",
+                    "observed_at",
+                    "retained",
+                    "channels",
+                    "expires_in_seconds",
+                    "retry_after"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "allOf": [
+                        {
+                          "else": {
+                            "properties": {
+                              "reason": {
+                                "enum": [
+                                  "configuration_changed",
+                                  "delivery_capacity",
+                                  "delivery_pending",
+                                  "delivery_storage",
+                                  "destination_unavailable",
+                                  "invalid_request",
+                                  "no_managed_ips",
+                                  "preview_capacity",
+                                  "preview_expired",
+                                  "resend_cooldown",
+                                  "runtime_unavailable",
+                                  "snapshot_changed",
+                                  "target_not_found"
+                                ],
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "if": {
+                            "properties": {
+                              "status": {
+                                "const": "ready"
+                              }
+                            }
+                          },
+                          "then": {
+                            "properties": {
+                              "channels": {
+                                "minItems": 1
+                              },
+                              "expires_in_seconds": {
+                                "minimum": 1
+                              },
+                              "ips": {
+                                "minItems": 1
+                              },
+                              "reason": {
+                                "type": "null"
+                              },
+                              "request_id": {
+                                "maxLength": 32,
+                                "minLength": 32,
+                                "pattern": "^[0-9a-f]{32}$",
+                                "type": "string"
+                              },
+                              "source_type": {
+                                "type": "string"
+                              },
+                              "target": {
+                                "description": "Exact canonical configuration identity (domain_identity), not a storage label or edited display name. Runtime label-byte limits also apply.",
+                                "maxLength": 4096,
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      ],
+                      "properties": {
+                        "channels": {
+                          "items": {
+                            "enum": [
+                              "teams",
+                              "misp"
+                            ],
+                            "type": "string"
+                          },
+                          "maxItems": 2,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "expires_in_seconds": {
+                          "maximum": 300,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "ips": {
+                          "items": {
+                            "maxLength": 45,
+                            "minLength": 2,
+                            "type": "string"
+                          },
+                          "maxItems": 256,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "observed_at": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "reason": {
+                          "enum": [
+                            null,
+                            "configuration_changed",
+                            "delivery_capacity",
+                            "delivery_pending",
+                            "delivery_storage",
+                            "delivery_unknown",
+                            "destination_unavailable",
+                            "invalid_request",
+                            "no_managed_ips",
+                            "preview_capacity",
+                            "preview_expired",
+                            "resend_cooldown",
+                            "runtime_unavailable",
+                            "snapshot_changed",
+                            "target_not_found"
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "request_id": {
+                          "maxLength": 32,
+                          "minLength": 32,
+                          "pattern": "^[0-9a-f]{32}$",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "retained": {
+                          "type": "boolean"
+                        },
+                        "retry_after": {
+                          "maximum": 30,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "source_type": {
+                          "enum": [
+                            null,
+                            "A",
+                            "TXT",
+                            "ENS",
+                            "SNS",
+                            "DHT",
+                            "RPC"
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "enum": [
+                            "ready",
+                            "not_ready"
+                          ],
+                          "type": "string"
+                        },
+                        "target": {
+                          "description": "Exact canonical configuration identity (domain_identity), not a storage label or edited display name. Runtime label-byte limits also apply.",
+                          "maxLength": 4096,
+                          "minLength": 1,
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "reason",
+                        "request_id",
+                        "target",
+                        "source_type",
+                        "ips",
+                        "observed_at",
+                        "retained",
+                        "channels",
+                        "expires_in_seconds",
+                        "retry_after"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Invalid closed request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authentication required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Role, CSRF, origin, host or password-change restriction"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "allOf": [
+                        {
+                          "else": {
+                            "properties": {
+                              "reason": {
+                                "enum": [
+                                  "configuration_changed",
+                                  "delivery_capacity",
+                                  "delivery_pending",
+                                  "delivery_storage",
+                                  "destination_unavailable",
+                                  "invalid_request",
+                                  "no_managed_ips",
+                                  "preview_capacity",
+                                  "preview_expired",
+                                  "resend_cooldown",
+                                  "runtime_unavailable",
+                                  "snapshot_changed",
+                                  "target_not_found"
+                                ],
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "if": {
+                            "properties": {
+                              "status": {
+                                "const": "ready"
+                              }
+                            }
+                          },
+                          "then": {
+                            "properties": {
+                              "channels": {
+                                "minItems": 1
+                              },
+                              "expires_in_seconds": {
+                                "minimum": 1
+                              },
+                              "ips": {
+                                "minItems": 1
+                              },
+                              "reason": {
+                                "type": "null"
+                              },
+                              "request_id": {
+                                "maxLength": 32,
+                                "minLength": 32,
+                                "pattern": "^[0-9a-f]{32}$",
+                                "type": "string"
+                              },
+                              "source_type": {
+                                "type": "string"
+                              },
+                              "target": {
+                                "description": "Exact canonical configuration identity (domain_identity), not a storage label or edited display name. Runtime label-byte limits also apply.",
+                                "maxLength": 4096,
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      ],
+                      "properties": {
+                        "channels": {
+                          "items": {
+                            "enum": [
+                              "teams",
+                              "misp"
+                            ],
+                            "type": "string"
+                          },
+                          "maxItems": 2,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "expires_in_seconds": {
+                          "maximum": 300,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "ips": {
+                          "items": {
+                            "maxLength": 45,
+                            "minLength": 2,
+                            "type": "string"
+                          },
+                          "maxItems": 256,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "observed_at": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "reason": {
+                          "enum": [
+                            null,
+                            "configuration_changed",
+                            "delivery_capacity",
+                            "delivery_pending",
+                            "delivery_storage",
+                            "delivery_unknown",
+                            "destination_unavailable",
+                            "invalid_request",
+                            "no_managed_ips",
+                            "preview_capacity",
+                            "preview_expired",
+                            "resend_cooldown",
+                            "runtime_unavailable",
+                            "snapshot_changed",
+                            "target_not_found"
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "request_id": {
+                          "maxLength": 32,
+                          "minLength": 32,
+                          "pattern": "^[0-9a-f]{32}$",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "retained": {
+                          "type": "boolean"
+                        },
+                        "retry_after": {
+                          "maximum": 30,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "source_type": {
+                          "enum": [
+                            null,
+                            "A",
+                            "TXT",
+                            "ENS",
+                            "SNS",
+                            "DHT",
+                            "RPC"
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "enum": [
+                            "ready",
+                            "not_ready"
+                          ],
+                          "type": "string"
+                        },
+                        "target": {
+                          "description": "Exact canonical configuration identity (domain_identity), not a storage label or edited display name. Runtime label-byte limits also apply.",
+                          "maxLength": 4096,
+                          "minLength": 1,
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "reason",
+                        "request_id",
+                        "target",
+                        "source_type",
+                        "ips",
+                        "observed_at",
+                        "retained",
+                        "channels",
+                        "expires_in_seconds",
+                        "retry_after"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Target not found"
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Method not allowed"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "allOf": [
+                        {
+                          "else": {
+                            "properties": {
+                              "reason": {
+                                "enum": [
+                                  "configuration_changed",
+                                  "delivery_capacity",
+                                  "delivery_pending",
+                                  "delivery_storage",
+                                  "destination_unavailable",
+                                  "invalid_request",
+                                  "no_managed_ips",
+                                  "preview_capacity",
+                                  "preview_expired",
+                                  "resend_cooldown",
+                                  "runtime_unavailable",
+                                  "snapshot_changed",
+                                  "target_not_found"
+                                ],
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "if": {
+                            "properties": {
+                              "status": {
+                                "const": "ready"
+                              }
+                            }
+                          },
+                          "then": {
+                            "properties": {
+                              "channels": {
+                                "minItems": 1
+                              },
+                              "expires_in_seconds": {
+                                "minimum": 1
+                              },
+                              "ips": {
+                                "minItems": 1
+                              },
+                              "reason": {
+                                "type": "null"
+                              },
+                              "request_id": {
+                                "maxLength": 32,
+                                "minLength": 32,
+                                "pattern": "^[0-9a-f]{32}$",
+                                "type": "string"
+                              },
+                              "source_type": {
+                                "type": "string"
+                              },
+                              "target": {
+                                "description": "Exact canonical configuration identity (domain_identity), not a storage label or edited display name. Runtime label-byte limits also apply.",
+                                "maxLength": 4096,
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      ],
+                      "properties": {
+                        "channels": {
+                          "items": {
+                            "enum": [
+                              "teams",
+                              "misp"
+                            ],
+                            "type": "string"
+                          },
+                          "maxItems": 2,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "expires_in_seconds": {
+                          "maximum": 300,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "ips": {
+                          "items": {
+                            "maxLength": 45,
+                            "minLength": 2,
+                            "type": "string"
+                          },
+                          "maxItems": 256,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "observed_at": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "reason": {
+                          "enum": [
+                            null,
+                            "configuration_changed",
+                            "delivery_capacity",
+                            "delivery_pending",
+                            "delivery_storage",
+                            "delivery_unknown",
+                            "destination_unavailable",
+                            "invalid_request",
+                            "no_managed_ips",
+                            "preview_capacity",
+                            "preview_expired",
+                            "resend_cooldown",
+                            "runtime_unavailable",
+                            "snapshot_changed",
+                            "target_not_found"
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "request_id": {
+                          "maxLength": 32,
+                          "minLength": 32,
+                          "pattern": "^[0-9a-f]{32}$",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "retained": {
+                          "type": "boolean"
+                        },
+                        "retry_after": {
+                          "maximum": 30,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "source_type": {
+                          "enum": [
+                            null,
+                            "A",
+                            "TXT",
+                            "ENS",
+                            "SNS",
+                            "DHT",
+                            "RPC"
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "enum": [
+                            "ready",
+                            "not_ready"
+                          ],
+                          "type": "string"
+                        },
+                        "target": {
+                          "description": "Exact canonical configuration identity (domain_identity), not a storage label or edited display name. Runtime label-byte limits also apply.",
+                          "maxLength": 4096,
+                          "minLength": 1,
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "reason",
+                        "request_id",
+                        "target",
+                        "source_type",
+                        "ips",
+                        "observed_at",
+                        "retained",
+                        "channels",
+                        "expires_in_seconds",
+                        "retry_after"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Preview/source/configuration/destination conflict; not admitted"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Body too large"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "allOf": [
+                        {
+                          "else": {
+                            "properties": {
+                              "reason": {
+                                "enum": [
+                                  "configuration_changed",
+                                  "delivery_capacity",
+                                  "delivery_pending",
+                                  "delivery_storage",
+                                  "destination_unavailable",
+                                  "invalid_request",
+                                  "no_managed_ips",
+                                  "preview_capacity",
+                                  "preview_expired",
+                                  "resend_cooldown",
+                                  "runtime_unavailable",
+                                  "snapshot_changed",
+                                  "target_not_found"
+                                ],
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "if": {
+                            "properties": {
+                              "status": {
+                                "const": "ready"
+                              }
+                            }
+                          },
+                          "then": {
+                            "properties": {
+                              "channels": {
+                                "minItems": 1
+                              },
+                              "expires_in_seconds": {
+                                "minimum": 1
+                              },
+                              "ips": {
+                                "minItems": 1
+                              },
+                              "reason": {
+                                "type": "null"
+                              },
+                              "request_id": {
+                                "maxLength": 32,
+                                "minLength": 32,
+                                "pattern": "^[0-9a-f]{32}$",
+                                "type": "string"
+                              },
+                              "source_type": {
+                                "type": "string"
+                              },
+                              "target": {
+                                "description": "Exact canonical configuration identity (domain_identity), not a storage label or edited display name. Runtime label-byte limits also apply.",
+                                "maxLength": 4096,
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      ],
+                      "properties": {
+                        "channels": {
+                          "items": {
+                            "enum": [
+                              "teams",
+                              "misp"
+                            ],
+                            "type": "string"
+                          },
+                          "maxItems": 2,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "expires_in_seconds": {
+                          "maximum": 300,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "ips": {
+                          "items": {
+                            "maxLength": 45,
+                            "minLength": 2,
+                            "type": "string"
+                          },
+                          "maxItems": 256,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "observed_at": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "reason": {
+                          "enum": [
+                            null,
+                            "configuration_changed",
+                            "delivery_capacity",
+                            "delivery_pending",
+                            "delivery_storage",
+                            "delivery_unknown",
+                            "destination_unavailable",
+                            "invalid_request",
+                            "no_managed_ips",
+                            "preview_capacity",
+                            "preview_expired",
+                            "resend_cooldown",
+                            "runtime_unavailable",
+                            "snapshot_changed",
+                            "target_not_found"
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "request_id": {
+                          "maxLength": 32,
+                          "minLength": 32,
+                          "pattern": "^[0-9a-f]{32}$",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "retained": {
+                          "type": "boolean"
+                        },
+                        "retry_after": {
+                          "maximum": 30,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "source_type": {
+                          "enum": [
+                            null,
+                            "A",
+                            "TXT",
+                            "ENS",
+                            "SNS",
+                            "DHT",
+                            "RPC"
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "enum": [
+                            "ready",
+                            "not_ready"
+                          ],
+                          "type": "string"
+                        },
+                        "target": {
+                          "description": "Exact canonical configuration identity (domain_identity), not a storage label or edited display name. Runtime label-byte limits also apply.",
+                          "maxLength": 4096,
+                          "minLength": 1,
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "reason",
+                        "request_id",
+                        "target",
+                        "source_type",
+                        "ips",
+                        "observed_at",
+                        "retained",
+                        "channels",
+                        "expires_in_seconds",
+                        "retry_after"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Preview capacity or target cooldown; no automatic retry",
+            "headers": {
+              "Retry-After": {
+                "description": "Only when bounded retry_after is present. Never automatically resend.",
+                "schema": {
+                  "maximum": 30,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "allOf": [
+                        {
+                          "else": {
+                            "properties": {
+                              "reason": {
+                                "enum": [
+                                  "configuration_changed",
+                                  "delivery_capacity",
+                                  "delivery_pending",
+                                  "delivery_storage",
+                                  "destination_unavailable",
+                                  "invalid_request",
+                                  "no_managed_ips",
+                                  "preview_capacity",
+                                  "preview_expired",
+                                  "resend_cooldown",
+                                  "runtime_unavailable",
+                                  "snapshot_changed",
+                                  "target_not_found"
+                                ],
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "if": {
+                            "properties": {
+                              "status": {
+                                "const": "ready"
+                              }
+                            }
+                          },
+                          "then": {
+                            "properties": {
+                              "channels": {
+                                "minItems": 1
+                              },
+                              "expires_in_seconds": {
+                                "minimum": 1
+                              },
+                              "ips": {
+                                "minItems": 1
+                              },
+                              "reason": {
+                                "type": "null"
+                              },
+                              "request_id": {
+                                "maxLength": 32,
+                                "minLength": 32,
+                                "pattern": "^[0-9a-f]{32}$",
+                                "type": "string"
+                              },
+                              "source_type": {
+                                "type": "string"
+                              },
+                              "target": {
+                                "description": "Exact canonical configuration identity (domain_identity), not a storage label or edited display name. Runtime label-byte limits also apply.",
+                                "maxLength": 4096,
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      ],
+                      "properties": {
+                        "channels": {
+                          "items": {
+                            "enum": [
+                              "teams",
+                              "misp"
+                            ],
+                            "type": "string"
+                          },
+                          "maxItems": 2,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "expires_in_seconds": {
+                          "maximum": 300,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "ips": {
+                          "items": {
+                            "maxLength": 45,
+                            "minLength": 2,
+                            "type": "string"
+                          },
+                          "maxItems": 256,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "observed_at": {
+                          "maximum": 9223372036854775807,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "reason": {
+                          "enum": [
+                            null,
+                            "configuration_changed",
+                            "delivery_capacity",
+                            "delivery_pending",
+                            "delivery_storage",
+                            "delivery_unknown",
+                            "destination_unavailable",
+                            "invalid_request",
+                            "no_managed_ips",
+                            "preview_capacity",
+                            "preview_expired",
+                            "resend_cooldown",
+                            "runtime_unavailable",
+                            "snapshot_changed",
+                            "target_not_found"
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "request_id": {
+                          "maxLength": 32,
+                          "minLength": 32,
+                          "pattern": "^[0-9a-f]{32}$",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "retained": {
+                          "type": "boolean"
+                        },
+                        "retry_after": {
+                          "maximum": 30,
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "source_type": {
+                          "enum": [
+                            null,
+                            "A",
+                            "TXT",
+                            "ENS",
+                            "SNS",
+                            "DHT",
+                            "RPC"
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "enum": [
+                            "ready",
+                            "not_ready"
+                          ],
+                          "type": "string"
+                        },
+                        "target": {
+                          "description": "Exact canonical configuration identity (domain_identity), not a storage label or edited display name. Runtime label-byte limits also apply.",
+                          "maxLength": 4096,
+                          "minLength": 1,
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "reason",
+                        "request_id",
+                        "target",
+                        "source_type",
+                        "ips",
+                        "observed_at",
+                        "retained",
+                        "channels",
+                        "expires_in_seconds",
+                        "retry_after"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Unavailable or unknown admission; security/audit may also be unavailable; worker saturation may return an empty body"
+          }
+        },
+        "security": [
+          {
+            "csrf": [],
+            "session": []
+          }
+        ],
+        "summary": "POST /delivery-resend/preview",
+        "x-max-body-bytes": 4096,
+        "x-roles": [
+          "admin"
+        ]
+      }
+    },
     "/domain-analysis": {
       "get": {
         "description": "Read grouped domain analysis. DEFAULT include_vt=1 causes external lookups. Use include_vt=0 for stored-only viewer-safe reads. read_mode=background is bounded to 200 display units and 1 MiB; follow page.next_offset. Domain display units are IP-role rows (empty domain counts one). CSRF is required when include_vt is enabled; this conditional is described here rather than as unconditional OpenAPI security.",

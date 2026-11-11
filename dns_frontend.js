@@ -2890,6 +2890,7 @@ async function loadAlertSettings(){
       botnetEventEl.value = String(alerts.push_event_id);
     }
     setAlertSettingsStatus('Loaded', 'ok');
+    if(window.TraceDeliveryResend) window.TraceDeliveryResend.savedAlerts();
     if(window.TraceTeamsTest) window.TraceTeamsTest.settingsChanged();
   }catch(e){
     setAlertSettingsStatus('Load failed', 'err');
@@ -3300,6 +3301,14 @@ function addDomainRow(obj, metadata){
   });
   detail.append(summary, fields, dhtHelp, rpcHelp);
   card.append(heading, dhtKeyDisplay, dates, detail, del);
+  if(obj && ['A','TXT','ENS','SNS','DHT','RPC'].includes(String(obj.type || 'A').toUpperCase())){
+    const resend = document.createElement('button');
+    resend.className = 'delivery-resend-btn';
+    resend.type = 'button'; resend.dataset.access = 'admin';
+    resend.hidden = true; resend.disabled = true;
+    resend.textContent = 'Resend current IPs';
+    card.appendChild(resend);
+  }
   tr.appendChild(card);
   inp.addEventListener('input', ()=>{ name.textContent = inp.value || 'New target'; });
   sel.addEventListener('change', ()=>{ badge.textContent = sel.value; });
@@ -3311,6 +3320,7 @@ function addDomainRow(obj, metadata){
 }
 
 document.getElementById('addDomain').onclick = ()=>{
+  if(window.TraceDeliveryResend) window.TraceDeliveryResend.changed();
   document.getElementById('domainSettingsSearch').value = '';
   addDomainRow();
   document.querySelector('#domainTable tbody tr:last-child .domain-name').focus();
@@ -3465,6 +3475,7 @@ function secretInput(id, field, configured, scope){
 // Revision belongs to the displayed form, not an unrelated background read.
 let configRevision = null;
 let alertRevision = null;
+if(window.TraceDeliveryResend) window.TraceDeliveryResend.bind(() => configRevision, domainConfigIdentity);
 
 function applyDomainConfig(j){
   configRevision = j.revision;
@@ -3486,9 +3497,11 @@ function applyDomainConfig(j){
   const snsHostsEl = document.getElementById('snsProxyHosts');
   if(snsHostsEl) secretInput('snsProxyHosts', 'DEFAULT_SNS_PROXY_HOSTS', !!(j.configured || {}).DEFAULT_SNS_PROXY_HOSTS, 'config');
   document.getElementById('interval').value = j.interval || 60;
+  if(window.TraceDeliveryResend) window.TraceDeliveryResend.savedConfig();
 }
 
 async function loadCfg(){
+  if(window.TraceDeliveryResend) window.TraceDeliveryResend.invalidateConfig();
   try{
     const r = await fetch('/config');
     if(!r.ok){ log('Failed to load config'); return; }

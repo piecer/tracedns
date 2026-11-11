@@ -10,6 +10,8 @@ ROUTES = {
     '/config': {'GET': 'GET', 'POST': 'POST', 'PATCH': 'POST'},
     '/settings': {'GET': 'GET', 'POST': 'POST', 'PATCH': 'POST'},
     '/teams/test': {'POST': 'POST'},
+    '/delivery-resend/preview': {'POST': 'POST'},
+    '/delivery-resend': {'POST': 'POST'},
     '/delivery-health': {'GET': 'GET'},
     '/delivery-diagnostics': {'GET': 'GET'},
     '/results': {'GET': 'GET'},

@@ -37,6 +37,13 @@ API 계약/제한은 `docs/API.md`, AI 작업 절차는 루트 `SKILL.md`를 참
 
 ## 계정과 감사
 
+저장된 대상 IP 재전송은 admin만 가능하며 legacy/versioned POST 모두 같은 Host/Origin,
+세션·CSRF·사전 감사 경계를 사용한다. 본문은 최초 읽기부터 최대 4096바이트이고 임의
+IP·destination·credential을 받지 않는다. `queued` 감사 결과는 접수이지 전달 완료가 아니다.
+preview/confirmation은 검증된 `resend_id`로 연결하며 별도 보안 job을 만들지 않는다.
+감사 완료 기록 장애나 네트워크 timeout 후에는 실제 접수가 됐을 수 있으므로 자동 재시도하지
+않는다. 상세 운영 의미는 [DELIVERY_RESEND.md](../DELIVERY_RESEND.md)를 참고한다.
+
 admin은 계정 생성·역할 변경·비활성화·임시 비밀번호 재설정·세션 철회와 전체 감사 로그/JSONL 내보내기를 수행한다. operator는 도메인과 분석/강제 조회를 관리한다. viewer는 저장된 관제 데이터만 본다. 마지막 활성 admin은 서버에서 보호한다.
 
 감사는 UTC로 로그인, 계정/설정 변경, 권한 거절, 분석 및 강제 조회의 접수·완료/실패를 기록한다. 비밀번호, 세션·CSRF 토큰, API 키, webhook, 인증 URL은 기록/응답하지 않는다. 기본 보존은 180일이며 `--audit-retention-days`로 1–3650일을 지정한다.

@@ -108,6 +108,18 @@ RPC precheck는 `include_vt` 요청값과 무관하게 VT 및 디코더 탐색�
 35초 논리 조회 한도를 고려해 외부 API 클라이언트의 요청 timeout을 충분히 설정한다.
 계약·제한·예제는 [RPC_TRACKING.md](RPC_TRACKING.md)를 참고한다.
 
+## 저장된 대상 IP 재전송
+
+Admin 전용 `POST /api/v1/delivery-resend/preview`는 정확히
+`{target, channels, revision}`만 받고, `POST /api/v1/delivery-resend`는
+`{request_id}`만 받는다. 같은 legacy 경로도 지원한다. `target`은 저장된 대상의
+canonical configuration identity이며 화면의 편집 중 이름이나 storage label이 아니다.
+최초 body 읽기부터 4096바이트 이하, 중복/추가 JSON 필드 금지, 기존 세션·CSRF·Origin·
+사전 감사 적용이다. 미리보기는 저장된 관리 IP 전체(최대 256개)를 보여 주며 외부 조회나
+전송을 하지 않는다. 확인 202는 durable queue 접수이지 전달 완료가 아니다.
+불명확한 응답 후 자동 재시도하거나 새 preview를 안전한 재시도로 간주하지 않는다.
+상태 코드, 고정 reason, TTL/cooldown, 감사 상관관계는 [DELIVERY_RESEND.md](DELIVERY_RESEND.md)를 참고한다.
+
 ## 실제 Teams 테스트
 
 Admin만 `POST /api/v1/teams/test` (동일한 legacy 경로: `/teams/test`)를 호출할 수 있다.
@@ -127,6 +139,8 @@ Timeout/transport error 후에는 전송됐을 수도 있으므로 Teams를 확�
 | API 탐색 | GET `/`, `/openapi.json` | 인증 필요 |
 | 설정 조회/수정 | GET/POST/PATCH `/config` | 쓰기 revision 필수, domains 전체 교체 |
 | 연동 설정 | GET/POST/PATCH `/settings` | admin, alerts + revision |
+| 대상 IP 재전송 미리보기 | POST `/delivery-resend/preview` | admin, canonical target + selected channels + revision |
+| 대상 IP 재전송 확인 | POST `/delivery-resend` | admin, preview request_id만; 202 queued ≠ delivered |
 | 관측 결과 | GET `/results` | aggregate=1, include_raw=0/1 |
 | 대상 상태 | GET `/domains` | domains 배열, resolving은 과거 관측 기반 힌트 |
 | 도메인 이력 | GET `/history` | domain: 정확한 storage name, URL 인코딩 |
