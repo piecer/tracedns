@@ -1,179 +1,80 @@
+<div align="center">
+
 # TraceDNS
 
 **Follow the infrastructure behind an indicator, not just its latest IP.**
 
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](#quick-start)
+[![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f)](LICENSE)
+[![Self-hosted](https://img.shields.io/badge/deploy-self--hosted-6f42c1)](docs/security/deployment.md)
+[![REST API + OpenAPI](https://img.shields.io/badge/API-REST%20%2B%20OpenAPI-0a7ea4)](docs/API.md)
+
 [English](README.md) · [한국어](README.ko.md)
 
-TraceDNS is a self-hosted monitoring and investigation tool for analysts who need
+[**Quick Start**](#quick-start) · [**Walkthrough**](#an-investigation-from-start-to-finish) · [**Supported sources**](#decoders-and-advanced-target-types) · [**REST API**](docs/API.md) · [**Docs**](#documentation)
+
+</div>
+
+---
+
+> A TXT record can hide an address.
+> A naming record can change its endpoint.
+> A list of IPs can share infrastructure without belonging to the same campaign.
+
+**TraceDNS** is a self-hosted monitoring and investigation tool for analysts who need
 to track infrastructure published through DNS, blockchain naming records and signed
 DHT records. It brings record collection, address decoding, change history,
-IP relationship analysis and optional notifications into one web dashboard.
+IP relationship analysis and optional notifications into **one web dashboard**, and
+it keeps the underlying observations available for review so analysts can check
+results against the available evidence.
 
-A TXT record can hide an address. A naming record can change its endpoint. A list
-of IPs can share infrastructure without belonging to the same campaign. TraceDNS
-helps you inspect those changes and relationships while keeping the underlying
-observations available for review.
+<p align="center">
+  <img src="docs/images/dashboard.png" alt="TraceDNS dashboard showing synthetic monitoring examples" width="880">
+</p>
 
-**Start with:** [Local setup](#quick-start) · [Investigation workflow](#an-investigation-from-start-to-finish)
-· [Supported sources](#decoders-and-advanced-target-types) · [API reference](docs/API.md)
+*Actual Status view, cropped from an isolated local instance with synthetic
+example data. No production data or live threat-intelligence results are shown.*
 
-Python backend · Browser dashboard · Optional Teams / MISP / VirusTotal · [MIT license](LICENSE)
+## How it works
 
-## What you can do
+```mermaid
+flowchart LR
+    subgraph SRC["Sources you choose"]
+        A["DNS A / TXT"]
+        B["ENS / SNS"]
+        C["Signed DHT records"]
+        D["Polygon RPC profile"]
+    end
+    SRC --> DEC["Source-specific decoding<br/>and verification where supported"]
+    DEC --> OBS["Observations and change history"]
+    OBS --> UI["Web dashboard"]
+    OBS --> BIA["Botnet IP Analysis<br/>pairs, clusters, evidence"]
+    OBS --> NOTE["Teams / MISP alerts"]
+    OBS --> API["REST API /api/v1"]
+```
 
-| Task | How TraceDNS helps |
-| --- | --- |
-| Watch DNS records | Track A/TXT records and extract IPs with built-in or custom decoders. |
-| Follow other discovery sources | Monitor ENS and SNS records, signed DHT records, and the supported Polygon RPC configuration profile. |
-| Investigate IP relationships | Compare observed domains, infrastructure details and available threat-intelligence context in Botnet IP Analysis. |
-| Review changes | Browse current results, IP lists and target history in the dashboard. |
-| Enrich and notify | Optionally look up VirusTotal reports and send new-IP notifications to Teams or MISP. |
-| Share access | Use local accounts, role-based permissions and per-user audit records. |
+## Highlights
+
+| | Feature | What you get |
+| --- | --- | --- |
+| 📡 | **Track a source, not a static list** | Save a source and its decoding settings once; periodic observations and history show how it changes. A configuration edit is never presented as a DNS change. |
+| 🧩 | **Many discovery mechanisms, one view** | DNS A/TXT, ENS, SNS, signed DHT records and a supported Polygon RPC profile feed the same dashboard, with source-specific details kept intact. |
+| 🔓 | **Decode first, then inspect the evidence** | Built-in decoders for plain and encoded addresses, or a constrained custom decoder with **Preview** before you save it. Signed DHT records and the supported authenticated RPC/ENS formats include signature or authentication checks. |
+| 🕸️ | **Relationship clues next to the IPs** | **Botnet IP Analysis** shows pairs, clusters and the evidence behind them, with Graph and Map views, filters and JSON export, for lists of up to 10,000 unique IPs. |
+| 🔔 | **Alerts with an honest delivery state** | Optional Teams / MISP notifications. Delivery diagnostics distinguish *queued* from *delivered*; a 24-hour removal grace and reappearance suppression reduce noise. |
+| 👥 | **Built for teams** | Local accounts, `admin` / `operator` / `viewer` roles, per-user audit records, and an authenticated REST API with an OpenAPI spec and a stdlib-only Python client. |
 
 Teams, MISP and VirusTotal are optional. The starter configuration has no targets
 or integrations enabled; you choose what to monitor and which external services
 to use.
 
-## Contents
+## Quick Start
 
-- [Why TraceDNS](#why-tracedns)
-- [An investigation from start to finish](#an-investigation-from-start-to-finish)
-- [Inside Botnet IP Analysis](#inside-botnet-ip-analysis)
-- [Scope and limits](#scope-and-limits)
-- [Requirements](#requirements)
-- [Quick Start](#quick-start)
-- [Multi-user access and deployment](#multi-user-access-and-deployment)
-- [Using the dashboard](#using-the-dashboard)
-- [Configuration](#configuration)
-- [Decoders and advanced target types](#decoders-and-advanced-target-types)
-- [Alerts and delivery](#alerts-and-delivery)
-- [REST API and external clients](#rest-api-and-external-clients)
-- [Development and tests](#development-and-tests)
-- [Troubleshooting](#troubleshooting)
-- [Documentation](#documentation)
+Run a local dashboard on your own machine. **You need:** Python 3.11+, a browser,
+and access to the DNS resolver or discovery service used by your selected targets.
 
-## Why TraceDNS
-
-### Track a changing source, rather than maintaining a static IP list
-
-An IP extracted today may not be the address published tomorrow. Save the source
-and its decoding settings once, then use periodic observations and history to
-follow its changes. The dashboard separates target configuration from lookup
-results, so a configuration edit is not presented as a DNS change.
-
-### Bring different discovery mechanisms into the same investigation
-
-DNS A/TXT, ENS, SNS, signed DHT records and a supported Polygon RPC profile feed
-the monitoring workflow. You can work with their extracted addresses in the same
-dashboard while still inspecting source-specific details. DHT storage peers, for
-example, are not treated as the addresses published inside a signed record.
-
-### Decode first, then inspect the evidence
-
-Built-in methods cover plain IP extraction and several encoded address formats.
-Preview a decoder before saving it, or define a constrained custom decoder when
-the format needs different extraction steps. Signed DHT records and the supported
-authenticated RPC/ENS formats have signature or authentication checks; ordinary
-address decoding alone provides no such guarantee and is not a malware verdict.
-
-### Put relationship clues next to the IPs
-
-Botnet IP Analysis combines available infrastructure context with local
-observations. Inspect pairs, clusters and their evidence instead of treating
-every address in a pasted list as equally related. Filter the results and export
-JSON for further review or another tool.
-
-### Keep monitoring and notification state visible
-
-Optional Teams and MISP integration connects observations to an existing analyst
-workflow. Delivery diagnostics distinguish queued work from completed delivery;
-removal grace and reappearance suppression help avoid treating every temporary
-disappearance as a fresh event. Local roles and audit records let a team share
-access without giving every user configuration privileges.
-
-### Where it fits
-
-| Your task | What to do in TraceDNS | What to take away |
-| --- | --- | --- |
-| Follow infrastructure found during malware analysis | Register the selected record source and validate its decoder. | Current extracted addresses and a history of observed changes. |
-| Triage a set of suspicious IPs | Paste the IP list into Botnet IP Analysis and review relationship evidence. | Candidate relationships to investigate, not an automatic infection verdict. |
-| Track a signed or on-chain configuration source | Select the supported DHT, ENS, SNS or RPC target type and inspect its source-specific result. | Published addresses with the available source/authentication context. |
-| Share new observations with a team | Configure Teams or MISP, then monitor delivery health. | Notifications with an explicit delivery state. |
-| Connect a script or external analyst assistant | Use the authenticated REST API and standalone Python client. | Programmatic access under the same roles and audit rules as the UI. |
-
-## An investigation from start to finish
-
-1. **Choose the source.** Start with a target you have deliberately selected from
-   your investigation. Choose DNS, a naming record, a DHT public key or the
-   supported RPC profile; TraceDNS does not subscribe you to research targets.
-2. **Verify before monitoring.** Use **Domain Verify** to inspect the returned
-   record and extracted addresses. For encoded data, compare the available
-   decoding results or preview a custom decoder before saving it.
-3. **Save the target.** Add the verified configuration and choose the polling
-   interval in **Settings**. Review **Status** and history as observations arrive.
-4. **Investigate relationships.** Use **Domain Analysis** for monitored-domain
-   statistics, or **Botnet IP Analysis** for an IP-list investigation. Examine the
-   evidence behind a relationship and the coverage warnings before drawing a conclusion.
-5. **Share or automate.** Export analysis JSON, read observations through the API,
-   or enable Teams/MISP notifications. Check delivery diagnostics before retrying
-   a notification whose outcome is uncertain.
-
-For example, suppose a selected TXT record publishes one encoded address and
-later publishes another. TraceDNS can retain observations of that change and let
-you compare the resulting IPs with the rest of your investigation. A shared
-hosting provider is a lead to inspect, not proof that the two IPs have the same
-operator. This is an illustrative workflow, not a captured incident or a benchmark.
-
-## Inside Botnet IP Analysis
-
-The workbench is for investigating relationships among IPs whose roles may be
-unknown. Its name does not mean that every input is a bot, an infected host or a
-C2 server.
-
-| Part of the workflow | What you can inspect or control |
-| --- | --- |
-| Prepare the input | Paste newline-, comma- or space-separated IPs. Duplicate entries are analyzed once; the input supports up to 10,000 valid unique IPs. |
-| Add context | Use available VirusTotal infrastructure data, optional GeoIP country fallback, local DNS provenance and context from a selected MISP event. Availability depends on configuration and retained data. |
-| Choose the analysis profile | Start with Balanced, or select Conservative, Aggressive or saved Custom settings. Advanced controls include pair-selection and neighbor limits. |
-| Follow the job | Observe analysis progress and cancel a running job from the workbench. |
-| Review the results | Inspect pair and cluster tables, or switch to Graph and Map. Filter results by IP, owner, country or evidence. |
-| Check coverage | Read the coverage/quality indicators alongside the results. A bounded or partially enriched result is not an exhaustive search. |
-| Keep a copy | Export the analysis as JSON for review or downstream processing. |
-
-Relationships can draw on shared domains, infrastructure attributes and available
-TLS or threat-intelligence context. The graph is a bounded view of the analysis,
-not a map of every host or every possible relationship. A cluster is a connected
-group of accepted relationships; it does not establish that every member is
-directly related to every other member.
-
-VirusTotal enrichment and MISP context are optional external inputs. Their
-presence, absence or age affects what can be concluded. Review the underlying
-observations before using a relationship score to prioritize follow-up work.
-
-## Scope and limits
-
-TraceDNS is an observation and investigation tool, not an endpoint protection
-agent or a replacement for network telemetry.
-
-- **It does not establish infection.** A decoded IP, shared ASN, certificate or
-  cluster alone does not prove malware activity or common ownership.
-- **It is not entirely passive.** Live monitoring sends queries to the selected
-  DNS resolvers, naming-service providers, DHT peers or RPC services. Enabled
-  enrichment and notifications contact their respective external services.
-- **DHT and RPC observation is not payload execution.** These paths do not run
-  malware or connect to the recovered C2 endpoints. DHT tracking is read-only;
-  the RPC target supports a specific profile, not arbitrary contract crawling.
-- **A missing result is not a clean bill of health.** Timeouts, unavailable
-  enrichment and resource limits can leave gaps. In particular, a failed DHT
-  attempt is kept separate from the last confirmed signed record.
-- **An external AI client is not a built-in LLM detector.** The API and `SKILL.md`
-  support external tooling; local LLM inference is not a shipped analysis feature.
-
-Use only targets and services you are authorized to query. Start with the empty
-example configuration, review outgoing-service settings and keep credentials out
-of shared exports and repository commits.
-
-## Requirements
+<details>
+<summary>Requirements, optional features and Python 3.10 note</summary>
 
 - Python 3.11 or newer. The Linux verification matrix covers Python 3.11 and 3.12.
 - A browser for the dashboard.
@@ -194,7 +95,7 @@ Python 3.11+ environment before switching. Keep the old environment and consiste
 state backups. These instructions are for a new installation, not an in-place
 upgrade of a running service.
 
-## Quick Start
+</details>
 
 ### 1. Install in a fresh checkout
 
@@ -249,6 +150,93 @@ use Ctrl+C when you want to stop this local instance.
 This walkthrough uses plaintext HTTP on loopback only. For another machine to
 access the dashboard, configure HTTPS as described below; do not simply expose
 this example's listener to the network.
+
+**Next:** follow [an investigation from start to finish](#an-investigation-from-start-to-finish),
+or set up [multi-user access and HTTPS](#multi-user-access-and-deployment).
+
+## An investigation from start to finish
+
+1. **Choose the source.** Start with a target you have deliberately selected from
+   your investigation. Choose DNS, a naming record, a DHT public key or the
+   supported RPC profile; TraceDNS does not subscribe you to research targets.
+2. **Verify before monitoring.** Use **Domain Verify** to inspect the returned
+   record and extracted addresses. For encoded data, compare the available
+   decoding results or preview a custom decoder before saving it.
+3. **Save the target.** Add the verified configuration and choose the polling
+   interval in **Settings**. Review **Status** and history as observations arrive.
+4. **Investigate relationships.** Use **Domain Analysis** for monitored-domain
+   statistics, or **Botnet IP Analysis** for an IP-list investigation. Examine the
+   evidence behind a relationship and the coverage warnings before drawing a conclusion.
+5. **Share or automate.** Export analysis JSON, read observations through the API,
+   or enable Teams/MISP notifications. Check delivery diagnostics before retrying
+   a notification whose outcome is uncertain.
+
+For example, suppose a selected TXT record publishes one encoded address and
+later publishes another. TraceDNS can retain observations of that change and let
+you compare the resulting IPs with the rest of your investigation. A shared
+hosting provider is a lead to inspect, not proof that the two IPs have the same
+operator. This is an illustrative workflow, not a captured incident or a benchmark.
+
+## Inside Botnet IP Analysis
+
+The workbench is for investigating relationships among IPs whose roles may be
+unknown. Its name does not mean that every input is a bot, an infected host or a
+C2 server.
+
+| Part of the workflow | What you can inspect or control |
+| --- | --- |
+| Prepare the input | Paste newline-, comma- or space-separated IPs. Duplicate entries are analyzed once; the input supports up to 10,000 valid unique IPs. |
+| Add context | Use available VirusTotal infrastructure data, optional GeoIP country fallback, local DNS provenance and context from a selected MISP event. Availability depends on configuration and retained data. |
+| Choose the analysis profile | Start with Balanced, or select Conservative, Aggressive or saved Custom settings. Advanced controls include pair-selection and neighbor limits. |
+| Follow the job | Observe analysis progress and cancel a running job from the workbench. |
+| Review the results | Inspect pair and cluster tables, or switch to Graph and Map. Filter results by IP, owner, country or evidence. |
+| Check coverage | Read the coverage/quality indicators alongside the results. A bounded or partially enriched result is not an exhaustive search. |
+| Keep a copy | Export the analysis as JSON for review or downstream processing. |
+
+Relationships can draw on shared domains, infrastructure attributes and available
+TLS or threat-intelligence context. The graph is a bounded view of the analysis,
+not a map of every host or every possible relationship. A cluster is a connected
+group of accepted relationships; it does not establish that every member is
+directly related to every other member.
+
+VirusTotal enrichment and MISP context are optional external inputs. Their
+presence, absence or age affects what can be concluded. Review the underlying
+observations before using a relationship score to prioritize follow-up work.
+
+## Where it fits
+
+| Your task | What to do in TraceDNS | What to take away |
+| --- | --- | --- |
+| Follow infrastructure found during malware analysis | Register the selected record source and validate its decoder. | Current extracted addresses and a history of observed changes. |
+| Triage a set of suspicious IPs | Paste the IP list into Botnet IP Analysis and review relationship evidence. | Candidate relationships to investigate, not an automatic infection verdict. |
+| Track a signed or on-chain configuration source | Select the supported DHT, ENS, SNS or RPC target type and inspect its source-specific result. | Published addresses with the available source/authentication context. |
+| Share new observations with a team | Configure Teams or MISP, then monitor delivery health. | Notifications with an explicit delivery state. |
+| Connect a script or external analyst assistant | Use the authenticated REST API and standalone Python client. | Programmatic access under the same roles and audit rules as the UI. |
+
+## Scope and limits
+
+Trust matters in security tooling, so here is what TraceDNS does **not** claim.
+
+TraceDNS is an observation and investigation tool, not an endpoint protection
+agent or a replacement for network telemetry.
+
+- **It does not establish infection.** A decoded IP, shared ASN, certificate or
+  cluster alone does not prove malware activity or common ownership.
+- **It is not entirely passive.** Live monitoring sends queries to the selected
+  DNS resolvers, naming-service providers, DHT peers or RPC services. Enabled
+  enrichment and notifications contact their respective external services.
+- **DHT and RPC observation is not payload execution.** These paths do not run
+  malware or connect to the recovered C2 endpoints. DHT tracking is read-only;
+  the RPC target supports a specific profile, not arbitrary contract crawling.
+- **A missing result is not a clean bill of health.** Timeouts, unavailable
+  enrichment and resource limits can leave gaps. In particular, a failed DHT
+  attempt is kept separate from the last confirmed signed record.
+- **An external AI client is not a built-in LLM detector.** The API and `SKILL.md`
+  support external tooling; local LLM inference is not a shipped analysis feature.
+
+Use only targets and services you are authorized to query. Start with the empty
+example configuration, review outgoing-service settings and keep credentials out
+of shared exports and repository commits.
 
 ## Multi-user access and deployment
 
@@ -535,6 +523,9 @@ overwriting configuration. Queued work is not completed work.
 
 ## Development and tests
 
+<details>
+<summary>Run the test suite and browser tests</summary>
+
 Follow the [validation guide](docs/VALIDATION.md) to prepare separate application
 and tooling environments, plus Node.js and Chromium for the frontend tests.
 Node.js is required by `make test` and `make botnet-coverage`, not just `make e2e`.
@@ -565,6 +556,8 @@ Passing the fixed regression corpus does not measure detection rates on unseen
 infrastructure. Keep test state separate from a running deployment's configuration,
 history and account database.
 
+</details>
+
 ## Troubleshooting
 
 | Symptom | First check |
@@ -592,6 +585,8 @@ history and account database.
 ## Contributing
 
 Contributions are welcome. Please open issues or PRs with focused changes. When editing or translating user-facing strings, avoid renaming programmatic keys in `dns_config.json`.
+
+If TraceDNS helps your investigations, a ⭐ on the repository helps other analysts find it.
 
 ## License & Authors
 
