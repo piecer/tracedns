@@ -92,6 +92,7 @@ class HttpSecurity:
         handler.source_ip = handler.client_address[0]
         handler._security_cookies = []
         handler._security_status = 500
+        handler._security_unavailable = False
         handler.close_connection = True
         original_path, original_method = handler.path, handler.command
         parsed = urlsplit(handler.path)
@@ -210,10 +211,12 @@ class HttpSecurity:
                 except SecurityError:
                     exc = SecurityError('Audit storage unavailable', 503)
             if not getattr(handler, '_headers_sent', False):
+                handler._security_unavailable = exc.status == 503
                 send_json(handler, {'error': str(exc), 'request_id': handler.request_id}, exc.status)
         except Exception:
             LOGGER.error('Request failed; request_id=%s', handler.request_id)
             if not getattr(handler, '_headers_sent', False):
+                handler._security_unavailable = True
                 send_json(handler, {'error': 'Service unavailable', 'request_id': handler.request_id}, 503)
         finally:
             handler.path, handler.command = original_path, original_method
@@ -251,6 +254,8 @@ def secure_handler(handler_class, service):
         self.send_header('Referrer-Policy', 'no-referrer')
         self.send_header('Content-Security-Policy', "frame-ancestors 'none'; base-uri 'self'; object-src 'none'")
         self.send_header('X-Request-ID', getattr(self, 'request_id', ''))
+        if getattr(self, '_security_unavailable', False) and self._security_status == 503:
+            self.send_header('X-TraceDNS-Security-Error', 'security_unavailable')
         old_headers(self)
         self._headers_sent = True
 

@@ -134,6 +134,7 @@ test('synthetic typed DHT precheck validates before transport and adds distinct 
   await expect(page.locator('#domainVerifyStatus')).toContainText('exactly 64 hexadecimal');
   expect(requests).toEqual([]);
   await page.fill('#verifyDhtPublicKey', key);
+  await page.locator('#verifyAdvanced > summary').click();
   await page.fill('#verifyDhtOptions', '[]');
   await page.click('#runDomainVerifyBtn');
   await expect(page.locator('#domainVerifyStatus')).toContainText('must be a JSON object');
@@ -206,14 +207,18 @@ test('synthetic DHT status separates retained records from every latest attempt 
     await page.click('#menuQuery');
     await page.click('#menuStatus');
     const row = page.locator('#resultsTable tbody tr').first();
-    await expect(row.locator('.dht-evidence')).toContainText('Latest lookup attempt: '+status);
-    await expect(row.locator('.dht-evidence')).toContainText('Last-confirmed sequence: '+seq);
-    await expect(row.locator('.dht-evidence')).toContainText('2023');
-    await expect(row.locator('.dht-evidence')).toContainText('Coverage: {"complete":false,"queries":2}');
+    await expect(row).toContainText('DHT: '+status);
+    await row.getByRole('button',{name:'Details',exact:true}).click();
+    await page.locator('#targetEvidence > summary').click();
+    const evidence=page.locator('#targetEvidence .dht-evidence');
+    await expect(evidence).toContainText('Latest lookup attempt: '+status);
+    await expect(evidence).toContainText('Last-confirmed sequence: '+seq);
+    await expect(evidence).toContainText('2023');
+    await expect(evidence).toContainText('Coverage: {"complete":false,"queries":2}');
     await expect(row).toContainText(key.toLowerCase());
     await expect(row.locator('td').nth(3)).toContainText('192.0.2.9');
     await expect(page.locator('#metricDecoded')).toHaveText('1');
-    expect(await row.locator('.dht-evidence').evaluate(el=>({wrap:getComputedStyle(el).whiteSpace, overflow:getComputedStyle(el).textOverflow})))
+    expect(await evidence.evaluate(el=>({wrap:getComputedStyle(el).whiteSpace, overflow:getComputedStyle(el).textOverflow})))
       .toEqual({wrap:'pre-wrap',overflow:'clip'});
   }
   data.results_agg = {};
@@ -221,7 +226,10 @@ test('synthetic DHT status separates retained records from every latest attempt 
   await page.click('#menuQuery');
   await page.click('#menuStatus');
   await expect(page.locator('#resultsTable tbody tr')).toHaveCount(1);
-  const empty = page.locator('#resultsTable .dht-evidence');
+  await expect(page.locator('#resultsTable')).toContainText('no confirmed record');
+  await page.locator('#resultsTable tbody tr').first().getByRole('button',{name:'Details',exact:true}).click();
+  await page.locator('#targetEvidence > summary').click();
+  const empty = page.locator('#targetEvidence .dht-evidence');
   await expect(empty).toContainText('No last-confirmed record available');
   await expect(empty).toContainText('Coverage: unknown');
   await expect(empty).toContainText(key.toLowerCase());

@@ -14,7 +14,7 @@ class Element {
   click(){ this.clicked = true; }
   remove(){}
 }
-const ids = ['deliveryDiagnostics','diagnosticsRead','diagnosticsCancel','diagnosticsDownload','diagnosticsStatus','diagnosticsDetails'];
+const ids = ['deliveryDiagnostics','diagnosticsRead','diagnosticsCancel','diagnosticsDownload','diagnosticsStatus','diagnosticsDetails','diagnosticsDisclosure'];
 const elements = Object.fromEntries(ids.map(id => [id, new Element()]));
 const events = {};
 let downloaded;
@@ -31,6 +31,9 @@ vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'globalThis.diagTest = {readDiag
 (async () => {
   const result = await context.diagTest.readDiagnostics(new Response(JSON.stringify(input)), new AbortController().signal);
   context.diagTest.render(result);
+  assert.equal(elements.diagnosticsDetails.children.length, 0, 'closed diagnostics must not mount evidence');
+  elements.diagnosticsDisclosure.open = true;
+  elements.diagnosticsDisclosure.events.toggle();
   const text = elements.diagnosticsDetails.children.map(x => x.textContent).join('\n');
   for(const label of ['latest result', 'latest terminal failure', 'oldest blocked', 'not automatically replayed', '302', 'lower bound', '1025', '1024', 'not necessarily active', 'sqlite_full', 'transaction_commit']) assert(text.includes(label), label);
   assert(elements.diagnosticsStatus.textContent.includes('stale'));
@@ -119,7 +122,7 @@ vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'globalThis.diagTest = {readDiag
     assert(signal.aborted && bodyCancelled);
     assert(elements.diagnosticsStatus.textContent.includes('stale'));
 
-    context.fetch = async () => { throw new Error('Permission denied for this action.'); };
+    context.fetch = async () => { throw Object.assign(new Error('Permission denied for this action.'), {status:403,code:'forbidden'}); };
     await elements.diagnosticsRead.events.click();
     assert(elements.deliveryDiagnostics.hidden);
     assert.equal(elements.diagnosticsDetails.children.length, 0);

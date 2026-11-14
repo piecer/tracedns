@@ -148,6 +148,10 @@
         finally{if(current===generation){busy=false;confirming=false;controller=null;refresh();}}
       });
       byId('CancelBtn').addEventListener('click',cancel);
+      window.TraceAuth.onInvalidated?.(() => {
+        blocked=true;opener=null;cancel();targetLabel.textContent='';
+        status.textContent='Access changed. Reload to check permissions. '+(uncertain?unknown:'');
+      });
       byId('HealthLink').addEventListener('click',cancel);
       byId('DiagnosticsLink').addEventListener('click',cancel);
       dialog.addEventListener('cancel',event=>{event.preventDefault();cancel();});

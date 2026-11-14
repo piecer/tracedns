@@ -72,6 +72,14 @@ inputs cannot become unbounded JSON values.
 
 ## UI and operational limits
 
+The compact console keeps backend/worker state and loss/uncertainty in the basic
+health view. **Delivery details** lazily mounts progress, accounting and recovery
+evidence; closing it does not declare recovery or erase historical losses.
+Manual diagnostics stay in a separate initially closed operations disclosure.
+An ordinary health read failure retains the last accepted snapshot as stale;
+authentication/audit warnings remain independently owned. See
+[console views](VIEW_PRESENTATION.md) for scope and lifecycle details.
+
 The existing panel requests the extension, renders fixed labels through
 textContent and retains 15-second polling pacing, 10-second stream timeout,
 single flight, visibility/page lifecycle, authentication, no-store and bounded

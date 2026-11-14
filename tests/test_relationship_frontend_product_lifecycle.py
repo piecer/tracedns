@@ -65,7 +65,7 @@ def test_overlapping_relationship_runs_release_every_busy_lease():
     )
     script = "let ipIntelBusyCount = 0; let ipRelAnalyzeController = null;\n" + sources + r"""
 const assert = require('assert');
-const run = {disabled:false};
+const run = {disabled:false, hidden:false};
 global.document = {getElementById:id=>id === 'runIpRelationshipBtn' ? run : null};
 const first = {id:'first'};
 const second = {id:'second'};
@@ -123,6 +123,7 @@ def test_programmatic_input_setter_updates_summary_and_marks_results_stale():
 const assert = require('assert');
 const input = {value:'1.1.1.1'};
 global.document = {getElementById:id=>id === 'ipIntelInput' ? input : null};
+global.cancelIpIntelInputReads = () => {};
 let stats = 0, hints = 0, stale = 0;
 global.updateIpIntelInputStats = () => { stats += 1; };
 global.renderMergedIpIntelHints = () => { hints += 1; };
@@ -157,7 +158,7 @@ def test_empty_analysis_input_preserves_previous_result_as_stale():
 
 
 def test_restored_previous_result_relabels_visible_quality_banner():
-    source = _function_source("restorePreviousIpRelationshipResult")
+    source = _function_source("buildIpRelationshipResultModel") + "\n" + _function_source("restorePreviousIpRelationshipResult")
     script = source + r"""
 const assert = require('assert');
 const banner = {dataset:{state:'complete'}, textContent:'Complete analysis'};

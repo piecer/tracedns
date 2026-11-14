@@ -9,6 +9,52 @@ const SECTION_BUTTON_MAP = {
   validips: 'menuValidIPs'
 };
 
+const localFeedbackOwners = new Map();
+function viewFeedbackOwner(name, elementId){
+  if(!window.TraceViewFeedback || !document.getElementById(elementId)) return null;
+  if(!localFeedbackOwners.has(name)) localFeedbackOwners.set(name, window.TraceViewFeedback.register(name, state => {
+    const el = document.getElementById(elementId);
+    if(!el) return;
+    if(state.error) el.setAttribute('data-feedback-id', state.error.identity);
+    else el.removeAttribute('data-feedback-id');
+  }));
+  return localFeedbackOwners.get(name);
+}
+function feedbackCurrent(token){ return !token || window.TraceViewFeedback.current(token); }
+function feedbackFailure(scope, token, error, mutation = false){
+  if(scope) scope.fail(token, window.TraceViewFeedback.code(error, mutation));
+}
+window.TraceAuth?.onInvalidated?.(() => {
+  cancelSectionRefreshes();
+  closeTargetDetail(false);
+  preparedViews.clear();
+  statusPageRows.clear();
+  document.getElementById('ipDetail')?.remove();
+  for(const id of ['resultsTable', 'ipsTable', 'validIpsTable', 'domainDomainStatsTable']){
+    const body = document.querySelector('#' + id + ' tbody');
+    if(body){ body.replaceChildren(); body._preparedRows = new Map(); }
+  }
+  for(const section of Object.keys(preparedOffsets)){
+    preparedOffsets[section] = 0;
+    document.getElementById(section + '_page_meta')?.replaceChildren();
+    for(const suffix of ['_prev_btn', '_next_btn']){
+      const button = document.getElementById(section + suffix);
+      if(button) button.disabled = true;
+    }
+    setSectionRefreshStatus(section, 'Access changed. Reload to check permissions.');
+  }
+  cancelQuery('Access changed. Reload to check permissions.');
+  invalidateAnalysisAccess();
+  queryResultViews.clear();
+  for(const [root] of Object.values(queryParts)) document.getElementById(root)?.replaceChildren();
+  loadHistory.lastGood = null;
+  for(const scope of localFeedbackOwners.values()) scope.forget();
+  const history = document.getElementById('historyBox');
+  if(history) history.textContent = '';
+  configRevision = alertRevision = decoderRevision = null;
+  window.DOMAIN_VERIFY_LAST = null;
+});
+
 function setSectionRefreshStatus(section, text){
   const parent = document.getElementById(section);
   if(!parent) return;
@@ -33,7 +79,7 @@ async function readPreparedJSON(owner){
   if(previous && previous.url === url && previous.version){
     query.searchParams.set('if_version', previous.version);
   }
-  const data = await window.TraceAuth.readJSON(query.href, {signal:owner.controller.signal});
+  const data = await window.TraceAuth.readJSON(query.href, {signal:owner.controller.signal, feedback:owner.feedback});
   owner.payload = data;
   return data;
 }
@@ -49,6 +95,7 @@ function completePreparedRender(owner){
   const j = owner.payload || {};
   updatePreparedPage(owner.section, j.page);
   preparedStatus(owner);
+  owner.feedbackScope?.succeed(owner.feedback);
   const status = document.getElementById(owner.section + '-refresh-status');
   preparedViews.set(owner.section, {url:owner.url, version:j.view_version || null, page:j.page, status:status ? status.textContent : ''});
 }
@@ -104,11 +151,12 @@ function navigatePreparedPage(section, direction){
   const state = preparedViews.get(section);
   const offset = state && state.page && state.page[direction + '_offset'];
   if(!Number.isInteger(offset) || offset < 0) return;
+  if(section === 'status') closeTargetDetail(false);
   preparedOffsets[section] = offset;
   triggerSectionRefresh(section);
 }
 function beginSectionRefresh(section){
-  if(document.hidden) return null;
+  if(document.hidden || window.TraceAuth?.accessInvalidated) return null;
   const url = preparedQuery(section);
   const previous = sectionRefreshOwners.get(section);
   if(previous){
@@ -116,13 +164,15 @@ function beginSectionRefresh(section){
     previous.controller.abort();
     sectionRefreshOwners.delete(section);
   }
-  const owner = {section, url, controller: new AbortController()};
+  setSectionRefreshStatus(section, (document.getElementById(section + '-refresh-status') || {}).textContent || 'Loading snapshot…');
+  const feedbackScope = viewFeedbackOwner('prepared-' + section, section + '-refresh-status');
+  const owner = {section, url, controller: new AbortController(), feedbackScope, feedback:feedbackScope?.begin(url)};
   sectionRefreshOwners.set(section, owner);
   return owner;
 }
 
 function isSectionRefreshCurrent(owner){
-  return sectionRefreshOwners.get(owner.section) === owner && !owner.controller.signal.aborted;
+  return !window.TraceAuth?.accessInvalidated && sectionRefreshOwners.get(owner.section) === owner && !owner.controller.signal.aborted;
 }
 
 function finishSectionRefresh(owner){
@@ -131,7 +181,8 @@ function finishSectionRefresh(owner){
 
 function failSectionRefresh(owner, error){
   if(isSectionRefreshCurrent(owner)){
-    const oversize = error && /\b422\b/.test(String(error.message));
+    feedbackFailure(owner.feedbackScope, owner.feedback, error);
+    const oversize = error?.status === 422;
     setSectionRefreshStatus(owner.section, oversize
       ? 'Prepared entry is too large (422). Previous data retained. Use the full JSON download below; no automatic fallback.'
       : 'Data may be stale. Refresh failed; will retry on the next refresh.');
@@ -142,15 +193,21 @@ function cancelSectionRefreshes(exceptSection){
   for(const owner of sectionRefreshOwners.values()){
     if(owner.section === exceptSection) continue;
     owner.controller.abort();
+    owner.feedbackScope?.invalidate();
     setSectionRefreshStatus(owner.section, 'Data may be stale. Refresh paused while hidden.');
     sectionRefreshOwners.delete(owner.section);
   }
 }
 
 document.addEventListener('visibilitychange', () => {
-  if(document.hidden) cancelSectionRefreshes();
-  else if(!isPaused()) triggerSectionRefresh(getActiveSectionId());
+  if(document.hidden){ cancelSectionRefreshes(); cancelHistoryRead(); if(currentQuery) cancelQuery(); if(domainVerifyController) cancelDomainVerify(); suspendAnalysisView(); }
+  else {
+    resumeAnalysisView();
+    if(!isPaused()) triggerSectionRefresh(getActiveSectionId());
+  }
 });
+window.addEventListener('pagehide', () => { cancelSectionRefreshes(); cancelHistoryRead(); if(currentQuery) cancelQuery(); if(domainVerifyController) cancelDomainVerify(); suspendAnalysisView(); clearDomainAnalysisDetail(); setDomainAnalysisManageMode(false); });
+window.addEventListener('pageshow', event => { if(event.persisted) resumeAnalysisView(); });
 
 function getActiveSectionId(){
   const el = document.querySelector('.section.active');
@@ -181,13 +238,33 @@ function triggerSectionRefresh(name){
 
 function showSection(name){
   cancelSectionRefreshes(name);
+  if(name !== 'domainanalysis' && getActiveSectionId()==='domainanalysis'){
+    clearDomainAnalysisDetail(); setDomainAnalysisManageMode(false);
+  }
+  if(name !== 'ipintel' && getActiveSectionId()==='ipintel') suspendAnalysisView();
+  if(name !== 'query' && currentQuery) cancelQuery();
+  if(name !== 'domainverify' && domainVerifyController) cancelDomainVerify();
+  document.getElementById('ipDetail')?.remove();
+  if(name !== 'status') closeTargetDetail(false);
   ['settings','domainverify','status','query','domainanalysis','ipintel','ips','validips'].forEach(id=>document.getElementById(id).classList.remove('active'));
   document.getElementById(name).classList.add('active');
+  if(name === 'ipintel'){
+    if(suspendedAnalysisView) resumeAnalysisView();
+    else setIpRelView('table');
+  }
   Object.keys(SECTION_BUTTON_MAP).forEach(sec=>{
     const btn = document.getElementById(SECTION_BUTTON_MAP[sec]);
     if(!btn) return;
     btn.classList.toggle('active', sec === name);
+    if(sec === name) btn.setAttribute('aria-current', 'page');
+    else btn.removeAttribute('aria-current');
   });
+  const currentView = document.getElementById('currentView');
+  if(currentView) currentView.textContent = ({status:'Monitoring / Status', ips:'Monitoring / All IPs',
+    validips:'Monitoring / Valid IPs', query:'Lookup / Query', domainverify:'Lookup / Domain Verify',
+    domainanalysis:'Analysis / Domains', ipintel:'Analysis / IP relationships', settings:'Operations / Settings'})[name];
+  const overview = document.getElementById('overviewGrid');
+  if(overview) overview.hidden = name !== 'status';
   triggerSectionRefresh(name);
 }
 document.getElementById('menuSettings').onclick = ()=> showSection('settings');
@@ -198,6 +275,29 @@ document.getElementById('menuDomainAnalysis').onclick = ()=> showSection('domain
 document.getElementById('menuIpIntel').onclick = ()=> showSection('ipintel');
 document.getElementById('menuIPs').onclick = ()=> showSection('ips');
 document.getElementById('menuValidIPs').onclick = ()=> showSection('validips');
+
+function openViewAnchor(){
+  const hash = window.location.hash;
+  if(hash === '#settings-alerts'){
+    showSection('settings');
+    showSettingsTab('alerts');
+    document.getElementById('settingsTabAlerts').focus();
+  }
+  const ids = hash === '#deliveryHealth' ? ['deliveryDisclosure','deliveryHeading']
+    : hash === '#deliveryDiagnostics' ? ['deliveryOperations','diagnosticsHeading'] : null;
+  if(!ids) return;
+  const disclosure = document.getElementById(ids[0]);
+  if(disclosure){
+    disclosure.open = true;
+    const heading = document.getElementById(ids[1]);
+    heading.focus();
+    heading.scrollIntoView({block:'nearest'});
+  }
+}
+window.addEventListener('hashchange', openViewAnchor);
+window.addEventListener('load', () => {
+  if(['#deliveryHealth','#deliveryDiagnostics'].includes(window.location.hash)) openViewAnchor();
+});
 
 function log(msg){ document.getElementById('log').textContent += msg + "\n"; }
 const IPV4_PATTERN = /^(\d{1,3}\.){3}\d{1,3}$/;
@@ -220,6 +320,8 @@ window.IP_REL_WORLD_GEOJSON_PROMISE = null;
 
 let ipIntelAnalyzeController = null;
 let ipIntelAnalyzeSeq = 0;
+let ipIntelMispController = null;
+let ipIntelMispSeq = 0;
 let ipRelAnalyzeController = null;
 let ipRelAnalyzeSeq = 0;
 let ipIntelBusyCount = 0;
@@ -230,7 +332,7 @@ function setIpIntelBusy(isBusy){
   const busy = ipIntelBusyCount > 0;
   ['runIpIntelBtn', 'runIpRelationshipBtn', 'loadIpIntelMispBtn'].forEach(id=>{
     const el = document.getElementById(id);
-    if(el) el.disabled = busy;
+    if(el) el.disabled = busy || el.hidden;
   });
 }
 
@@ -239,6 +341,68 @@ function finalizeIpRelationshipRun(controller){
   if(isCurrent) ipRelAnalyzeController = null;
   setIpIntelBusy(false);
   return isCurrent;
+}
+
+function invalidateAnalysisAccess(){
+  ++ipRelAnalyzeSeq; ++ipIntelAnalyzeSeq;
+  ++ipIntelMispSeq; ipIntelMispController?.abort(); ipIntelMispController=null;
+  for(const controller of [ipRelAnalyzeController,ipIntelAnalyzeController]){
+    if(controller){controller.browserDetached=true;controller.abort();}
+  }
+  ipRelAnalyzeController=ipIntelAnalyzeController=null;
+  ipRelActiveJobId=null;
+  window.IP_REL_CACHE=window.IP_REL_LAST_SUCCESS=window.IP_INTEL_LAST_RESULT=null;
+  window.IP_INTEL_INSIGHTS=window.IP_REL_MISP_CONTEXT=null;
+  setIpRelView('table');
+  renderIpIntelCachedEvidence();
+  for(const selector of ['#ipRelPairsTable tbody','#ipRelClustersTable tbody','#ipIntelHintsBox','#ipIntelInvalidBox','#ipRelMeta','#ipIntelMeta','#ipIntelMispStatus']){
+    const el=document.querySelector(selector); if(el) el.textContent='';
+  }
+  const input=document.getElementById('ipIntelInput'); if(input) input.value='';
+  for(const id of ['ipRelMetricIps','ipRelMetricPairs','ipRelMetricClusters','ipRelMetricCoverage']){
+    const el=document.getElementById(id); if(el) el.textContent='—';
+  }
+  setIpIntelResultState('idle','Access changed. Reload to check permissions.');
+  setIpRelationshipRunState('idle','Access changed. Cached analysis was discarded; server work status is unknown.');
+  const quality=document.getElementById('ipRelQualityBanner'); if(quality) quality.textContent='Analysis unavailable after access change.';
+}
+
+let suspendedAnalysisView = null;
+function resumeAnalysisView(){
+  if(!suspendedAnalysisView || document.hidden || getActiveSectionId() !== 'ipintel') return;
+  const previous = suspendedAnalysisView;
+  suspendedAnalysisView = null;
+  if(window.TraceAuth?.accessInvalidated || !window.IP_REL_LAST_SUCCESS || window.IP_REL_CACHE !== window.IP_REL_LAST_SUCCESS) return;
+  const active = document.activeElement;
+  // Reconstruct only the selected bounded visualization; never rerun analysis.
+  setIpRelView(previous.view);
+  if(previous.focus && (active === document.body || active === previous.focus)){
+    const target = previous.focus.isConnected ? previous.focus : document.getElementById(previous.tabId);
+    target?.focus({preventScroll:true});
+  }
+}
+function suspendAnalysisView(){
+  if(!suspendedAnalysisView && getActiveSectionId() === 'ipintel'){
+    const tab = ['Table','Graph','Map'].find(name=>document.getElementById('ipRelView'+name+'Btn')?.getAttribute('aria-selected') === 'true') || 'Table';
+    suspendedAnalysisView = {view:tab.toLowerCase(), tabId:'ipRelView'+tab+'Btn',
+      focus:document.getElementById('ipintel')?.contains(document.activeElement) ? document.activeElement : null};
+  }
+  cancelIpIntelInputReads();
+  if(ipRelAnalyzeController){
+    ipRelAnalyzeController.browserDetached=true;
+    ipRelAnalyzeController.abort(); ++ipRelAnalyzeSeq;
+    ipRelAnalyzeController=null; ipRelActiveJobId=null;
+    localFeedbackOwners.get('ip-relationships')?.invalidate();
+    restorePreviousIpRelationshipResult(window.IP_REL_LAST_SUCCESS,
+      document.querySelector('#ipRelPairsTable tbody'),document.querySelector('#ipRelClustersTable tbody'));
+    setIpRelationshipRunState('cancelled','Browser read stopped. Server work may continue; cancellation was not requested. Previous export, if present, is from the previous successful run.');
+  }
+  closeIpRelationshipEvidence(false); resetIpRelVisualCaches(); clearIpRelMapMarkers();
+  for(const selector of ['#ipRelGraph','#ipRelGraphDetails','#ipRelPairsTable tbody','#ipRelClustersTable tbody']){
+    const el=document.querySelector(selector); if(el) el.textContent='';
+  }
+  const evidence=document.getElementById('ipIntelEvidence'); if(evidence) evidence.open=false;
+  renderIpIntelCachedEvidence();
 }
 
 function isAbortError(e){
@@ -344,12 +508,6 @@ function setDomainRemoveStatus(message, kind){
   el.classList.remove('ok', 'err');
   if(kind === 'ok') el.classList.add('ok');
   if(kind === 'err') el.classList.add('err');
-  if(message){
-    setTimeout(()=>{
-      el.textContent = '';
-      el.classList.remove('ok', 'err');
-    }, 3200);
-  }
 }
 
 function openQueryForValue(value){
@@ -580,11 +738,75 @@ function updateDomainVerifyInputMode(){
   ensOptionsEl.disabled = !isEnsOnly;
   snsDecodeEl.disabled = !isSnsOnly;
   snsOptionsEl.disabled = !isSnsOnly;
+  [txtEl, aEl, xorEl, ensKeyEl, ensDecodeEl, ensOptionsEl, snsDecodeEl, snsOptionsEl].forEach(el=>{
+    el.parentElement.hidden = el.disabled;
+  });
 }
 
 function initDomainVerifyUi(){
+  renderDomainAddOutcome();
   syncDomainVerifyDecoderOptions();
   updateDomainVerifyInputMode();
+  const form = document.getElementById('domainverify');
+  if(form && !form._verifyBound){
+    form._verifyBound = true;
+    const edited = event=>{
+      if(!event.target.matches('input, select, textarea')) return;
+      cancelDomainVerify();
+      setDomainVerifyStatus('Inputs changed — validate again before adding.', '');
+    };
+    form.addEventListener('input', edited);
+    form.addEventListener('change', edited);
+    window.TraceAuth?.onInvalidated?.(()=>cancelDomainVerify());
+    updateDomainVerifyAddButton();
+  }
+  document.querySelectorAll('#domainverify .verify-evidence').forEach(panel=>{
+    if(panel._verifyBound) return;
+    panel._verifyBound = true;
+    panel.addEventListener('toggle', ()=>{
+      if(panel.open) document.querySelectorAll('#domainverify .verify-evidence').forEach(other=>{
+        if(other !== panel) other.open = false;
+      });
+      renderDomainVerifyEvidence(window.DOMAIN_VERIFY_LAST);
+    });
+  });
+}
+
+function renderDomainVerifyEvidence(result){
+  renderDomainVerifyDecoderTable(result);
+  renderDomainVerifyServerTable(result);
+  renderDomainVerifyIpTable(result);
+  const raw = document.getElementById('verifyRaw');
+  if(raw) raw.querySelector('pre').textContent = raw.open && result ? JSON.stringify(result, null, 2) : '';
+}
+
+// One mounted evidence page. The response remains intact for raw inspection;
+// paging and disclosure only project cached data and never perform I/O.
+function domainVerifyPage(result, field, panelId, render){
+  const panel = document.getElementById(panelId);
+  if(!panel || !panel.open){
+    panel?.querySelector('.verify-pager')?.remove();
+    return null;
+  }
+  const rows = Array.isArray(result?.[field]) ? result[field] : [];
+  if(panel._verifyResult !== result){ panel._verifyResult = result; panel._verifyOffset = 0; }
+  const offset = panel._verifyOffset || 0;
+  let pager = panel.querySelector('.verify-pager');
+  if(!pager){
+    pager = document.createElement('div'); pager.className = 'verify-pager';
+    panel.querySelector('table').before(pager);
+  }
+  pager.replaceChildren();
+  const previous = document.createElement('button'); previous.type = 'button'; previous.textContent = 'Previous';
+  previous.disabled = offset === 0;
+  previous.onclick = ()=>{ panel._verifyOffset = Math.max(0, offset - 8); render(result); };
+  const next = document.createElement('button'); next.type = 'button'; next.textContent = 'Next';
+  next.disabled = offset + 8 >= rows.length;
+  next.onclick = ()=>{ panel._verifyOffset = offset + 8; render(result); };
+  const range = document.createElement('span'); range.setAttribute('role', 'status');
+  range.textContent = `${rows.length ? offset + 1 : 0}–${Math.min(offset + 8, rows.length)} of ${rows.length}`;
+  pager.append(previous, range, next);
+  return rows.slice(offset, offset + 8);
 }
 
 function toVerifyStatusClass(status){
@@ -614,7 +836,7 @@ function renderDomainVerifySummary(result){
     `Selected Type: ${selectedType}`,
     `Resolved IPs: ${resolvedIps.length}`,
     `Managed IPs: ${managedIps.length}`,
-    `Add Payload: ${JSON.stringify(result.domain_object || result.domain_obj || {}, null, 0)}`,
+    `Registration: ${result.can_add === false ? 'not eligible' : 'eligible'} — lookup success and registration eligibility are separate.`,
   ];
   if(selectedType === 'DHT'){
     const target = result.domain_object || result.domain_obj || {};
@@ -631,7 +853,8 @@ function renderDomainVerifyServerTable(result){
   const body = document.querySelector('#domainVerifyServerTable tbody');
   if(!body) return;
   body.innerHTML = '';
-  const rows = Array.isArray(result && result.by_server) ? result.by_server : [];
+  const rows = domainVerifyPage(result, 'by_server', 'verifyServers', renderDomainVerifyServerTable);
+  if(rows === null) return;
   if(!rows.length){
     setSummaryMessage(body, 6, 'No server-level result.');
     return;
@@ -652,14 +875,14 @@ function renderDomainVerifyServerTable(result){
     const tdVals = document.createElement('td');
     tdVals.className = 'wrap-cell';
     const values = Array.isArray(row.values) ? row.values : [];
-    tdVals.textContent = formatListPreview(values, 4);
+    tdVals.textContent = values.join(', ') || '-';
     tdVals.title = values.join(', ');
     const tdManaged = document.createElement('td');
     renderCellWithClickableIps(tdManaged, Array.isArray(row.managed_ips) ? row.managed_ips : [], formatListPreview(row.managed_ips || [], 4), 6);
     const tdMethod = document.createElement('td');
     tdMethod.className = 'wrap-cell';
     if(rowErr){
-      tdMethod.textContent = `${row.method || '-'} | ERROR`;
+      tdMethod.textContent = `${row.method || '-'} | ERROR: ${rowErr}`;
       tdMethod.title = `${row.method || '-'}\n${rowErr}`;
       tdMethod.style.color = '#8b1f1f';
       tdMethod.style.fontWeight = '700';
@@ -681,7 +904,8 @@ function renderDomainVerifyIpTable(result){
   const body = document.querySelector('#domainVerifyIpTable tbody');
   if(!body) return;
   body.innerHTML = '';
-  const rows = Array.isArray(result && result.ip_rows) ? result.ip_rows : [];
+  const rows = domainVerifyPage(result, 'ip_rows', 'verifyIps', renderDomainVerifyIpTable);
+  if(rows === null) return;
   if(!rows.length){
     setSummaryMessage(body, 6, 'No IP rows.');
     return;
@@ -734,15 +958,15 @@ function renderDomainVerifyDecoderTable(result){
   const body = document.querySelector('#domainVerifyDecoderTable tbody');
   if(!body) return;
   body.innerHTML = '';
-  const rows = Array.isArray(result && result.decoder_candidates) ? result.decoder_candidates : [];
+  const rows = domainVerifyPage(result, 'decoder_candidates', 'verifyCandidates', renderDomainVerifyDecoderTable);
+  if(rows === null) return;
   if(!rows.length){
     setSummaryMessage(body, 8, 'No decoder analysis (disable "Try all decoders" or no TXT/A values)');
     return;
   }
   rows.forEach(row=>{
     const tr = document.createElement('tr');
-    tr.style.cursor = 'pointer';
-    tr.title = 'Click to apply this decoder and re-run validation';
+
 
     const tdT = document.createElement('td'); tdT.textContent = String(row.decoder_type || '-');
     const tdN = document.createElement('td'); tdN.textContent = String(row.name || '-');
@@ -780,7 +1004,10 @@ function renderDomainVerifyDecoderTable(result){
     tdSm.textContent = sample.join(' | ') || '-';
     tdSm.title = sample.join(' | ');
 
-    tr.onclick = async ()=>{
+    const apply = document.createElement('button');
+    apply.type = 'button'; apply.textContent = 'Apply decoder and validate';
+    tdN.appendChild(apply);
+    apply.onclick = async ()=>{
       // Apply decoder choice to UI
       if(String(row.decoder_type).toUpperCase() === 'TXT'){
         const sel = document.getElementById('verifyTxtDecode');
@@ -828,23 +1055,101 @@ function renderDomainVerifyDecoderTable(result){
   });
 }
 
-function clearDomainVerifyResult(){
+let domainVerifyGeneration = 0;
+let domainVerifyController = null;
+let domainAddPending = null;
+let domainAddUncertain = false;
+try { domainAddUncertain = sessionStorage.getItem('tracedns.verify-add-uncertain') === '1'; } catch (_) { /* Memory still owns the notice. */ }
+let domainAddReviewGeneration = 0;
+function setDomainAddUncertain(value){
+  domainAddUncertain = value;
+  try {
+    if(value) sessionStorage.setItem('tracedns.verify-add-uncertain', '1');
+    else sessionStorage.removeItem('tracedns.verify-add-uncertain');
+  } catch (_) { /* Storage may be unavailable; never discard in-memory uncertainty. */ }
+  renderDomainAddOutcome();
+}
+function renderDomainAddOutcome(){
+  let panel = document.getElementById('domainVerifyAddOutcome');
+  if(!panel){
+    panel = viewNode('section'); panel.id = 'domainVerifyAddOutcome';
+    const notice = viewNode('p', 'The submitted Add outcome is unknown. Do not retry blindly. Review the saved targets, then explicitly acknowledge reconciliation. The Settings draft and revision are unchanged.');
+    notice.setAttribute('role', 'status');
+    const review = viewNode('button', 'Review saved targets'); review.id = 'reconcileVerifiedDomainBtn';
+    const saved = viewNode('pre'); saved.id = 'domainVerifySavedTargets';
+    const acknowledge = viewNode('button', 'I reviewed saved targets; reconciliation complete');
+    acknowledge.id = 'acknowledgeVerifiedDomainBtn'; acknowledge.disabled = true;
+    review.onclick = async ()=>{
+      if(domainAddPending || window.TraceAuth?.accessInvalidated) return;
+      const generation = ++domainAddReviewGeneration;
+      acknowledge.disabled = true; saved.textContent = '';
+      try {
+        const data = await window.TraceAuth.readJSON('/config');
+        if(generation !== domainAddReviewGeneration || window.TraceAuth?.accessInvalidated) return;
+        if(!Array.isArray(data.domains) || !Number.isSafeInteger(data.revision)) throw new Error('Invalid saved configuration');
+        saved.textContent = JSON.stringify({revision:data.revision, domains:data.domains}, null, 2);
+        acknowledge.disabled = false;
+      } catch (_) {
+        if(generation === domainAddReviewGeneration && !window.TraceAuth?.accessInvalidated) saved.textContent = 'Saved targets could not be checked. Outcome remains unknown.';
+      }
+    };
+    acknowledge.onclick = ()=>{
+      if(acknowledge.disabled || domainAddPending || window.TraceAuth?.accessInvalidated) return;
+      saved.textContent = ''; acknowledge.disabled = true;
+      setDomainAddUncertain(false); updateDomainVerifyAddButton();
+    };
+    panel.append(notice, review, saved, acknowledge);
+    document.getElementById('domainVerifyStatus').after(panel);
+  }
+  panel.hidden = !domainAddUncertain;
+  document.getElementById('reconcileVerifiedDomainBtn').disabled = !!domainAddPending || !!window.TraceAuth?.accessInvalidated;
+}
+function updateDomainVerifyAddButton(){
+  const state = window.DOMAIN_VERIFY_LAST;
+  const button = document.getElementById('addVerifiedDomainBtn');
+  if(button) button.disabled = !!domainAddPending || domainAddUncertain || !!window.TraceAuth?.accessInvalidated || !state || state.can_add === false || !(state.domain_object || state.domain_obj)?.name;
+}
+
+// Also available to the shell when leaving/replacing this view. Aborting a
+// browser read does not claim cancellation of server/provider work.
+function cancelDomainVerify(){
+  ++domainAddReviewGeneration;
+  document.getElementById('domainVerifySavedTargets')?.replaceChildren();
+  const acknowledge = document.getElementById('acknowledgeVerifiedDomainBtn');
+  if(acknowledge) acknowledge.disabled = true;
+  ++domainVerifyGeneration;
+  domainVerifyController?.abort();
+  domainVerifyController = null;
+  localFeedbackOwners.get('domain-verify')?.invalidate();
+  localFeedbackOwners.get('domain-verify-add')?.invalidate();
   window.DOMAIN_VERIFY_LAST = null;
   setDomainVerifyStatus('', '');
   renderDomainVerifySummary(null);
-  renderDomainVerifyDecoderTable({decoder_candidates: []});
-  renderDomainVerifyServerTable({by_server: []});
-  renderDomainVerifyIpTable({ip_rows: []});
+  document.querySelectorAll('#domainverify .verify-evidence').forEach(panel=>{
+    panel._verifyResult = null; panel._verifyOffset = 0; panel.open = false;
+  });
+  renderDomainVerifyEvidence(null);
+  updateDomainVerifyAddButton();
+  renderDomainAddOutcome();
 }
 
+function clearDomainVerifyResult(){ cancelDomainVerify(); }
+
 async function runDomainVerify(){
-  window.DOMAIN_VERIFY_LAST = null;
+  cancelDomainVerify();
+  if(window.TraceAuth?.accessInvalidated) return;
+  const generation = domainVerifyGeneration;
+  const controller = new AbortController();
+  domainVerifyController = controller;
+  const feedback = viewFeedbackOwner('domain-verify', 'domainVerifyStatus');
+  const token = feedback?.begin(JSON.stringify([...document.querySelectorAll('#domainverify input, #domainverify select, #domainverify textarea')].map(el=>[el.id, el.value, el.checked])));
+  const current = ()=>generation === domainVerifyGeneration && !controller.signal.aborted && feedbackCurrent(token);
   const domain = String((document.getElementById('verifyDomainName') || {}).value || '').trim();
   if(!domain){
     setDomainVerifyStatus('Domain is required', 'err');
     return;
   }
-  initDomainVerifyUi();
+  updateDomainVerifyInputMode();
   const type = String((document.getElementById('verifyDomainType') || {}).value || 'AUTO').toUpperCase();
   const txtDecode = String((document.getElementById('verifyTxtDecode') || {}).value || '').trim();
   const aDecode = String((document.getElementById('verifyADecode') || {}).value || 'none').trim();
@@ -889,6 +1194,8 @@ async function runDomainVerify(){
   try{
     const r = await fetch('/domain-precheck', {
       method: 'POST',
+      signal: controller.signal,
+      feedback: token,
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
         domain: domain,
@@ -911,8 +1218,10 @@ async function runDomainVerify(){
       })
     });
     const j = await r.json();
-    if(!r.ok || !j || j.error){
-      const msg = (j && j.error) ? j.error : `Validation failed (${r.status})`;
+    if(!current()) return;
+    if(!r.ok || !j || j.error || typeof j.can_add !== 'boolean'){
+      const msg = 'Validation failed. No usable result was returned; validate again explicitly.';
+      feedbackFailure(feedback, token, {status:r.status});
       setDomainVerifyStatus(msg, 'err');
       window.DOMAIN_VERIFY_LAST = null;
       renderDomainVerifySummary({error: msg});
@@ -922,6 +1231,8 @@ async function runDomainVerify(){
       return;
     }
     window.DOMAIN_VERIFY_LAST = j;
+    feedback?.succeed(token);
+    updateDomainVerifyAddButton();
     renderDomainVerifySummary(j);
     renderDomainVerifyDecoderTable(j);
     renderDomainVerifyServerTable(j);
@@ -932,12 +1243,14 @@ async function runDomainVerify(){
       setDomainVerifyStatus(`Validation complete — DHT lookup: ${status}; ${j.can_add === false ? 'configuration cannot be added' : 'configuration can be added (not proof of retrieval)'}`, confirmed && j.can_add !== false ? 'ok' : 'err');
     }else if(type === 'RPC'){
       const status = String((j.rpc_observation || {}).status || 'error');
-      setDomainVerifyStatus(`Validation complete — RPC lookup: ${status}; configuration can be added`, status === 'authenticated' ? 'ok' : 'err');
+      setDomainVerifyStatus(`Validation complete — RPC lookup: ${status}; ${j.can_add === false ? 'configuration cannot be added' : 'configuration can be added (not proof of retrieval)'}`, status === 'authenticated' && j.can_add !== false ? 'ok' : 'err');
     }else{
       setDomainVerifyStatus(j.can_add === false ? 'Validation complete (no addable IP)' : 'Validation complete', j.can_add === false ? 'err' : 'ok');
     }
   }catch(e){
-    const msg = `Validation error: ${e}`;
+    if(!current()) return;
+    feedbackFailure(feedback, token, e);
+    const msg = 'Validation failed. '+(feedback?.snapshot().error?.message || 'The browser read did not complete.');
     setDomainVerifyStatus(msg, 'err');
     window.DOMAIN_VERIFY_LAST = null;
     renderDomainVerifySummary({error: msg});
@@ -948,6 +1261,7 @@ async function runDomainVerify(){
 }
 
 async function addVerifiedDomainToConfig(){
+  if(domainAddPending || domainAddUncertain || window.TraceAuth?.accessInvalidated) return;
   const state = window.DOMAIN_VERIFY_LAST || {};
   const domainObj = state.domain_object || state.domain_obj;
   if(!domainObj || !domainObj.name){
@@ -958,9 +1272,19 @@ async function addVerifiedDomainToConfig(){
     setDomainVerifyStatus('Validation has no resolvable result to add', 'err');
     return;
   }
+  const feedback = viewFeedbackOwner('domain-verify-add', 'domainVerifyStatus');
+  const token = feedback?.begin(domainConfigIdentity(domainObj));
+  const generation = domainVerifyGeneration;
+  const signal = domainVerifyController?.signal;
+  const current = ()=>generation === domainVerifyGeneration && state === window.DOMAIN_VERIFY_LAST && feedbackCurrent(token);
+  const button = document.getElementById('addVerifiedDomainBtn');
+  const operation = domainAddPending = {};
+  button.disabled = true;
+  let submitted = false;
   try{
-    const cfgResp = await fetch('/config');
+    const cfgResp = await fetch('/config', {feedback:token, signal});
     const cfgJson = await cfgResp.json();
+    if(!current()) return;
     if(!cfgResp.ok || !cfgJson){
       setDomainVerifyStatus('Failed to load config', 'err');
       return;
@@ -984,21 +1308,38 @@ async function addVerifiedDomainToConfig(){
       domains: normalizedDomains,
       revision: cfgJson.revision
     };
+    submitted = true;
+    // Only a non-sensitive uncertainty marker persists across reloads.
+    setDomainAddUncertain(true);
     const saveResp = await fetch('/config', {
+      // A submitted write outlives the replaceable validation/read owner.
       method: 'POST',
+      feedback: token,
+      signal,
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify(payload)
     });
     const saveJson = await saveResp.json();
-    if(!saveResp.ok || !saveJson || saveJson.error){
+    if(!current()) return;
+    if(!saveResp.ok || !saveJson || saveJson.error || !Number.isSafeInteger(saveJson.revision)){
       throw new Error((saveJson && saveJson.error) ? saveJson.error : `save failed (${saveResp.status})`);
     }
-    setDomainVerifyStatus(idx >= 0 ? 'Updated existing domain' : 'Added domain', 'ok');
-    loadCfg();
+    feedback?.succeed(token);
+    setDomainAddUncertain(false);
+    setDomainVerifyStatus((idx >= 0 ? 'Updated existing domain' : 'Added domain')+commitWarningText(saveJson), 'ok');
+    // Verify uses its own fresh revision; it must never rebase the settings form.
+    document.getElementById('domainSettingsStatus').textContent = 'Saved configuration changed in Verify. Displayed draft and revision retained; Load explicitly to review saved targets.';
+    if(window.TraceDeliveryResend) window.TraceDeliveryResend.invalidateConfig();
     uiOverview.configured = normalizedDomains.length;
     updateOverviewPanel();
   }catch(e){
-    setDomainVerifyStatus(`Add failed: ${e}`, 'err');
+    if(!current()) return;
+    feedbackFailure(feedback, token, e, submitted);
+    setDomainVerifyStatus(`Add failed: ${feedback?.snapshot().error?.message || e}`, 'err');
+  }finally{
+    if(domainAddPending === operation) domainAddPending = null;
+    renderDomainAddOutcome();
+    if(current()) updateDomainVerifyAddButton();
   }
 }
 
@@ -1124,82 +1465,128 @@ function renderQueryMispResult(payload){
   box.appendChild(table);
 }
 
-async function runQuery(v){
-  const value = String(v || '').trim();
-  if(!value){ alert('Enter search value'); return; }
-  const mispBox = document.getElementById('queryMispResult');
-  if(mispBox) mispBox.textContent = 'Loading MISP...';
-
-  if(isIPv4(value)){
-    const r = await fetch('/ip?ip='+encodeURIComponent(value));
-    const j = await r.json();
-    renderQueryLocalResult(value, j);
-  } else {
-    // search value across history/current by fetching aggregated results + /history client-side
-    const r1 = await fetch('/results?aggregate=1'); const res = await r1.json();
-    const agg = (res && res.results_agg && typeof res.results_agg === 'object')
-      ? res.results_agg
-      : {};
-    const matches = [];
-    for(const d of Object.keys(agg || {})){
-      const info = agg[d] || {};
-      const vals = Array.isArray(info.values) ? info.values : [];
-      const dec = Array.isArray(info.decoded_ips) ? info.decoded_ips : [];
-      if(vals.some(x=>String(x || '').includes(value)) || dec.some(x=>String(x || '').includes(value))){
-        matches.push({
-          domain: d,
-          type: info.type || 'A',
-          ts: info.ts || 0,
-          servers: info.servers || [],
-          values: vals,
-          decoded_ips: dec
-        });
-      }
-    }
-    // fallback: fetch history per domain from results list
-    const histMatches = [];
-    for(const d of Object.keys(agg || {})){
-      const hresp = await fetch('/history?domain='+encodeURIComponent(d));
-      const hj = await hresp.json();
-      const histObj = hj && hj.history ? hj.history : {};
-      const events = Array.isArray(histObj) ? histObj : (Array.isArray(histObj.events) ? histObj.events : []);
-      events.forEach(ev=>{
-        const newHit = !!(ev.new && (ev.new.values||[]).some(x=>x.includes(value)));
-        const oldHit = !!(ev.old && (ev.old.values||[]).some(x=>x.includes(value)));
-        if(newHit || oldHit){
-          histMatches.push({domain:d, server:ev.server, ts:ev.ts, old:ev.old, new:ev.new});
-        } else if(ev.values && (ev.values||[]).some(x=>x.includes(value))){
-          histMatches.push({domain:d, server:ev.server, ts:ev.ts, values:ev.values});
-        }
-      });
-    }
-    renderQueryLocalResult(value, {current:matches, history:histMatches});
+let currentQuery = null;
+const queryResultViews = new Map();
+const queryParts = {local:['queryResult','queryLocalStatus'], history:['queryHistoryResult','queryHistoryStatus'], misp:['queryMispResult','queryMispStatus']};
+function cancelQuery(message = 'Browser read cancelled. Already dispatched provider work may finish; previous results, if any, are stale.'){
+  if(currentQuery){
+    currentQuery.controller.abort();
+    for(const part of Object.values(currentQuery.parts)) part.scope?.invalidate();
+    currentQuery = null;
   }
-
-  if(mispBox){
-    try{
-      const r = await fetch('/misp/search?value='+encodeURIComponent(value));
-      const text = await r.text();
-      let j = null;
-      if(text && text.trim()){
-        try{ j = JSON.parse(text); }catch(e){ j = null; }
-      }
-      if(!r.ok){
-        if(j && j.error){
-          renderQueryMispResult({error: `MISP error: ${j.error}`});
-        } else {
-          renderQueryMispResult({error: `MISP error (${r.status}): ${text || 'empty response'}`});
-        }
-      } else if(!j){
-        renderQueryMispResult({error: `MISP error: invalid JSON response (${text || 'empty response'})`});
-      } else if(j.status !== 'ok'){
-        renderQueryMispResult({error: j.error ? `MISP error: ${j.error}` : 'MISP error: unknown response'});
-      } else {
-        renderQueryMispResult(j);
-      }
-    }catch(e){
-      renderQueryMispResult({error: `MISP error: ${e}`});
+  const status=document.getElementById('queryStatus'); if(status) status.textContent=message;
+  const cancel=document.getElementById('cancelQuery'); if(cancel) cancel.disabled=true;
+}
+function renderQueryList(part, value, rows){
+  const root=document.getElementById(queryParts[part][0]);
+  const projection={value,rows}; queryResultViews.set(part,projection);
+  const render=offset=>{
+    if(queryResultViews.get(part)!==projection) return;
+    const fragment=document.createDocumentFragment();
+    const empty=part==='local'?'No current matches':part==='history'?'No history matches':'No MISP matches';
+    fragment.appendChild(viewNode('p',`${rows.length ? rows.length+' matches' : empty} · query: ${value} · ${rows.length ? `showing ${offset+1}–${Math.min(offset+50,rows.length)}` : 'recorded data only'}`));
+    for(const [label,next] of [['Previous matches',offset-50],['Next matches',offset+50]]){
+      const button=viewNode('button',label); button.disabled=next<0 || next>=rows.length;
+      button.onclick=()=>render(next); fragment.appendChild(button);
     }
+    rows.slice(offset,offset+50).forEach(row=>{
+      const title=part==='misp'?`${row.value || 'value unknown'} · ${row.type || 'type unknown'} · event ${row.event_id || 'unknown'}`
+        : `${row.domain || 'target unknown'} · ${row.rtype || row.type || 'observation'} · ${formatUnixTsLocal(row.ts)}`;
+      fragment.appendChild(lazyViewDetails(title,body=>{
+        if(queryResultViews.get(part)===projection) body.appendChild(viewNode('pre',JSON.stringify(row,null,2)));
+      }));
+    });
+    root.replaceChildren(fragment);
+  };
+  render(0);
+}
+async function runQuery(v){
+  const value=String(v || '').trim();
+  if(!value){ document.getElementById('queryStatus').textContent='Enter a search value.'; return; }
+  cancelQuery();
+  const owner={value,controller:new AbortController(),parts:{}}; currentQuery=owner;
+  const current=()=>currentQuery===owner && !owner.controller.signal.aborted;
+  for(const [part,[root,id]] of Object.entries(queryParts)){
+    const scope=viewFeedbackOwner('query-'+part,id);
+    owner.parts[part]={scope,token:scope?.begin(value)};
+    if(queryResultViews.get(part)?.value!==value){queryResultViews.delete(part);document.getElementById(root).replaceChildren();}
+    document.getElementById(id).textContent=`Reading ${part} for ${value}…${queryResultViews.has(part)?' Previous result is stale.':''}`;
+  }
+  document.getElementById('queryStatus').textContent=`Searching ${isIPv4(value)?'IPv4 index':'text fragment'}: ${value}. Local and MISP outcomes are independent.`;
+  document.getElementById('cancelQuery').disabled=false;
+  const read=(part,url)=>window.TraceAuth.readJSON(url,{signal:owner.controller.signal,feedback:owner.parts[part].token});
+  const success=(part,rows,text)=>{
+    if(!current()) return;
+    renderQueryList(part,value,rows); owner.parts[part].scope?.succeed(owner.parts[part].token);
+    document.getElementById(queryParts[part][1]).textContent=text+' · last read (browser): '+new Date().toISOString();
+  };
+  const failed=(part,error,text)=>{
+    if(!current()) return;
+    feedbackFailure(owner.parts[part].scope,owner.parts[part].token,error);
+    document.getElementById(queryParts[part][1]).textContent=text+' Previous results, if any, are stale. Search again explicitly.';
+  };
+  const local=async()=>{
+    let domains;
+    try{
+      if(isIPv4(value)){
+        const data=await read('local','/ip?ip='+encodeURIComponent(value));
+        if(!Array.isArray(data.matches)) throw new Error('Invalid local index');
+        success('local',data.matches.filter(row=>row.type==='current'),'Current read complete');
+        success('history',data.matches.filter(row=>row.type==='history'),'History index read complete');
+        return;
+      }
+      const data=await read('local','/results?aggregate=1');
+      if(!data.results_agg || typeof data.results_agg!=='object' || Array.isArray(data.results_agg)) throw new Error('Invalid aggregate');
+      domains=Object.keys(data.results_agg);
+      const matches=[];
+      for(const domain of domains){
+        const info=data.results_agg[domain];
+        if([...(info.values||[]),...(info.decoded_ips||[])].some(item=>String(item).includes(value))) matches.push({domain,...info});
+      }
+      success('local',matches,'Current read complete; currently listed targets only');
+    }catch(error){
+      failed('local',error,'Current read failed.');
+      failed('history',error,'History not searched: current target list or IP index unavailable.');
+      return;
+    }
+    const history=[]; let failures=0;
+    for(const domain of domains){
+      if(!current()) return;
+      try{
+        const data=await read('history','/history?domain='+encodeURIComponent(domain));
+        const events=Array.isArray(data.history)?data.history:(data.history?.events || []);
+        if(!Array.isArray(events)) throw new Error('Invalid history');
+        for(const event of events){
+          if([...(event.new?.values||[]),...(event.old?.values||[]),...(event.values||[])].some(item=>String(item).includes(value))) history.push({domain,...event});
+        }
+      }catch(error){
+        if(!current()) return;
+        failures++; feedbackFailure(owner.parts.history.scope,owner.parts.history.token,error);
+      }
+    }
+    if(!current()) return;
+    if(failures){
+      renderQueryList('history',value,history);
+      document.getElementById('queryHistoryStatus').textContent=`History partial: ${failures} of ${domains.length} target reads failed. Only successful target histories are represented; search again explicitly.`;
+    }else success('history',history,`History read complete for ${domains.length} currently listed targets; not global history search`);
+  };
+  const misp=async()=>{
+    try{
+      const user=await window.TraceAuth.ready;
+      if(!current()) return;
+      if(window.TraceAuth.accessInvalidated || !['admin','operator'].includes(user?.role)){
+        document.getElementById('queryMispStatus').textContent='MISP requires operator/admin access; no external request made.';
+        return;
+      }
+      const data=await read('misp','/misp/search?value='+encodeURIComponent(value));
+      if(data.status!=='ok' || !Array.isArray(data.attributes)) throw new Error('Invalid MISP result');
+      success('misp',data.attributes,'MISP read complete; external source, not local observation');
+    }catch(error){ failed('misp',error,'MISP read failed.'); }
+  };
+  await Promise.all([local(),misp()]);
+  if(current()){
+    document.getElementById('cancelQuery').disabled=true;
+    document.getElementById('queryStatus').textContent=`Search finished for ${value}. Check each source status for failures or partial coverage.`;
   }
 }
 
@@ -1288,24 +1675,69 @@ function getDomainStatsEntry(domainObj){
   };
 }
 
+// Domain Analysis owns only cached-page selection and disclosures. No disclosure
+// starts a request. Page/query changes retire these nodes before a new read.
+let domainAnalysisPageKey = '';
+let domainAnalysisPageReady = false;
+let domainAnalysisManageMode = false;
+let domainAnalysisManageEpoch = 0;
+let domainAnalysisRemovalPending = false;
+function canManageDomainAnalysis(){
+  return !window.TraceAuth?.accessInvalidated && ['admin', 'operator'].includes(window.TraceAuth?.user?.role);
+}
+function setDomainAnalysisManageMode(enabled){
+  domainAnalysisManageMode = !!enabled && domainAnalysisPageReady && canManageDomainAnalysis();
+  domainAnalysisManageEpoch++;
+  if(!domainAnalysisManageMode){
+    getDomainAnalysisSelectionSet().clear();
+    localFeedbackOwners.get('domain-remove')?.invalidate();
+  }
+  const button = document.getElementById('domainAnalysisManageBtn');
+  if(button){
+    button.hidden = !canManageDomainAnalysis();
+    button.textContent = domainAnalysisManageMode ? 'Close management' : 'Manage domains';
+    button.setAttribute('aria-expanded', String(domainAnalysisManageMode));
+  }
+  document.getElementById('domainAnalysisManageTools').hidden = !domainAnalysisManageMode;
+  applyDomainAnalysisFilter();
+}
+window.TraceAuth?.onInvalidated?.(()=>{
+  window.DOMAIN_ANALYSIS_CACHE = [];
+  domainAnalysisPageReady = false;
+  domainAnalysisPageKey = '';
+  populateDomainAnalysisFilter([]);
+  setDomainAnalysisManageMode(false);
+  clearDomainAnalysisDetail();
+});
+function clearDomainAnalysisDetail(restoreFocus=false){
+  const select = document.getElementById('domainAnalysisDomainSelect');
+  const previous = select?.value;
+  if(select) select.value = '';
+  const detail = document.getElementById('domainAnalysisDetail');
+  if(detail){ detail.replaceChildren(); detail.hidden = true; detail._signature = null; }
+  const summary = document.getElementById('domainAnalysisSummaries');
+  if(summary){ summary.open = false; summary._signature = null; summary.ontoggle = null; }
+  document.getElementById('domainAnalysisSummaryContent')?.replaceChildren();
+  if(restoreFocus){
+    applyDomainAnalysisFilter();
+    const row = Array.from(document.querySelectorAll('#domainDomainStatsTable tbody tr')).find(row=>row.dataset.domain === previous);
+    row?.querySelector('button')?.focus();
+  }
+}
+
 function populateDomainAnalysisFilter(domains, commits=null){
   const sel = document.getElementById('domainAnalysisDomainSelect');
   if(!sel) return '';
   const prev = String(sel.value || '');
-  const names = Array.from(new Set((domains || []).map(d=>String((d && d.domain) || '').trim()).filter(Boolean))).sort();
-  const options = [];
-  const allOpt = document.createElement('option');
-  allOpt.value = '';
-  allOpt.textContent = 'All domains on this page';
-  options.push(allOpt);
-  names.forEach(name=>{
-    const o = document.createElement('option');
-    o.value = name;
-    o.textContent = name;
-    options.push(o);
-  });
+  const names = Array.from(new Set((domains || []).map(d=>String((d && d.domain) || '')).filter(Boolean))).sort();
   const selected = names.includes(prev) ? prev : '';
-  const commit = ()=>{ sel.replaceChildren(...options); sel.value = selected; };
+  // Preserve the select and its options on same-owner full or unchanged reads.
+  const signature = JSON.stringify(names);
+  if(sel._signature === signature) return selected;
+  const options = [viewNode('option', 'Select a domain on this page')];
+  options[0].value = '';
+  names.forEach(name=>{ const option = viewNode('option', name); option.value = name; options.push(option); });
+  const commit = ()=>{ sel.replaceChildren(...options); sel.value = selected; sel._signature = signature; };
   if(commits) commits.push(commit); else commit();
   return selected;
 }
@@ -1313,343 +1745,286 @@ function populateDomainAnalysisFilter(domains, commits=null){
 function renderDomainStatsTable(allDomains, selectedDomain, commits=null){
   const tbody = document.querySelector('#domainDomainStatsTable tbody');
   if(!tbody) return;
-  const arr = Array.isArray(allDomains) ? allDomains.slice() : [];
+  const arr = Array.isArray(allDomains) ? allDomains.slice(0, 200) : [];
   const selectedSet = getDomainAnalysisSelectionSet();
-  arr.sort((a,b)=>String((a && a.domain) || '').localeCompare(String((b && b.domain) || '')));
-  const items = arr.map(d=>({key:d.domain, time:d.last_ts, value:d, content:{domain:rowContentWithoutTime(d, 'last_ts'), selected:selectedDomain === d.domain, checked:selectedSet.has(d.domain)}}));
+  const manage = domainAnalysisManageMode && canManageDomainAnalysis();
+  arr.sort((a,b)=>String(a.domain || '').localeCompare(String(b.domain || '')));
+  const items = arr.map(d=>({key:d.domain, time:d.last_ts, value:d, content:{domain:rowContentWithoutTime(d, 'last_ts'), selected:selectedDomain === d.domain, checked:selectedSet.has(d.domain), manage, available:domainAnalysisPageReady}}));
   reconcilePreparedRows(tbody, items, item=>{
-    const d = item.value;
-    const name = String((d && d.domain) || '');
-    const nonResolving = isDomainNonResolving(d || {});
-    const statusObj = getDomainLifecycleStatus(d || {});
-    const statusLabel = statusObj.label === 'Normal' && nonResolving ? 'No-data' : statusObj.label;
-    const statusCls = statusObj.label === 'Normal' && nonResolving ? 'error' : statusObj.cls;
-    const tsText = formatUnixTsLocal(d && d.last_ts);
-    const st = getDomainStatsEntry(d);
-    const tr = document.createElement('tr');
-    if(selectedDomain && name === selectedDomain){
-      tr.style.background = '#eef8ff';
-    }
-    const c1 = document.createElement('td'); c1.textContent = name;
-    applyNxdomainLifecycleStyle(c1, d || {}, name);
-    if(d && d.dns_error_only_active){
-      c1.title = `All DNS servers failed in last cycle (${name})`;
-    }
-    const c2 = document.createElement('td');
-    const statusBadge = document.createElement('span');
-    statusBadge.className = `domain-state-badge ${statusCls}`;
-    statusBadge.textContent = statusLabel;
-    c2.appendChild(statusBadge);
+    const d = item.value, name = String(d.domain || '');
+    const nonResolving = isDomainNonResolving(d);
+    const status = getDomainLifecycleStatus(d);
+    const tr = viewNode('tr'); tr.dataset.domain = name;
+    tr.classList.toggle('is-selected', name === selectedDomain);
+    const domain = viewNode('td', name); applyNxdomainLifecycleStyle(domain, d, name);
+    const state = viewNode('td');
+    const badge = viewNode('span', status.label === 'Normal' && nonResolving ? 'No-data' : status.label);
+    badge.className = `domain-state-badge ${status.label === 'Normal' && nonResolving ? 'error' : status.cls}`;
+    state.append(badge);
     if(d.ip_rows_total != null){
       const count = Array.isArray(d.ip_rows) ? d.ip_rows.length : 0;
       const offset = Number(d.ip_rows_offset || 0);
-      const coverage = document.createElement('span');
-      coverage.textContent = ` — IP rows ${count ? offset + 1 : 0}-${offset + count} / ${d.ip_rows_total}${d.ip_rows_truncated ? ' (partial domain)' : ''}`;
-      c2.appendChild(coverage);
+      state.append(viewNode('span', ` — IP rows ${count ? offset + 1 : 0}-${offset + count} / ${d.ip_rows_total}${d.ip_rows_truncated ? ' (partial domain)' : ''}`));
     }
-
-    const c3 = document.createElement('td'); c3.textContent = String(st.resolvedCount);
-    const c4 = document.createElement('td'); c4.textContent = String(st.decodedCount);
-    const c5 = document.createElement('td'); c5.textContent = String(st.asCount);
-    const c6 = document.createElement('td'); c6.textContent = String(st.countryCount);
-    const c7 = document.createElement('td'); c7.textContent = st.topAs;
-    const c8 = document.createElement('td'); c8.textContent = st.topCountry;
-    const c9 = document.createElement('td'); c9.textContent = tsText;
-
-    const c10 = document.createElement('td');
-    const chk = document.createElement('input');
-    chk.type = 'checkbox';
-    chk.style.width = 'auto';
-    chk.style.margin = '0';
-    chk.disabled = !nonResolving;
-    chk.checked = nonResolving && selectedSet.has(name);
-    chk.title = nonResolving ? 'Select for bulk remove' : 'Only non-resolving domains can be selected';
-    chk.onchange = ()=>{
-      if(chk.checked) getDomainAnalysisSelectionSet().add(name);
-      else getDomainAnalysisSelectionSet().delete(name);
+    const actions = viewNode('td');
+    const view = viewNode('button', name === selectedDomain ? 'Viewing' : 'View');
+    view.setAttribute('aria-pressed', String(name === selectedDomain));
+    view.disabled = !domainAnalysisPageReady;
+    view.onclick = ()=>{
+      if(window.TraceAuth?.accessInvalidated || !domainAnalysisPageReady || !view.isConnected) return;
+      document.getElementById('domainAnalysisDomainSelect').value = name;
       applyDomainAnalysisFilter();
+      document.querySelector('#domainAnalysisDetail h4')?.focus();
     };
-    c10.appendChild(chk);
-
-    const c11 = document.createElement('td');
-    const btnView = document.createElement('button');
-    btnView.style.margin = '0';
-    btnView.textContent = (selectedDomain && name === selectedDomain) ? 'Viewing' : 'View';
-    btnView.onclick = ()=>{
-      const sel = document.getElementById('domainAnalysisDomainSelect');
-      if(sel){
-        sel.value = name;
-      }
-      applyDomainAnalysisFilter();
-    };
-    c11.appendChild(btnView);
-
-    const btnRemove = document.createElement('button');
-    btnRemove.style.margin = '0 0 0 6px';
-    btnRemove.textContent = d && d.nxdomain_active ? 'Remove NX' : 'Remove';
-    btnRemove.disabled = !nonResolving;
-    btnRemove.title = nonResolving ? `Remove ${name} from monitoring config` : 'Only non-resolving domains can be removed here';
-    btnRemove.onclick = async ()=>{
-      await removeDomainsFromConfig([name], `${name} removed`);
-    };
-    c11.appendChild(btnRemove);
-
-    tr.appendChild(c1);
-    tr.appendChild(c2);
-    tr.appendChild(c3);
-    tr.appendChild(c4);
-    tr.appendChild(c5);
-    tr.appendChild(c6);
-    tr.appendChild(c7);
-    tr.appendChild(c8);
-    tr.appendChild(c9);
-    tr.appendChild(c10);
-    tr.appendChild(c11);
+    actions.append(view);
+    if(manage){
+      const check = viewNode('input'); check.type = 'checkbox';
+      check.disabled = !nonResolving; check.checked = nonResolving && selectedSet.has(name);
+      check.setAttribute('aria-label', `Select ${name} for removal`);
+      check.onchange = ()=>{
+        if(!check.isConnected || !domainAnalysisManageMode || !canManageDomainAnalysis()) return;
+        if(check.checked) getDomainAnalysisSelectionSet().add(name); else getDomainAnalysisSelectionSet().delete(name);
+        applyDomainAnalysisFilter();
+      };
+      const remove = viewNode('button', d.nxdomain_active ? 'Remove NX' : 'Remove');
+      remove.disabled = !nonResolving;
+      remove.onclick = ()=>removeDomainsFromConfig([name], `${name} removed`);
+      actions.append(check, remove);
+    }
+    tr.append(domain, state, viewNode('td', (d.record_types || []).join(', ') || '-'), viewNode('td', formatUnixTsLocal(d.last_ts)), actions);
     return tr;
-  }, 8, commits);
+  }, 3, commits);
 }
 
-function renderDomainAnalysisSummaries(domains, includeVT, commits=null){
-  const stagedBody = selector=>{
-    const live = document.querySelector(selector);
-    if(!live || !commits) return live;
-    const staged = document.createElement('tbody');
-    commits.push(()=>live.replaceChildren(...staged.childNodes));
-    return staged;
+function domainAnalysisDisclosure(id, title, build){
+  const details = viewNode('details'); details.id = id;
+  const body = viewNode('div');
+  details.append(viewNode('summary', title), body);
+  details.ontoggle = ()=>{
+    body.replaceChildren();
+    if(!window.TraceAuth?.accessInvalidated && domainAnalysisPageReady && details.open && details.isConnected) build(body);
   };
-  const asBody = stagedBody('#domainAsSummaryTable tbody');
-  const countryBody = stagedBody('#domainCountrySummaryTable tbody');
-  const crossBody = stagedBody('#domainAsCountrySummaryTable tbody');
-  if(!asBody || !countryBody || !crossBody){
-    return {asGroups: 0, countries: 0, intersections: 0};
-  }
+  return details;
+}
 
-  if(!includeVT){
-    setSummaryMessage(asBody, 5, 'VT context is disabled');
-    setSummaryMessage(countryBody, 4, 'VT context is disabled');
-    setSummaryMessage(crossBody, 5, 'VT context is disabled');
-    return {asGroups: 0, countries: 0, intersections: 0};
-  }
-
-  const asMap = new Map();
-  const countryMap = new Map();
-  const crossMap = new Map();
-  const seenDomainIp = new Set();
-  const seenAsRole = new Set();
-  const seenCrossRole = new Set();
-
-  (domains || []).forEach(d=>{
-    const domainName = String((d && d.domain) || '').trim();
-    const rows = Array.isArray(d && d.ip_rows) ? d.ip_rows : [];
-    rows.forEach(row=>{
-      const ip = String((row && row.ip) || '').trim();
-      if(!isIPv4(ip)) return;
-      const role = String((row && row.role) || '-').toLowerCase();
-      const vt = (row && row.vt) || {};
-      const asn = (vt && vt.asn != null) ? String(vt.asn) : 'N/A';
-      const asOwner = (vt && vt.as_owner) ? String(vt.as_owner) : '-';
-      const country = (vt && vt.country) ? String(vt.country) : 'N/A';
-      const domainIpKey = `${domainName}|${ip}`;
-      const isNewDomainIp = !seenDomainIp.has(domainIpKey);
-      if(isNewDomainIp) seenDomainIp.add(domainIpKey);
-
-      const asKey = `${asn}|${asOwner}`;
-      const asEntry = asMap.get(asKey) || {
-        asn: asn,
-        as_owner: asOwner,
-        ip_count: 0,
-        domains: new Set(),
-        countries: new Set(),
-        resolved: 0,
-        decoded: 0
-      };
-      asEntry.countries.add(country);
-      if(isNewDomainIp){
-        asEntry.ip_count += 1;
-        if(domainName) asEntry.domains.add(domainName);
-      }
-      const asRoleKey = `${asKey}|${domainName}|${role}|${ip}`;
-      if(!seenAsRole.has(asRoleKey)){
-        seenAsRole.add(asRoleKey);
-        if(role === 'resolved') asEntry.resolved += 1;
-        if(role === 'decoded') asEntry.decoded += 1;
-      }
-      asMap.set(asKey, asEntry);
-
-      const countryEntry = countryMap.get(country) || {
-        country: country,
-        ip_count: 0,
-        domains: new Set(),
-        asns: new Set()
-      };
-      countryEntry.asns.add(asn);
-      if(isNewDomainIp){
-        countryEntry.ip_count += 1;
-        if(domainName) countryEntry.domains.add(domainName);
-      }
-      countryMap.set(country, countryEntry);
-
-      const crossKey = `${asn}|${country}|${asOwner}`;
-      const crossEntry = crossMap.get(crossKey) || {
-        asn: asn,
-        country: country,
-        as_owner: asOwner,
-        ip_count: 0,
-        domains: new Set(),
-        resolved: 0,
-        decoded: 0
-      };
-      if(isNewDomainIp){
-        crossEntry.ip_count += 1;
-        if(domainName) crossEntry.domains.add(domainName);
-      }
-      const crossRoleKey = `${crossKey}|${domainName}|${role}|${ip}`;
-      if(!seenCrossRole.has(crossRoleKey)){
-        seenCrossRole.add(crossRoleKey);
-        if(role === 'resolved') crossEntry.resolved += 1;
-        if(role === 'decoded') crossEntry.decoded += 1;
-      }
-      crossMap.set(crossKey, crossEntry);
+function mountDomainAnalysisPage(root, id, headers, rows, pageSize){
+  const tools = viewNode('div'); tools.className = 'domain-analysis-tools';
+  const prev = viewNode('button', 'Previous'), next = viewNode('button', 'Next'), label = viewNode('span');
+  label.setAttribute('role', 'status');
+  tools.append(prev, next, label);
+  const table = viewNode('table'); table.id = id;
+  const head = viewNode('thead'), heading = viewNode('tr'), body = viewNode('tbody');
+  headers.forEach(text=>heading.append(viewNode('th', text))); head.append(heading); table.append(head, body);
+  root.append(tools, table);
+  let offset = 0;
+  const render = ()=>{
+    body.replaceChildren();
+    rows.slice(offset, offset + pageSize).forEach(values=>{
+      const tr = viewNode('tr'); values.forEach(value=>tr.append(viewNode('td', String(value ?? '-')))); body.append(tr);
     });
-  });
-
-  const asRows = Array.from(asMap.values()).map(e=>({
-    asn: e.asn,
-    as_owner: e.as_owner,
-    ip_count: e.ip_count,
-    domain_count: e.domains.size,
-    countries: Array.from(e.countries),
-    resolved: e.resolved,
-    decoded: e.decoded
-  })).sort((a,b)=>(b.ip_count - a.ip_count) || (b.domain_count - a.domain_count));
-
-  const countryRows = Array.from(countryMap.values()).map(e=>({
-    country: e.country,
-    ip_count: e.ip_count,
-    domain_count: e.domains.size,
-    asn_count: e.asns.size
-  })).sort((a,b)=>(b.ip_count - a.ip_count) || (b.domain_count - a.domain_count));
-
-  const crossRows = Array.from(crossMap.values()).map(e=>({
-    asn: e.asn,
-    country: e.country,
-    as_owner: e.as_owner,
-    ip_count: e.ip_count,
-    domain_count: e.domains.size,
-    resolved: e.resolved,
-    decoded: e.decoded
-  })).sort((a,b)=>(b.ip_count - a.ip_count) || (b.domain_count - a.domain_count));
-
-  asBody.innerHTML = '';
-  countryBody.innerHTML = '';
-  crossBody.innerHTML = '';
-
-  if(!asRows.length){
-    setSummaryMessage(asBody, 5, 'No AS context data');
-  } else {
-    asRows.forEach(e=>{
-      const tr = document.createElement('tr');
-      const c1 = document.createElement('td'); c1.textContent = e.asn;
-      const c2 = document.createElement('td'); c2.textContent = e.as_owner || '-';
-      const c3 = document.createElement('td'); c3.textContent = String(e.ip_count);
-      c3.title = `resolved ${e.resolved} / decoded ${e.decoded}`;
-      const c4 = document.createElement('td'); c4.textContent = String(e.domain_count);
-      const c5 = document.createElement('td'); c5.textContent = formatListPreview(e.countries, 3);
-      c5.title = (e.countries || []).join(', ');
-      tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3); tr.appendChild(c4); tr.appendChild(c5);
-      asBody.appendChild(tr);
-    });
-  }
-
-  if(!countryRows.length){
-    setSummaryMessage(countryBody, 4, 'No country data');
-  } else {
-    countryRows.forEach(e=>{
-      const tr = document.createElement('tr');
-      const c1 = document.createElement('td'); c1.textContent = e.country;
-      const c2 = document.createElement('td'); c2.textContent = String(e.ip_count);
-      const c3 = document.createElement('td'); c3.textContent = String(e.domain_count);
-      const c4 = document.createElement('td'); c4.textContent = String(e.asn_count);
-      tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3); tr.appendChild(c4);
-      countryBody.appendChild(tr);
-    });
-  }
-
-  if(!crossRows.length){
-    setSummaryMessage(crossBody, 5, 'No AS×Country intersection data');
-  } else {
-    crossRows.forEach(e=>{
-      const tr = document.createElement('tr');
-      const c1 = document.createElement('td'); c1.textContent = e.asn;
-      const c2 = document.createElement('td'); c2.textContent = e.country;
-      const c3 = document.createElement('td'); c3.textContent = e.as_owner || '-';
-      const c4 = document.createElement('td'); c4.textContent = String(e.ip_count);
-      c4.title = `resolved ${e.resolved} / decoded ${e.decoded}`;
-      const c5 = document.createElement('td'); c5.textContent = String(e.domain_count);
-      tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3); tr.appendChild(c4); tr.appendChild(c5);
-      crossBody.appendChild(tr);
-    });
-  }
-
-  return {
-    asGroups: asRows.length,
-    countries: countryRows.length,
-    intersections: crossRows.length
+    label.textContent = `${rows.length ? offset + 1 : 0}-${Math.min(offset + pageSize, rows.length)} / ${rows.length} cached rows`;
+    prev.disabled = offset === 0; next.disabled = offset + pageSize >= rows.length;
   };
+  prev.onclick = ()=>{ if(root.isConnected && offset > 0){ offset -= pageSize; render(); } };
+  next.onclick = ()=>{ if(root.isConnected && offset + pageSize < rows.length){ offset += pageSize; render(); } };
+  render();
+}
+
+function renderDomainAnalysisSummaries(domains, includeVT, commits=null, selected=''){
+  const disclosure = document.getElementById('domainAnalysisSummaries');
+  const root = document.getElementById('domainAnalysisSummaryContent');
+  if(!disclosure || !root) return;
+  const signature = JSON.stringify([domainAnalysisPageKey, selected, includeVT, domains]);
+  if(disclosure._signature === signature) return;
+  const build = ()=>{
+    if(!includeVT){ root.append(viewNode('p', 'VT context is disabled for this cached page.')); return; }
+    const asMap = new Map();
+    const countryMap = new Map();
+    const crossMap = new Map();
+    const seenDomainIp = new Set();
+    const seenAsRole = new Set();
+    const seenCrossRole = new Set();
+
+    (domains || []).forEach(d=>{
+      const domainName = String((d && d.domain) || '').trim();
+      const rows = Array.isArray(d && d.ip_rows) ? d.ip_rows : [];
+      rows.forEach(row=>{
+        const ip = String((row && row.ip) || '').trim();
+        if(!isIPv4(ip)) return;
+        const role = String((row && row.role) || '-').toLowerCase();
+        const vt = (row && row.vt) || {};
+        const asn = (vt && vt.asn != null) ? String(vt.asn) : 'N/A';
+        const asOwner = (vt && vt.as_owner) ? String(vt.as_owner) : '-';
+        const country = (vt && vt.country) ? String(vt.country) : 'N/A';
+        const domainIpKey = `${domainName}|${ip}`;
+        const isNewDomainIp = !seenDomainIp.has(domainIpKey);
+        if(isNewDomainIp) seenDomainIp.add(domainIpKey);
+
+        const asKey = `${asn}|${asOwner}`;
+        const asEntry = asMap.get(asKey) || {
+          asn: asn,
+          as_owner: asOwner,
+          ip_count: 0,
+          domains: new Set(),
+          countries: new Set(),
+          resolved: 0,
+          decoded: 0
+        };
+        asEntry.countries.add(country);
+        if(isNewDomainIp){
+          asEntry.ip_count += 1;
+          if(domainName) asEntry.domains.add(domainName);
+        }
+        const asRoleKey = `${asKey}|${domainName}|${role}|${ip}`;
+        if(!seenAsRole.has(asRoleKey)){
+          seenAsRole.add(asRoleKey);
+          if(role === 'resolved') asEntry.resolved += 1;
+          if(role === 'decoded') asEntry.decoded += 1;
+        }
+        asMap.set(asKey, asEntry);
+
+        const countryEntry = countryMap.get(country) || {
+          country: country,
+          ip_count: 0,
+          domains: new Set(),
+          asns: new Set()
+        };
+        countryEntry.asns.add(asn);
+        if(isNewDomainIp){
+          countryEntry.ip_count += 1;
+          if(domainName) countryEntry.domains.add(domainName);
+        }
+        countryMap.set(country, countryEntry);
+
+        const crossKey = `${asn}|${country}|${asOwner}`;
+        const crossEntry = crossMap.get(crossKey) || {
+          asn: asn,
+          country: country,
+          as_owner: asOwner,
+          ip_count: 0,
+          domains: new Set(),
+          resolved: 0,
+          decoded: 0
+        };
+        if(isNewDomainIp){
+          crossEntry.ip_count += 1;
+          if(domainName) crossEntry.domains.add(domainName);
+        }
+        const crossRoleKey = `${crossKey}|${domainName}|${role}|${ip}`;
+        if(!seenCrossRole.has(crossRoleKey)){
+          seenCrossRole.add(crossRoleKey);
+          if(role === 'resolved') crossEntry.resolved += 1;
+          if(role === 'decoded') crossEntry.decoded += 1;
+        }
+        crossMap.set(crossKey, crossEntry);
+      });
+    });
+
+    const asRows = Array.from(asMap.values()).map(e=>({
+      asn: e.asn,
+      as_owner: e.as_owner,
+      ip_count: e.ip_count,
+      domain_count: e.domains.size,
+      countries: Array.from(e.countries),
+      resolved: e.resolved,
+      decoded: e.decoded
+    })).sort((a,b)=>(b.ip_count - a.ip_count) || (b.domain_count - a.domain_count));
+
+    const countryRows = Array.from(countryMap.values()).map(e=>({
+      country: e.country,
+      ip_count: e.ip_count,
+      domain_count: e.domains.size,
+      asn_count: e.asns.size
+    })).sort((a,b)=>(b.ip_count - a.ip_count) || (b.domain_count - a.domain_count));
+
+    const crossRows = Array.from(crossMap.values()).map(e=>({
+      asn: e.asn,
+      country: e.country,
+      as_owner: e.as_owner,
+      ip_count: e.ip_count,
+      domain_count: e.domains.size,
+      resolved: e.resolved,
+      decoded: e.decoded
+    })).sort((a,b)=>(b.ip_count - a.ip_count) || (b.domain_count - a.domain_count));
+
+    const tables = [
+      ['domainAsSummaryTable', 'AS groups', ['ASN','AS owner','IPs (resolved / decoded)','Domains','Countries'], asRows.map(e=>[e.asn,e.as_owner,`${e.ip_count} (${e.resolved} / ${e.decoded})`,e.domain_count,e.countries.join(', ')])],
+      ['domainCountrySummaryTable', 'Countries', ['Country','IPs','Domains','ASNs'], countryRows.map(e=>[e.country,e.ip_count,e.domain_count,e.asn_count])],
+      ['domainAsCountrySummaryTable', 'AS × country', ['ASN','Country','AS owner','IPs (resolved / decoded)','Domains'], crossRows.map(e=>[e.asn,e.country,e.as_owner,`${e.ip_count} (${e.resolved} / ${e.decoded})`,e.domain_count])]
+    ];
+    tables.forEach(([id,title,headers,rows])=>{
+      const group = viewNode('section'); group.setAttribute('aria-label', title);
+      group.append(viewNode('h5', title + ' — current page only'));
+      mountDomainAnalysisPage(group, id, headers, rows, 8); root.append(group);
+    });
+  };
+  const commit = ()=>{
+    disclosure.open = false; root.replaceChildren(); disclosure._signature = signature;
+    disclosure.ontoggle = ()=>{
+      root.replaceChildren();
+      if(!window.TraceAuth?.accessInvalidated && domainAnalysisPageReady && disclosure.open && disclosure.isConnected && disclosure._signature === signature) build();
+    };
+  };
+  if(commits) commits.push(commit); else commit();
 }
 
 function renderDomainAnalysisTable(domains, includeVT, totalDomainsCount, commits=null){
-  const tbody = document.querySelector('#domainAnalysisTable tbody');
-  const meta = document.getElementById('domainAnalysisMeta');
-  if(!tbody) return;
-  const arr = Array.isArray(domains) ? domains : [];
-  const items = [];
-  for(const d of arr){
-    const rows = Array.isArray(d.ip_rows) && d.ip_rows.length ? d.ip_rows : [null];
-    for(const row of rows){
-      const domain = String(d.domain || '');
-      items.push({key:JSON.stringify([domain, row && row.role, row && row.ip]), time:d.last_ts,
-        content:{domain, record_types:d.record_types, nxdomain_active:d.nxdomain_active,
-          nxdomain_since:d.nxdomain_since, dns_error_only_active:d.dns_error_only_active, includeVT, row}, d, row});
-    }
-  }
-  reconcilePreparedRows(tbody, items, item=>{
-    const {d, row} = item;
-    const tr = document.createElement('tr');
+  const root = document.getElementById('domainAnalysisDetail');
+  if(!root) return;
+  const d = domains[0];
+  const signature = d ? JSON.stringify([domainAnalysisPageKey, includeVT, d]) : '';
+  if(root._signature === signature) return;
+  const nodes = [];
+  if(d){
+    const heading = viewNode('h4', d.domain); heading.tabIndex = -1;
+    const close = viewNode('button', 'Close selected domain'); close.id = 'closeDomainAnalysisDetail';
+    close.onclick = ()=>clearDomainAnalysisDetail(true);
     const status = getDomainLifecycleStatus(d);
-    const vt = row && row.vt;
-    const values = [d.domain || '', '', (d.record_types || []).join(', ') || '-', row && row.role || '-', row && row.ip || '-',
-      vt && vt.asn != null ? String(vt.asn) : '-', vt && vt.as_owner || '-', vt && vt.country || '-',
-      includeVT ? (row ? `${Number(vt && vt.malicious || 0)}/${Number(vt && vt.suspicious || 0)}` : '-') : 'off', formatUnixTsLocal(d.last_ts)];
-    values.forEach(value=>{const cell = document.createElement('td');cell.textContent = value;tr.appendChild(cell);});
-    applyNxdomainLifecycleStyle(tr.children[0], d, d.domain);
-    if(d.dns_error_only_active) tr.children[0].title = `All DNS servers failed in last cycle (${d.domain})`;
-    const badge = document.createElement('span');
-    badge.className = `domain-state-badge ${status.cls}`;
-    badge.textContent = status.label;
-    tr.children[1].appendChild(badge);
-    if(row && isIPv4(row.ip)){
-      tr.children[4].style.cursor = 'pointer';
-      tr.children[4].title = 'Open in Query';
-      tr.children[4].onclick = ()=>openQueryForValue(row.ip);
-    }
-    return tr;
-  }, 9, commits);
-  const summary = renderDomainAnalysisSummaries(arr, includeVT, commits);
-  const text = `Current page: ${arr.length}/${totalDomainsCount || arr.length} domains / ${items.length} rows / AS ${summary.asGroups} / Countries ${summary.countries} / AS×Country ${summary.intersections} / Selected ${getDomainAnalysisSelectionSet().size}`;
-  const commit = ()=>{ if(meta) meta.textContent = text; touchOverviewTs(); };
+    const state = status.label === 'Normal' && isDomainNonResolving(d) ? 'No-data' : status.label;
+    const summary = viewNode('p', `${state} · ${(d.record_types || []).join(', ') || '-'} · Last seen ${formatUnixTsLocal(d.last_ts)}. Evidence below is cached and current-page only.`);
+    applyNxdomainLifecycleStyle(heading, d, d.domain);
+    const evidence = domainAnalysisDisclosure('domainAnalysisEvidence', 'Cached IP / AS / country evidence (current page only)', body=>{
+      const st = getDomainStatsEntry(d);
+      body.append(viewNode('p', `Page counts: ${st.resolvedCount} resolved / ${st.decodedCount} decoded IPs / ${st.asCount} AS / ${st.countryCount} countries. Top AS: ${st.topAs}; top country: ${st.topCountry}.`));
+      const rows = (d.ip_rows || []).map(row=>{
+        const vt = row.vt || {};
+        return [row.role || '-', row.ip || '-', vt.asn, vt.as_owner, vt.country,
+          includeVT ? `${Number(vt.malicious || 0)}/${Number(vt.suspicious || 0)}` : 'off'];
+      });
+      mountDomainAnalysisPage(body, 'domainAnalysisTable', ['Role','IP','ASN','AS owner','Country','VT (M/S)'], rows, 12);
+    });
+    const raw = domainAnalysisDisclosure('domainAnalysisRaw', 'Raw cached domain facts (complete identifiers; current page only)', body=>{
+      body.append(viewNode('pre', JSON.stringify(d, null, 2)));
+    });
+    nodes.push(heading, close, summary, evidence, raw);
+  }
+  const commit = ()=>{ root.replaceChildren(...nodes); root.hidden = !d; root._signature = signature; };
   if(commits) commits.push(commit); else commit();
 }
 
 function applyDomainAnalysisFilter(commits=null, selectedOverride){
+  if(window.TraceAuth?.accessInvalidated){
+    clearDomainAnalysisDetail();
+    document.getElementById('domainAnalysisDomainSelect').disabled = true;
+    document.getElementById('domainAnalysisManageBtn').disabled = true;
+    document.getElementById('domainAnalysisMeta').textContent = 'Access changed. Reload to check permissions.';
+    return;
+  }
   const allDomains = Array.isArray(window.DOMAIN_ANALYSIS_CACHE) ? window.DOMAIN_ANALYSIS_CACHE : [];
   const includeVT = !!window.DOMAIN_ANALYSIS_INCLUDE_VT;
   const selected = selectedOverride === undefined
     ? String((document.getElementById('domainAnalysisDomainSelect') || {}).value || '') : selectedOverride;
-  const filtered = selected ? allDomains.filter(d=>String((d && d.domain) || '') === selected) : allDomains;
+  const filtered = selected && domainAnalysisPageReady ? allDomains.filter(d=>String(d.domain || '') === selected) : [];
   const staged = commits || [];
   renderDomainStatsTable(allDomains, selected, staged);
   renderDomainAnalysisTable(filtered, includeVT, allDomains.length, staged);
+  renderDomainAnalysisSummaries(allDomains, includeVT, staged, selected);
+  staged.push(()=>{
+    document.getElementById('domainAnalysisDomainSelect').disabled = !domainAnalysisPageReady;
+    document.getElementById('domainAnalysisManageBtn').disabled = !domainAnalysisPageReady || !canManageDomainAnalysis();
+    document.getElementById('domainAnalysisMeta').textContent = `Current page: ${allDomains.length} domains; ${selected ? 'selected: ' + selected : 'select one domain for cached evidence'}.`;
+    touchOverviewTs();
+  });
   if(!commits) staged.forEach(commit=>commit());
 }
 
@@ -1668,6 +2043,8 @@ function pruneDomainAnalysisSelection(){
 }
 
 async function removeDomainsFromConfig(domainNames, successMessage){
+  if(!domainAnalysisManageMode || !canManageDomainAnalysis() || domainAnalysisRemovalPending) return false;
+  const epoch = domainAnalysisManageEpoch;
   const names = Array.from(new Set((domainNames || []).map(v=>String(v || '').trim()).filter(Boolean)));
   if(!names.length){
     setDomainRemoveStatus('No domains selected', 'err');
@@ -1679,10 +2056,17 @@ async function removeDomainsFromConfig(domainNames, successMessage){
     return false;
   }
 
+  domainAnalysisRemovalPending = true;
+  const feedback=viewFeedbackOwner('domain-remove','domainRemoveStatus');
+  const token=feedback?.begin(JSON.stringify(names));
+  const current=()=>epoch===domainAnalysisManageEpoch && domainAnalysisManageMode && canManageDomainAnalysis() && feedbackCurrent(token);
+  let submitted=false;
   try{
-    const cfgResp = await fetch('/config');
+    const cfgResp = await fetch('/config',{feedback:token});
     if(!cfgResp.ok) throw new Error('config load failed');
     const cfg = await cfgResp.json();
+    if(!current()) return false;
+    if(!Array.isArray(cfg?.domains) || !Number.isSafeInteger(cfg.revision) || cfg.revision<0) throw new Error('Invalid configuration receipt');
     const currentDomains = Array.isArray(cfg.domains) ? cfg.domains : [];
     const removeSet = new Set(names);
     const nextDomains = currentDomains.filter(item=>{
@@ -1695,28 +2079,40 @@ async function removeDomainsFromConfig(domainNames, successMessage){
       return false;
     }
 
+    submitted=true;
     const saveResp = await fetch('/config', {
       method: 'POST',
+      feedback:token,
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({domains: nextDomains, revision: cfg.revision})
     });
     const saveJson = await saveResp.json();
-    if(!(saveResp.ok && saveJson && saveJson.status === 'ok')){
-      throw new Error((saveJson && saveJson.error) ? saveJson.error : 'config save failed');
+    if(!current()) return false;
+    if(!(saveResp.ok && saveJson?.status==='ok' && Number.isSafeInteger(saveJson.revision) && saveJson.revision>=0 && Array.isArray(saveJson.config?.domains))){
+      throw Object.assign(new Error('Invalid removal receipt'),{status:saveResp.ok?0:saveResp.status});
     }
 
     const sel = getDomainAnalysisSelectionSet();
     names.forEach(n=>sel.delete(n));
-    await Promise.allSettled([refreshDomainAnalysis(), loadCfg(), refreshResults(), refreshIPs(), refreshValidIPs()]);
+    // This mutation has its own revision; never reload/rebase a Settings draft.
+    clearDomainAnalysisDetail();
+    await refreshDomainAnalysis();
+    if(!current()) return false;
+    feedback?.succeed(token);
     setDomainRemoveStatus(successMessage || `Removed ${removedCount} domain(s)`, 'ok');
     return true;
   }catch(e){
-    setDomainRemoveStatus(`Remove failed: ${e}`, 'err');
+    if(!current()) return false;
+    feedbackFailure(feedback,token,e,submitted);
+    setDomainRemoveStatus('Remove failed: '+(feedback?.snapshot().error?.message || 'The operation could not be confirmed. Reload explicitly before retrying.'), 'err');
     return false;
+  }finally{
+    domainAnalysisRemovalPending = false;
   }
 }
 
 function selectNonResolvingDomainsForBulk(){
+  if(!domainAnalysisManageMode || !canManageDomainAnalysis()) return;
   const set = getDomainAnalysisSelectionSet();
   const allDomains = Array.isArray(window.DOMAIN_ANALYSIS_CACHE) ? window.DOMAIN_ANALYSIS_CACHE : [];
   let added = 0;
@@ -1740,6 +2136,7 @@ function clearSelectedDomainsForBulk(){
 }
 
 async function removeSelectedNonResolvingDomains(){
+  if(!domainAnalysisManageMode || !canManageDomainAnalysis()) return;
   const set = getDomainAnalysisSelectionSet();
   const selectedNames = Array.from(set);
   if(!selectedNames.length){
@@ -1759,18 +2156,31 @@ async function removeSelectedNonResolvingDomains(){
 }
 
 async function refreshDomainAnalysis(){
+  const pageKey = preparedQuery('domainanalysis');
+  if(domainAnalysisPageKey !== pageKey){
+    clearDomainAnalysisDetail();
+    domainAnalysisPageReady = false;
+    setDomainAnalysisManageMode(false);
+    domainAnalysisPageKey = pageKey;
+  }
   const owner = beginSectionRefresh('domainanalysis');
   if(!owner) return;
   try{
     const includeVT = !!(document.getElementById('domain_analysis_include_vt') && document.getElementById('domain_analysis_include_vt').checked);
     const j = await readPreparedJSON(owner);
+    if(isSectionRefreshCurrent(owner) && j.unchanged && !domainAnalysisPageReady && preparedViews.get('domainanalysis')?.url === owner.url){
+      domainAnalysisPageReady = true;
+      applyDomainAnalysisFilter();
+    }
     if(preparedResponseHandled(owner)) return;
     if(!Array.isArray(j.domains)) throw new Error('Invalid domain page');
+    const previousPageReady = domainAnalysisPageReady;
     const previousCache = window.DOMAIN_ANALYSIS_CACHE;
     const previousVT = window.DOMAIN_ANALYSIS_INCLUDE_VT;
     const previousSelection = window.DOMAIN_ANALYSIS_SELECTED_REMOVE;
     try{
-      window.DOMAIN_ANALYSIS_CACHE = j.domains;
+      domainAnalysisPageReady = true;
+      window.DOMAIN_ANALYSIS_CACHE = j.domains.slice(0, 200);
       window.DOMAIN_ANALYSIS_INCLUDE_VT = includeVT;
       pruneDomainAnalysisSelection();
       // Stage the whole view: no filter/table/timestamp is published until all
@@ -1780,6 +2190,7 @@ async function refreshDomainAnalysis(){
       applyDomainAnalysisFilter(commits, selected);
       commits.forEach(commit=>commit());
     }catch(error){
+      domainAnalysisPageReady = previousPageReady;
       window.DOMAIN_ANALYSIS_CACHE = previousCache;
       window.DOMAIN_ANALYSIS_INCLUDE_VT = previousVT;
       window.DOMAIN_ANALYSIS_SELECTED_REMOVE = previousSelection;
@@ -2253,103 +2664,49 @@ function setIpIntelResultState(state, message){
         : 'Run “Enrich Per-IP Details” to populate summaries and evidence.');
     }
   }
-  if(content) content.hidden = !ready;
+  if(content) content.hidden = !ready && !window.IP_INTEL_LAST_RESULT;
 }
 
-async function analyzeIpIntel(){
-  const raw = String((document.getElementById('ipIntelInput') || {}).value || '').trim();
-  const inputSignature = computeIpIntelInputSignature(raw);
-  const includeVT = !!(document.getElementById('ipIntelIncludeVt') && document.getElementById('ipIntelIncludeVt').checked);
-  const rowLimit = parseBoundedInt((document.getElementById('ipIntelRowLimit') || {}).value, 1500, 100, 5000);
-  const vtBudget = parseBoundedInt((document.getElementById('ipIntelVtBudget') || {}).value, 1200, 0, 5000);
-  const vtWorkers = parseBoundedInt((document.getElementById('ipIntelVtWorkers') || {}).value, 8, 1, 32);
-  const meta = document.getElementById('ipIntelMeta');
-  const invalidBox = document.getElementById('ipIntelInvalidBox');
-  const ipBody = document.querySelector('#ipIntelResultTable tbody');
-  const asBody = document.querySelector('#ipIntelAsSummaryTable tbody');
-  const cBody = document.querySelector('#ipIntelCountrySummaryTable tbody');
-  const acBody = document.querySelector('#ipIntelAsCountrySummaryTable tbody');
-  const cspBody = document.querySelector('#ipIntelCspSummaryTable tbody');
-
+function cancelIpIntelInputReads(cancelMisp = true){
   if(ipIntelAnalyzeController){
-    try{ ipIntelAnalyzeController.abort(); }catch(e){}
+    ++ipIntelAnalyzeSeq; ipIntelAnalyzeController.abort(); ipIntelAnalyzeController=null;
+    localFeedbackOwners.get('ip-enrichment')?.invalidate();
   }
-  ipIntelAnalyzeSeq += 1;
-
-  if(!raw){
-    if(meta) meta.textContent = 'Input IP list first';
-    setIpIntelResultState('idle');
-    renderMergedIpIntelHints();
-    return;
+  if(cancelMisp && ipIntelMispController){
+    ++ipIntelMispSeq; ipIntelMispController.abort(); ipIntelMispController=null;
+    localFeedbackOwners.get('misp-input')?.invalidate();
+    document.getElementById('ipIntelMispStatus').textContent='MISP browser read stopped. Already dispatched provider work may continue.';
   }
+}
 
-  const controller = (typeof AbortController === 'function') ? new AbortController() : null;
-  ipIntelAnalyzeController = controller;
-  const requestSeq = ipIntelAnalyzeSeq;
-  const isStale = ()=> requestSeq !== ipIntelAnalyzeSeq || ipIntelAnalyzeController !== controller;
-  setIpIntelBusy(true);
-  setIpIntelResultState('loading');
-
-  if(meta) meta.textContent = 'Analyzing...';
-
-  try{
-    const r = await fetch('/ip-list-analysis', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      signal: controller ? controller.signal : undefined,
-      body: JSON.stringify({
-        ips: raw,
-        include_vt: includeVT,
-        row_limit: rowLimit,
-        vt_lookup_budget: vtBudget,
-        vt_workers: vtWorkers
-      })
-    });
-    const j = await r.json();
-    if(isStale()) return;
-    if(!r.ok){
-      if(meta) meta.textContent = `Analyze failed: ${(j && j.error) ? j.error : 'HTTP '+r.status}`;
-      if(ipBody) setSummaryMessage(ipBody, 6, 'No data');
-      if(asBody) setSummaryMessage(asBody, 6, 'No data');
-      if(cBody) setSummaryMessage(cBody, 4, 'No data');
-      if(acBody) setSummaryMessage(acBody, 6, 'No data');
-      if(cspBody) setSummaryMessage(cspBody, 5, 'No data');
-      setIpIntelInfraInsights(inputSignature, [], null);
-      if(invalidBox) invalidBox.textContent = '-';
-      setIpIntelResultState('error', 'Per-IP enrichment failed. Review the status above and try again.');
-      return;
-    }
-
-    const rows = Array.isArray(j.ips) ? j.ips : [];
-    const asRows = Array.isArray(j.as_summary) ? j.as_summary : [];
-    const cRows = Array.isArray(j.country_summary) ? j.country_summary : [];
-    const acRows = Array.isArray(j.as_country_summary) ? j.as_country_summary : [];
-    const cspRows = Array.isArray(j.csp_summary) ? j.csp_summary : [];
-    const hints = Array.isArray(j.hints) ? j.hints : [];
-    const characteristics = (j && typeof j.characteristics === 'object' && j.characteristics) ? j.characteristics : {};
-    const invalid = Array.isArray(j.invalid_inputs) ? j.invalid_inputs : [];
-    const ipsTotal = Number((j && j.ips_total_count) || rows.length || 0);
-    const ipsShown = Number((j && j.ips_displayed_count) || rows.length || 0);
-    const ipsLimited = !!(j && j.ips_truncated);
-    const vtBudgetInfo = Number((j && j.vt_lookup_budget) || vtBudget || 0);
-    const vtAttemptedInfo = Number((j && j.vt_lookup_attempted) || 0);
-    const vtWorkersInfo = Number((j && j.vt_workers) || vtWorkers || 1);
-
-    if(meta){
-      let txt = `submitted ${j.submitted_count || 0} / valid ${j.valid_count || 0} / invalid ${j.invalid_count || 0} / displayed ${ipsShown}/${ipsTotal}`;
-      if(ipsLimited){
-        txt += ' (row-limited)';
-      }
-      if(includeVT){
-        txt += ` / VT budget ${vtBudgetInfo} (attempted ${vtAttemptedInfo}, workers ${vtWorkersInfo})`;
-      }
-      meta.textContent = txt;
-    }
-
+function renderIpIntelCachedEvidence(){
+  const state=window.IP_INTEL_LAST_RESULT;
+  const panel=document.getElementById('ipIntelEvidence');
+  const raw=document.getElementById('ipIntelRaw');
+  const bodies=['ipIntelResultTable','ipIntelAsSummaryTable','ipIntelCountrySummaryTable','ipIntelAsCountrySummaryTable','ipIntelCspSummaryTable'].map(id=>document.querySelector('#'+id+' tbody'));
+  for(const body of bodies) if(body) body.textContent='';
+  if(raw) raw.querySelector('pre').textContent='';
+  if(!panel || !panel.open || !state){if(raw) raw.open=false;return;}
+  const j=state.response, includeVT=state.includeVT, offset=state.offset;
+  const page=key=>(Array.isArray(j[key])?j[key]:[]).slice(offset,offset+8);
+  const rows=page('ips'), asRows=page('as_summary'), cRows=page('country_summary'), acRows=page('as_country_summary'), cspRows=page('csp_summary');
+  const [ipBody,asBody,cBody,acBody,cspBody]=bodies;
+  const counts=['ips','as_summary','country_summary','as_country_summary','csp_summary'].map(key=>Array.isArray(j[key])?j[key].length:0);
+  const total=Math.max(...counts);
+  document.getElementById('ipIntelEvidenceRange').textContent=`Cached response: IP/AS/country/intersection/CSP entries ${counts.join(' / ')}. Showing entries ${total?offset+1:0}–${Math.min(offset+8,total)} in each category (up to 8 per category). Empty categories have no entries at this offset, not zero global observations.`;
+  for(const [id,next] of [['ipIntelEvidencePrevious',offset-8],['ipIntelEvidenceNext',offset+8]]){
+    const button=document.getElementById(id); button.disabled=next<0 || next>=total;
+    button.onclick=()=>{
+      if(window.IP_INTEL_LAST_RESULT!==state) return;
+      state.offset=next;renderIpIntelCachedEvidence();
+      if(button.disabled) document.getElementById(id==='ipIntelEvidenceNext'?'ipIntelEvidencePrevious':'ipIntelEvidenceNext').focus();
+    };
+  }
+  if(raw?.open) raw.querySelector('pre').textContent=JSON.stringify(j,null,2);
     if(ipBody){
       ipBody.innerHTML = '';
       if(!rows.length){
-        setSummaryMessage(ipBody, 6, 'No valid IP results');
+        setSummaryMessage(ipBody, 6, 'No IP entries on this evidence page');
       } else {
         rows.forEach(it=>{
           const tr = document.createElement('tr');
@@ -2376,7 +2733,7 @@ async function analyzeIpIntel(){
     if(asBody){
       asBody.innerHTML = '';
       if(!asRows.length){
-        setSummaryMessage(asBody, 6, 'No AS summary');
+        setSummaryMessage(asBody, 6, 'No AS entries on this evidence page');
       } else {
         asRows.forEach(it=>{
           const tr = document.createElement('tr');
@@ -2396,7 +2753,7 @@ async function analyzeIpIntel(){
     if(cBody){
       cBody.innerHTML = '';
       if(!cRows.length){
-        setSummaryMessage(cBody, 4, 'No country summary');
+        setSummaryMessage(cBody, 4, 'No country entries on this evidence page');
       } else {
         cRows.forEach(it=>{
           const tr = document.createElement('tr');
@@ -2413,7 +2770,7 @@ async function analyzeIpIntel(){
     if(acBody){
       acBody.innerHTML = '';
       if(!acRows.length){
-        setSummaryMessage(acBody, 6, 'No AS×Country intersection summary');
+        setSummaryMessage(acBody, 6, 'No intersections on this evidence page');
       } else {
         acRows.forEach(it=>{
           const tr = document.createElement('tr');
@@ -2433,7 +2790,7 @@ async function analyzeIpIntel(){
     if(cspBody){
       cspBody.innerHTML = '';
       if(!cspRows.length){
-        setSummaryMessage(cspBody, 5, 'No CSP summary');
+        setSummaryMessage(cspBody, 5, 'No CSP entries on this evidence page');
       } else {
         cspRows.forEach(it=>{
           const tr = document.createElement('tr');
@@ -2449,6 +2806,85 @@ async function analyzeIpIntel(){
       }
     }
 
+}
+
+async function analyzeIpIntel(){
+  const raw = String((document.getElementById('ipIntelInput') || {}).value || '').trim();
+  const inputSignature = computeIpIntelInputSignature(raw);
+  const includeVT = !!(document.getElementById('ipIntelIncludeVt') && document.getElementById('ipIntelIncludeVt').checked);
+  const rowLimit = parseBoundedInt((document.getElementById('ipIntelRowLimit') || {}).value, 1500, 100, 5000);
+  const vtBudget = parseBoundedInt((document.getElementById('ipIntelVtBudget') || {}).value, 1200, 0, 5000);
+  const vtWorkers = parseBoundedInt((document.getElementById('ipIntelVtWorkers') || {}).value, 8, 1, 32);
+  const meta = document.getElementById('ipIntelMeta');
+  const invalidBox = document.getElementById('ipIntelInvalidBox');
+
+  if(ipIntelAnalyzeController){
+    try{ ipIntelAnalyzeController.abort(); }catch(e){}
+  }
+  ipIntelAnalyzeSeq += 1;
+
+  if(!raw){
+    if(meta) meta.textContent = 'Input IP list first';
+    setIpIntelResultState('idle');
+    renderMergedIpIntelHints();
+    return;
+  }
+
+  const controller = (typeof AbortController === 'function') ? new AbortController() : null;
+  ipIntelAnalyzeController = controller;
+  const feedback=viewFeedbackOwner('ip-enrichment','ipIntelMeta');
+  const token=feedback?.begin(inputSignature);
+  const requestSeq = ipIntelAnalyzeSeq;
+  const isStale = ()=> requestSeq !== ipIntelAnalyzeSeq || ipIntelAnalyzeController !== controller;
+  setIpIntelBusy(true);
+  setIpIntelResultState('loading');
+
+  if(meta) meta.textContent = 'Analyzing...';
+
+  try{
+    const r = await fetch('/ip-list-analysis', {
+      method: 'POST',
+      feedback: token,
+      headers: {'Content-Type':'application/json'},
+      signal: controller ? controller.signal : undefined,
+      body: JSON.stringify({
+        ips: raw,
+        include_vt: includeVT,
+        row_limit: rowLimit,
+        vt_lookup_budget: vtBudget,
+        vt_workers: vtWorkers
+      })
+    });
+    const j = await r.json();
+    if(isStale()) return;
+    if(!r.ok || !j || j.error || !Array.isArray(j.ips)) throw Object.assign(new Error('Invalid enrichment result'),{status:r.ok ? 0 : r.status});
+    feedback?.succeed(token);
+
+    const rows = Array.isArray(j.ips) ? j.ips : [];
+    const hints = Array.isArray(j.hints) ? j.hints : [];
+    const characteristics = (j && typeof j.characteristics === 'object' && j.characteristics) ? j.characteristics : {};
+    const invalid = Array.isArray(j.invalid_inputs) ? j.invalid_inputs : [];
+    const ipsTotal = Number((j && j.ips_total_count) || rows.length || 0);
+    const ipsShown = Number((j && j.ips_displayed_count) || rows.length || 0);
+    const ipsLimited = !!(j && j.ips_truncated);
+    const vtBudgetInfo = Number((j && j.vt_lookup_budget) || vtBudget || 0);
+    const vtAttemptedInfo = Number((j && j.vt_lookup_attempted) || 0);
+    const vtWorkersInfo = Number((j && j.vt_workers) || vtWorkers || 1);
+
+    if(meta){
+      let txt = `submitted ${j.submitted_count || 0} / valid ${j.valid_count || 0} / invalid ${j.invalid_count || 0} / displayed ${ipsShown}/${ipsTotal}`;
+      if(ipsLimited){
+        txt += ' (row-limited)';
+      }
+      if(includeVT){
+        txt += ` / VT budget ${vtBudgetInfo} (attempted ${vtAttemptedInfo}, workers ${vtWorkersInfo})`;
+      }
+      meta.textContent = txt;
+    }
+
+    window.IP_INTEL_LAST_RESULT={response:j,includeVT,inputSignature,generation:requestSeq,offset:0};
+    renderIpIntelCachedEvidence();
+
     setIpIntelInfraInsights(inputSignature, hints, characteristics);
 
     if(invalidBox){
@@ -2463,8 +2899,9 @@ async function analyzeIpIntel(){
   }catch(e){
     if(isAbortError(e) || isStale()) return;
     setIpIntelInfraInsights(inputSignature, [], null);
-    if(meta) meta.textContent = 'Analyze error: ' + e;
-    setIpIntelResultState('error', 'Per-IP enrichment failed. Review the status above and try again.');
+    feedbackFailure(feedback,token,e);
+    if(meta) meta.textContent = 'Per-IP enrichment failed. '+(feedback?.snapshot().error?.message || 'No usable result was returned.');
+    setIpIntelResultState('error', 'Per-IP enrichment failed. Previous returned data, if present, is stale. Retry explicitly.');
   }finally{
     if(ipIntelAnalyzeController === controller){
       ipIntelAnalyzeController = null;
@@ -2474,8 +2911,14 @@ async function analyzeIpIntel(){
 }
 
 async function loadIpIntelFromMisp(autoAnalyze){
+  ipIntelMispController?.abort();
+  const controller=new AbortController(); ipIntelMispController=controller;
+  const generation=++ipIntelMispSeq;
   const eventId = String((document.getElementById('ipIntelMispEventId') || {}).value || '').trim();
-  const meta = document.getElementById('ipIntelMeta');
+  const feedback=viewFeedbackOwner('misp-input','ipIntelMispStatus');
+  const token=feedback?.begin(eventId);
+  const current=()=>generation===ipIntelMispSeq && !controller.signal.aborted && feedbackCurrent(token);
+  const meta = document.getElementById('ipIntelMispStatus');
   const invalidBox = document.getElementById('ipIntelInvalidBox');
   if(meta) meta.textContent = 'Loading MISP ip-src...';
   try{
@@ -2483,14 +2926,18 @@ async function loadIpIntelFromMisp(autoAnalyze){
     if(eventId) payload.event_id = eventId;
     const r = await fetch('/misp/event-ips', {
       method: 'POST',
+      signal: controller.signal, feedback:token,
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify(payload)
     });
     const j = await r.json();
+    if(!current()) return;
     if(!r.ok || !j || j.status !== 'ok'){
-      if(meta) meta.textContent = `MISP load failed: ${(j && j.error) ? j.error : 'HTTP '+r.status}`;
+      feedbackFailure(feedback,token,{status:r.ok ? 0 : r.status});
+      if(meta) meta.textContent = 'MISP load failed. No usable external result was returned; retry explicitly.';
       return;
     }
+    feedback?.succeed(token);
 
     const ips = Array.isArray(j.ips) ? j.ips : [];
     if(typeof window !== 'undefined'){
@@ -2517,7 +2964,11 @@ async function loadIpIntelFromMisp(autoAnalyze){
       await analyzeIpIntel();
     }
   }catch(e){
-    if(meta) meta.textContent = 'MISP load error: ' + e;
+    if(!current()) return;
+    feedbackFailure(feedback,token,e);
+    if(meta) meta.textContent = 'MISP load failed. '+(feedback?.snapshot().error?.message || 'External result unavailable.');
+  }finally{
+    if(ipIntelMispController===controller) ipIntelMispController=null;
   }
 }
 
@@ -2538,13 +2989,9 @@ function renderPreparedValues(td, values){
     }
   });
   if(list.length > preview.length || preview.some(value=>value.length > 200)){
-    const details = document.createElement('details');
-    const summary = document.createElement('summary');
-    summary.textContent = `Show all ${list.length} values (plain text)`;
-    const pre = document.createElement('pre');
-    pre.style.whiteSpace = 'pre-wrap';
-    pre.textContent = list.join('\n');
-    details.appendChild(summary); details.appendChild(pre); td.appendChild(details);
+    td.appendChild(lazyViewDetails(`Show all ${list.length} values (plain text)`, body => {
+      body.appendChild(viewNode('pre', list.join('\n')));
+    }));
   }
 }
 
@@ -2587,6 +3034,12 @@ function renderCellWithClickableIps(td, rawValues, fallbackText, maxDisplayItems
   const status = document.getElementById('deliveryStatus');
   const details = document.getElementById('deliveryDetails');
   const checked = document.getElementById('deliveryChecked');
+  const disclosure = document.getElementById('deliveryDisclosure');
+  const warnings = document.getElementById('deliveryWarnings');
+  const feedback = window.TraceViewFeedback?.register('delivery-health', state => {
+    if(state.error) status.setAttribute('data-feedback-id', state.error.identity);
+    else status.removeAttribute('data-feedback-id');
+  });
   const reasons = new Set([
     'delivery_storage', 'delivery_capacity', 'tracking_overflow', 'old_binding_blocked',
     'client_unavailable', 'configuration_unavailable', 'provider_auth', 'provider_tls',
@@ -2656,15 +3109,40 @@ function renderCellWithClickableIps(td, rawValues, fallbackText, maxDisplayItems
   }
   let lastGood = false;
   let incompleteSeen = false;
+  let lastLines = ['Unknown — no successful health read yet.'];
+  let lastHeadline = '';
+  function renderDetails(){
+    const fragment = document.createDocumentFragment();
+    if(!disclosure || disclosure.open){
+      for(const line of lastLines){
+        const p = document.createElement('p');
+        p.textContent = line;
+        fragment.appendChild(p);
+      }
+    }
+    details.replaceChildren(fragment);
+  }
+  if(disclosure) disclosure.addEventListener('toggle', renderDetails);
   function render(h){
     const unsafe = JSON.stringify(h, (_, v) => typeof v === 'number' && !Number.isSafeInteger(v) ? 'UNSAFE' : v).includes('UNSAFE');
     incompleteSeen = incompleteSeen || !h.accounting_complete || unsafe;
-    status.textContent = [
+    lastHeadline = [
       `Backend delivery status: ${h.status}.`,
-      `${number(h.missed_total)} not admitted (durable); ${number(h.missed_unpersisted)} volatile known misses; ${number(h.failed_total)} failed.`,
-      incompleteSeen ? 'Accounting incomplete — lower bound; total loss unknown.' : 'Accounting complete for this epoch.',
-      `Worker: ${h.worker_running ? 'running (thread/pass alive)' : 'not running'}; ${h.progress_version === 1 ? 'progress: ' + h.progress.state : 'progress unavailable on this server'}${h.counts_stale ? ' — Counts stale' : ''}. Observation policy: continue.`
+      `Worker: ${h.worker_running ? 'running' : 'not running'}; ${h.progress_version === 1 ? 'progress: ' + h.progress.state : 'progress unavailable on this server'}.`
     ].join(' ');
+    const cautions = [
+      `${number(h.missed_total)} not admitted (durable); ${number(h.missed_unpersisted)} volatile known misses; ${number(h.failed_total)} failed (historical terminal). Unit: destination-items.`,
+      incompleteSeen ? 'Accounting incomplete — lower bound; total loss unknown.' : 'Accounting complete for this epoch.',
+      h.blocked ? `${number(h.blocked)} currently blocked.` : '',
+      !h.storage_ok ? 'Storage degraded.' : '',
+      h.coverage !== 'covered' ? `Coverage: ${h.coverage}.` : '',
+      !h.tracking_complete ? 'Tracking incomplete.' : '',
+      h.counts_stale ? 'Counts stale.' : '',
+      h.lookup && (h.lookup.coverage !== 'complete' || h.lookup.counts_stale || h.lookup.failed_targets || h.lookup.uncertain_targets)
+        ? `Source coverage: ${h.lookup.coverage}; ${number(h.lookup.failed_targets)} failed, ${number(h.lookup.uncertain_targets)} uncertain targets${h.lookup.counts_stale ? '; lookup counts stale' : ''}.` : ''
+    ].filter(Boolean).join(' ');
+    status.textContent = lastHeadline;
+    if(warnings) warnings.textContent = cautions;
     const lines = [
       `${number(h.missed_total)} destination-items not admitted (durably recorded).`,
       `Volatile known misses: ${number(h.missed_unpersisted)} — not included in the durable count; may be lost on restart.`,
@@ -2694,13 +3172,8 @@ function renderCellWithClickableIps(td, rawValues, fallbackText, maxDisplayItems
       lines.push(`Source coverage: ${l.coverage} · Lookup in-flight: ${number(l.in_flight)} · Failed targets: ${number(l.failed_targets)} · Uncertain targets: ${number(l.uncertain_targets)} · ${l.counts_stale ? 'Lookup counts stale' : 'Lookup counts sampled'} · Last attempt: ${timestamp(l.last_attempt_at)} · Last accepted target success (not universal coverage): ${timestamp(l.last_success_at)}`);
       lines.push(`Count snapshot age: ${age(h.counts_age_seconds)} · ${h.counts_stale ? 'Counts stale' : 'Counts sampled'}; oldest outstanding age advances independently.`);
     }
-    const fragment = document.createDocumentFragment();
-    for(const line of lines){
-      const p = document.createElement('p');
-      p.textContent = line;
-      fragment.appendChild(p);
-    }
-    details.replaceChildren(fragment);
+    lastLines = lines;
+    renderDetails();
     checked.textContent = 'Last successful health read: ' + new Date().toISOString();
     lastGood = true;
   }
@@ -2754,6 +3227,7 @@ function renderCellWithClickableIps(td, rawValues, fallbackText, maxDisplayItems
     if(performance.now() < nextAttempt) return schedule();
     const controller = new AbortController();
     active = controller;
+    const token = feedback?.begin('/delivery-health?progress=1');
     nextAttempt = performance.now() + intervalMs;
     let abortListener;
     const aborted = new Promise((_, reject) => {
@@ -2772,23 +3246,28 @@ function renderCellWithClickableIps(td, rawValues, fallbackText, maxDisplayItems
       panel.hidden = false;
       // Auth can consume most of the deadline: pace actual requests too.
       nextAttempt = performance.now() + intervalMs;
-      const response = await fetch('/delivery-health?progress=1', {cache:'no-store', signal:controller.signal});
+      const response = await fetch('/delivery-health?progress=1', {cache:'no-store', signal:controller.signal, feedback:token});
       const health = await readHealth(response, controller.signal);
-      if(!controller.signal.aborted) render(health);
+      if(!controller.signal.aborted){ render(health); feedback?.succeed(token); }
     };
     try {
       await Promise.race([work(), aborted]);
     } catch (error) {
       // TraceAuth deliberately exposes only this fixed local permission error,
       // never the server's body. Stop after revocation rather than spamming 403.
-      if(error && error.message === 'Permission denied for this action.'){
+      if(error?.status === 401 || error?.status === 403){
         permitted = false;
         panel.hidden = true;
         details.replaceChildren();
+        lastLines = [];
+        lastHeadline = '';
+        if(warnings) warnings.textContent = '';
         checked.textContent = 'Last successful health read: unknown';
         lastGood = false;
       }
-      status.textContent = lastGood ? 'Delivery health unavailable — stale last successful snapshot.' : 'Delivery health unavailable — unknown.';
+      if(feedback && !window.TraceViewFeedback.current(token)) return;
+      feedback?.fail(token, window.TraceViewFeedback.code(error));
+      status.textContent = lastGood ? 'Delivery health unavailable — stale last successful snapshot. ' + lastHeadline : 'Delivery health unavailable — unknown.';
     } finally {
       clearTimeout(deadline);
       controller.signal.removeEventListener('abort', abortListener);
@@ -2800,9 +3279,21 @@ function renderCellWithClickableIps(td, rawValues, fallbackText, maxDisplayItems
   }
   function pause(){
     clearTimeout(timer);
+    feedback?.invalidate();
     if(active) active.abort();
-    if(lastGood) status.textContent = 'Delivery health paused — stale last successful snapshot.';
+    if(lastGood) status.textContent = 'Delivery health paused — stale last successful snapshot. ' + lastHeadline;
   }
+  window.TraceAuth.onInvalidated?.(() => {
+    permitted = false;
+    pause();
+    feedback?.forget();
+    lastGood = false; lastHeadline = ''; lastLines = [];
+    panel.hidden = true;
+    details.replaceChildren();
+    if(warnings) warnings.textContent = '';
+    status.textContent = 'Access changed. Reload to check permissions.';
+    checked.textContent = 'Last successful health read: unknown';
+  });
   // Join the console's ordinary load lifecycle. Installing the script alone
   // (for an embedded view or a fixture) must not start unrelated background I/O.
   window.addEventListener('load', () => {
@@ -2814,12 +3305,12 @@ function renderCellWithClickableIps(td, rawValues, fallbackText, maxDisplayItems
 })();
 
 const uiOverview = {
-  configured: 0,
-  statusRows: 0,
-  managedIps: 0,
-  allIps: 0,
-  validIps: 0,
-  lastRefreshLocal: '-'
+  configured: null,
+  statusRows: null,
+  managedIps: null,
+  allIps: null,
+  validIps: null,
+  lastRefreshLocal: '—'
 };
 
 
@@ -2829,17 +3320,35 @@ function updateOverviewPanel(){
     const el = document.getElementById(id);
     if(el) el.textContent = value;
   };
-  set('metricConfigured', String(uiOverview.configured));
-  set('metricStatusRows', String(uiOverview.statusRows));
-  set('metricDecoded', String(uiOverview.managedIps));
-  const validTxt = (uiOverview.validIps == null) ? '?' : String(uiOverview.validIps);
-  set('metricIps', `${uiOverview.allIps} / valid ${validTxt}`);
+  const count = value => value == null ? '—' : String(value);
+  set('metricConfigured', count(uiOverview.configured));
+  set('metricStatusRows', count(uiOverview.statusRows));
+  set('metricDecoded', count(uiOverview.managedIps));
+  set('metricIps', count(uiOverview.allIps));
+  set('metricValidIps', count(uiOverview.validIps));
   set('metricUpdated', uiOverview.lastRefreshLocal);
 }
 
-function touchOverviewTs(){
+function touchOverviewTs(section){
+  if(section !== 'status') return;
   uiOverview.lastRefreshLocal = formatLocalDateTime(new Date());
   updateOverviewPanel();
+}
+
+function settingsDraftStamp(sectionId){
+  const section = document.getElementById(sectionId);
+  if(!section._draftBound){
+    section._draftBound = true;
+    section._draftGeneration = 0;
+    const changed = event=>{
+      if(event.target.matches('input, select, textarea') && event.target.id !== 'domainSettingsSearch') ++section._draftGeneration;
+    };
+    section.addEventListener('input', changed);
+    section.addEventListener('change', changed);
+  }
+  return JSON.stringify([section._draftGeneration,
+    sectionId === 'alertsSection' ? alertRevision : configRevision,
+    [...section.querySelectorAll('input, select, textarea')].filter(el=>el.id !== 'domainSettingsSearch').map(el=>[el.id, el.className, el.value, el.checked])]);
 }
 
 function setAlertSettingsStatus(message, kind){
@@ -2850,7 +3359,7 @@ function setAlertSettingsStatus(message, kind){
   el.classList.remove('ok', 'err');
   if(kind === 'ok') el.classList.add('ok');
   if(kind === 'err') el.classList.add('err');
-  if(message && kind !== 'warn'){
+  if(message && kind === 'ok'){
     el._statusTimer = setTimeout(()=>{
       el.textContent = '';
       el.classList.remove('ok', 'err');
@@ -2858,16 +3367,12 @@ function setAlertSettingsStatus(message, kind){
   }
 }
 
-async function loadAlertSettings(){
-  alertRevision = null;
-  if(window.TraceTeamsTest) window.TraceTeamsTest.settingsChanged();
-  try{
-    if(window.TraceAuth && (await window.TraceAuth.ready).role !== 'admin') return;
-    const r = await fetch('/settings');
-    if(!r.ok) throw new Error('HTTP '+r.status);
-    const j = await r.json();
-    const alerts = (j.settings && j.settings.alerts) ? j.settings.alerts : (j.settings || {}).alerts || {};
-    alertRevision = j.revision;
+function applyAlertSettings(alerts, revision){
+    alertRevision = revision;
+    alertSettingsReady = true;
+    const summary = document.getElementById('alertConfigurationSummary');
+    if(summary) summary.textContent = `Saved configuration (revision ${revision}): ` +
+      [['Teams', 'teams_webhook'], ['MISP URL', 'misp_url'], ['MISP API key', 'api_key'], ['VirusTotal', 'vt_api_key']].map(([label, key])=>`${label}: ${alerts.configured?.[key] ? 'configured' : 'not configured'}`).join(' · ') + '. Configuration presence is not connection or delivery readiness.';
     document.getElementById('teams_webhook_front').value = alerts.teams_webhook || '';
     document.getElementById('misp_url_front').value = alerts.misp_url || '';
     document.getElementById('misp_key_front').value = alerts.api_key || '';
@@ -2889,15 +3394,40 @@ async function loadAlertSettings(){
     if(botnetEventEl && !String(botnetEventEl.value || '').trim() && alerts.push_event_id){
       botnetEventEl.value = String(alerts.push_event_id);
     }
-    setAlertSettingsStatus('Loaded', 'ok');
     if(window.TraceDeliveryResend) window.TraceDeliveryResend.savedAlerts();
     if(window.TraceTeamsTest) window.TraceTeamsTest.settingsChanged();
+}
+
+async function loadAlertSettings(){
+  const feedback = viewFeedbackOwner('alert-settings', 'alertSettingsStatus');
+  const token = feedback?.begin('/settings');
+  const draft = settingsDraftStamp('alertsSection');
+  try{
+    alertSettingsReady = false;
+    if(window.TraceTeamsTest) window.TraceTeamsTest.settingsChanged();
+    if(window.TraceAuth && (await window.TraceAuth.ready).role !== 'admin') return;
+    const r = await fetch('/settings', {feedback:token});
+    if(!r.ok) throw Object.assign(new Error('HTTP '+r.status), {status:r.status});
+    const j = await r.json();
+    if(!feedbackCurrent(token)) return;
+    if(draft !== settingsDraftStamp('alertsSection')){
+      setAlertSettingsStatus('Load not applied — later draft retained with its original revision. Load explicitly again to discard it.', 'warn');
+      return;
+    }
+    applyAlertSettings(j.settings?.alerts || {}, j.revision);
+    setAlertSettingsStatus('Loaded', 'ok');
+    feedback?.succeed(token);
   }catch(e){
+    if(!feedbackCurrent(token)) return;
+    feedbackFailure(feedback, token, e);
     setAlertSettingsStatus('Load failed', 'err');
   }
 }
 
 async function saveAlertSettings(){
+  const feedback = viewFeedbackOwner('alert-settings', 'alertSettingsStatus');
+  const token = feedback?.begin('/settings');
+  const draft = settingsDraftStamp('alertsSection');
   const caInput = document.getElementById('misp_ca_bundle_front');
   const caPath = caInput.value.trim();
   const clearFields = selectedSecretClears('alerts');
@@ -2924,23 +3454,27 @@ async function saveAlertSettings(){
   try{
     const r = await fetch('/settings', {
       method:'POST',
+      feedback:token,
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({alerts, revision: alertRevision, clear_fields: clearFields})
     });
     const j = await r.json();
-    if(!(r.ok && j && j.status === 'ok')){
+    if(!feedbackCurrent(token)) return;
+    if(!(r.ok && j && j.status === 'ok' && Number.isSafeInteger(j.revision) && j.revision >= 0 && j.alerts && typeof j.alerts === 'object' && !Array.isArray(j.alerts))){
       throw new Error((j && j.error) ? j.error : 'save failed');
     }
-    if(vtTtlEl){
-      vtTtlEl.value = String(vtTtlDays);
-      vtTtlEl.dataset.current = String(vtTtlDays);
-    }
-    alertRevision = j.revision;
-    await loadAlertSettings();
+    // POST returns the committed redacted alerts and revision. A follow-up GET
+    // can fail or race another writer; it is not evidence for this commit.
+    const unchanged = draft === settingsDraftStamp('alertsSection');
+    if(unchanged) applyAlertSettings(j.alerts || {}, j.revision);
     const warnings = Array.isArray(j.warnings) ? j.warnings : [];
-    setAlertSettingsStatus(warnings.length ? 'Saved with warnings: '+warnings.join(', ') : 'Saved', warnings.length ? 'warn' : 'ok');
+    const saved = warnings.length ? `Saved with warnings (revision ${j.revision}): `+warnings.join(', ')+'. Runtime application may be incomplete.' : `Saved (revision ${j.revision}). No runtime apply warnings reported.`;
+    setAlertSettingsStatus(saved + (unchanged ? '' : ' Later draft retained with its original revision; Load explicitly to review the committed settings.'), warnings.length || !unchanged ? 'warn' : 'ok');
+    feedback?.succeed(token);
   }catch(e){
-    setAlertSettingsStatus('Save failed', 'err');
+    if(!feedbackCurrent(token)) return;
+    feedbackFailure(feedback, token, e, true);
+    setAlertSettingsStatus('Save failed. ' + (feedback?.snapshot().error?.message || 'Check the saved state before retrying.'), 'err');
   }
 }
 
@@ -3229,6 +3763,10 @@ function addDomainRow(obj, metadata){
   del.onclick = async ()=> { 
     if(!window.confirm(`Remove ${inp.value || 'this target'} and save the current settings?`)) return;
     const status = document.getElementById('domainSettingsStatus');
+    const feedback = viewFeedbackOwner('config-settings', 'domainSettingsStatus');
+    const token = feedback?.begin('/config');
+    const draft = settingsDraftStamp('domainSettingsSection');
+    let submitted = false;
     del.disabled = true;
     try{
       // 자동으로 저장
@@ -3240,14 +3778,20 @@ function addDomainRow(obj, metadata){
         ens_rpc_url: ((document.getElementById('ensRpcUrl') || {}).value || '').trim()
         ,DEFAULT_SNS_PROXY_HOSTS: ((document.getElementById('snsProxyHosts') || {}).value || '').split(',').map(s=>s.trim()).filter(Boolean)
       };
-      const r = await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(domainWritePayload(payload))});
+      submitted = true;
+      const r = await fetch('/config',{method:'POST',feedback:token,headers:{'Content-Type':'application/json'},body:JSON.stringify(domainWritePayload(payload))});
       const j = await r.json();
-      if(!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
-      applyDomainConfig({...j.config, revision: j.revision});
-      status.textContent = 'Removed domain and saved';
+      if(!feedbackCurrent(token)) return;
+      if(!r.ok || j?.status !== 'ok' || !Number.isSafeInteger(j.revision) || j.revision < 0 || !Array.isArray(j.config?.domains)) throw new Error(j?.error || 'Removal response could not confirm the committed configuration');
+      const unchanged = draft === settingsDraftStamp('domainSettingsSection');
+      if(unchanged) applyDomainConfig({...j.config, revision: j.revision});
+      feedback?.succeed(token);
+      status.textContent = 'Removed domain and saved'+commitWarningText(j)+(unchanged ? '' : ` (revision ${j.revision}). Later draft retained with its original revision; Load explicitly to review saved settings.`);
       log('Removed domain and saved');
     }catch(e){ 
-      status.textContent = `Remove failed: ${e.message}`;
+      if(!feedbackCurrent(token)) return;
+      feedbackFailure(feedback, token, submitted ? e : {status:400}, true);
+      status.textContent = `Remove failed: ${submitted ? (feedback?.snapshot().error?.message || e.message) : e.message}`;
       log('Remove error:'+e); 
     }finally{
       del.disabled = false;
@@ -3367,7 +3911,7 @@ document.getElementById('settingsTabCustom').onclick = ()=> showSettingsTab('cus
 document.getElementById('settingsTabAlerts').onclick = ()=> showSettingsTab('alerts');
 document.getElementById('loadAlertSettingsBtn').onclick = ()=> loadAlertSettings();
 document.getElementById('saveAlertSettingsBtn').onclick = ()=> saveAlertSettings();
-if(window.TraceTeamsTest) window.TraceTeamsTest.bind(() => alertRevision);
+if(window.TraceTeamsTest) window.TraceTeamsTest.bind(() => alertSettingsReady ? alertRevision : null);
 
 function collectDomainsFromUI(excludedRow){
   const rows = document.querySelectorAll('#domainTable tbody tr');
@@ -3475,6 +4019,9 @@ function secretInput(id, field, configured, scope){
 // Revision belongs to the displayed form, not an unrelated background read.
 let configRevision = null;
 let alertRevision = null;
+// Keep the form's revision on failed/ignored reads without enabling a real test
+// from an unconfirmed reload. This is separate from the editable draft identity.
+let alertSettingsReady = false;
 if(window.TraceDeliveryResend) window.TraceDeliveryResend.bind(() => configRevision, domainConfigIdentity);
 
 function applyDomainConfig(j){
@@ -3501,23 +4048,43 @@ function applyDomainConfig(j){
 }
 
 async function loadCfg(){
+  const feedback = viewFeedbackOwner('config-settings', 'domainSettingsStatus');
+  const token = feedback?.begin('/config');
+  const draft = settingsDraftStamp('domainSettingsSection');
+  const status = document.getElementById('domainSettingsStatus');
   if(window.TraceDeliveryResend) window.TraceDeliveryResend.invalidateConfig();
   try{
-    const r = await fetch('/config');
-    if(!r.ok){ log('Failed to load config'); return; }
+    const r = await fetch('/config', {feedback:token});
+    if(!r.ok) throw Object.assign(new Error('HTTP '+r.status), {status:r.status});
     const j = await r.json();
+    if(!feedbackCurrent(token)) return;
     if(!j) { log('Invalid config response'); return; }
+    if(draft !== settingsDraftStamp('domainSettingsSection')){
+      status.textContent = 'Load not applied — later draft retained with its original revision. Load explicitly again to discard it.';
+      return;
+    }
     applyDomainConfig(j);
+    feedback?.succeed(token);
+    status.textContent = 'Loaded saved configuration';
     log('Loaded config');
     touchOverviewTs();
-  }catch(e){ log('Config load error:'+e); }
+  }catch(e){
+    if(!feedbackCurrent(token)) return;
+    feedbackFailure(feedback, token, e);
+    status.textContent = 'Load failed. Displayed draft and revision retained.';
+    log('Config load error:'+e);
+  }
 }
 document.getElementById('load').onclick = loadCfg;
 
 document.getElementById('save').onclick = async ()=>{
   const status = document.getElementById('domainSettingsStatus');
+  const feedback = viewFeedbackOwner('config-settings', 'domainSettingsStatus');
+  const token = feedback?.begin('/config');
+  const draft = settingsDraftStamp('domainSettingsSection');
   status.textContent = 'Saving…';
   document.getElementById('save').disabled = true;
+  let submitted = false;
   try{
     const payload = {
       revision: configRevision,
@@ -3529,14 +4096,20 @@ document.getElementById('save').onclick = async ()=>{
     };
     uiOverview.configured = payload.domains.length;
     updateOverviewPanel();
-    const r = await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(domainWritePayload(payload))});
+    submitted = true;
+    const r = await fetch('/config',{method:'POST',feedback:token,headers:{'Content-Type':'application/json'},body:JSON.stringify(domainWritePayload(payload))});
     const j = await r.json();
-    if(!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
-    applyDomainConfig({...j.config, revision: j.revision});
-    status.textContent = 'Settings saved'+commitWarningText(j);
+    if(!feedbackCurrent(token)) return;
+    if(!r.ok || j?.status !== 'ok' || !Number.isSafeInteger(j.revision) || j.revision < 0 || !Array.isArray(j.config?.domains)) throw new Error(j?.error || 'Save response could not confirm the committed configuration');
+    const unchanged = draft === settingsDraftStamp('domainSettingsSection');
+    if(unchanged) applyDomainConfig({...j.config, revision: j.revision});
+    feedback?.succeed(token);
+    status.textContent = 'Settings saved'+commitWarningText(j)+(unchanged ? '' : ` (revision ${j.revision}). Later draft retained with its original revision; Load explicitly to review saved settings.`);
     log('Settings saved');
   }catch(e){
-    status.textContent = `Save failed: ${e.message}`;
+    if(!feedbackCurrent(token)) return;
+    feedbackFailure(feedback, token, submitted ? e : {status:400}, true);
+    status.textContent = `Save failed: ${submitted ? (feedback?.snapshot().error?.message || e.message) : e.message}`;
     log('Save error:'+e);
   }finally{
     document.getElementById('save').disabled = false;
@@ -3544,13 +4117,26 @@ document.getElementById('save').onclick = async ()=>{
 };
 
 document.getElementById('force').onclick = async ()=>{
+  const feedback = viewFeedbackOwner('force-resolve', 'forceResolveStatus');
+  const token = feedback?.begin('/resolve');
+  const status = document.getElementById('forceResolveStatus');
+  status.textContent = 'Requesting resolution using saved definitions…';
   try{
     const domains = collectDomainsFromUI();
-    const r = await fetch('/resolve', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({domains: domains})});
+    const r = await fetch('/resolve', {method:'POST', feedback:token, headers:{'Content-Type':'application/json'}, body: JSON.stringify({domains: domains})});
     const j = await r.json();
+    if(!feedbackCurrent(token)) return;
+    if(!r.ok || j?.requested !== true) throw Object.assign(new Error(j?.error || 'Admission not confirmed'), {status:r.ok ? undefined : r.status});
+    feedback?.succeed(token);
+    status.textContent = `Resolve request admitted${j.job_id ? ' (job '+j.job_id+')' : ''}. Completion not confirmed; inspect Status for observations.`;
     log('Force requested: '+JSON.stringify(j));
     await refreshResults();
-  }catch(e){ log('Force error:'+e); }
+  }catch(e){
+    if(!feedbackCurrent(token)) return;
+    feedbackFailure(feedback, token, e, true);
+    status.textContent = 'Force Resolve failed. '+(feedback?.snapshot().error?.message || e.message);
+    log('Force error:'+e);
+  }
 };
 
 document.getElementById('verifyBtn').onclick = async ()=>{
@@ -3842,7 +4428,7 @@ function reconcilePreparedRows(tbody, items, createRow, timeCell, commits=null){
     const signature = JSON.stringify(item.content);
     const old = previous.get(item.key);
     const row = old && old.signature === signature ? old.row : createRow(item);
-    next.set(item.key, {row, signature});
+    next.set(item.key, {row, signature, item});
     updates.push({row, text:formatUnixTsLocal(item.time)});
   }
   // Build every changed row off-DOM before touching the last-good display.
@@ -3865,6 +4451,125 @@ function reconcilePreparedRows(tbody, items, createRow, timeCell, commits=null){
     tbody._preparedRows = next;
   };
   if(commits) commits.push(commit); else commit();
+}
+
+const statusPageRows = new Map();
+let selectedTarget = null;
+function viewNode(tag, text){
+  const node = document.createElement(tag);
+  if(text !== undefined) node.textContent = text;
+  return node;
+}
+function lazyViewDetails(title, build, id){
+  const disclosure = viewNode('details');
+  if(id) disclosure.id = id;
+  disclosure.appendChild(viewNode('summary', title));
+  let body = null;
+  disclosure.addEventListener('toggle', () => {
+    if(body){ body.remove(); body = null; }
+    if(disclosure.open){ body = viewNode('div'); build(body); disclosure.appendChild(body); }
+  });
+  return disclosure;
+}
+function statusObservation(info, meta){
+  const dht = meta.dht_observation, rpc = meta.rpc_observation;
+  if(dht) return `DHT: ${dht.status || 'unknown'} · ${info.ts ? 'last-confirmed retained' : 'no confirmed record'} · bounded coverage`;
+  if(rpc) return `RPC: ${rpc.status || 'unknown'}${rpc.reason ? ' · '+rpc.reason : ''} · ${info.ts ? 'last-authenticated retained' : 'no authenticated record'}`;
+  if(meta.nxdomain_active) return 'NXDOMAIN · previous data may be retained';
+  if(meta.dns_error_only_active) return 'Latest attempts failed · retained data';
+  return info.ts ? 'Recorded result · not a live check' : 'Unknown · no observation time';
+}
+function closeTargetDetail(restoreFocus = true){
+  const previous = selectedTarget;
+  selectedTarget = null;
+  cancelHistoryRead();
+  loadHistory.lastGood = null;
+  if(previous?.controller) previous.controller.abort();
+  localFeedbackOwners.get('target-action')?.invalidate();
+  const panel = document.getElementById('targetDetail');
+  if(panel){ panel.replaceChildren(); panel.hidden = true; }
+  document.getElementById('statusLayout')?.classList.remove('has-selection');
+  if(restoreFocus && previous?.opener?.isConnected) previous.opener.focus();
+}
+function openTargetDetail(domain, opener, focus = true){
+  if(window.TraceAuth?.accessInvalidated) return;
+  const entry = statusPageRows.get(domain) || {info:{}, meta:{}, snapshot:'unknown'};
+  closeTargetDetail(false);
+  const selection = selectedTarget = {domain, ...entry, opener, controller:null};
+  const panel = document.getElementById('targetDetail');
+  const heading = viewNode('h4', domain); heading.id = 'targetDetailHeading'; heading.tabIndex = -1;
+  const close = viewNode('button', 'Close details'); close.id = 'closeTargetDetail'; close.onclick = () => closeTargetDetail();
+  const when = viewNode('p', 'Last observed: '+formatUnixTsLocal(entry.info.ts)); when.id = 'targetObserved';
+  const update = viewNode('button', 'Update selected details from current page'); update.id = 'targetDetailUpdate'; update.hidden = true;
+  update.onclick = () => openTargetDetail(domain, opener);
+  panel.append(heading, close, when, viewNode('p', 'Status snapshot: '+entry.snapshot),
+    viewNode('p', statusObservation(entry.info, entry.meta)), update);
+  panel.appendChild(lazyViewDetails('Observations, managed IPs and decoders', body => {
+    if(selectedTarget !== selection) return;
+    const info = selection.info;
+    body.appendChild(viewNode('h5', 'Managed IPs · selected target'));
+    const ips = viewNode('div'); renderPreparedValues(ips, managedIpsForResult(info)); body.appendChild(ips);
+    body.appendChild(viewNode('h5', 'Observed values'));
+    const raw = viewNode('div'); renderPreparedValues(raw, info.values); body.appendChild(raw);
+    body.appendChild(viewNode('p', 'Decoder: '+(info.method_summary || 'not reported')));
+    body.appendChild(viewNode('pre', 'Servers: '+(info.servers || []).join('\n')));
+    if(selection.meta.dht_observation || info.type === 'DHT'){
+      const evidence = viewNode('div'); renderDhtEvidence(evidence, info, selection.meta.dht_observation, domain); body.appendChild(evidence);
+    }
+    if(selection.meta.rpc_observation || info.type === 'RPC'){
+      const evidence = viewNode('div'); renderRpcEvidence(evidence, info, selection.meta.rpc_observation); body.appendChild(evidence);
+    }
+  }, 'targetEvidence'));
+  const history = viewNode('button', 'History'); history.id = 'targetHistory';
+  history.onclick = () => { if(selectedTarget === selection) loadHistory(domain); };
+  panel.appendChild(history);
+  panel.appendChild(lazyViewDetails('Raw projection and explicit actions', body => {
+    if(selectedTarget !== selection) return;
+    body.appendChild(viewNode('p', 'This is the selected prepared projection. The full legacy export below the table retains all current server raw facts.'));
+    body.appendChild(lazyViewDetails('Show complete selected JSON', raw => raw.appendChild(viewNode('pre', JSON.stringify({target:domain,...entry}, null, 2)))));
+    if(['admin','operator'].includes(window.TraceAuth?.user?.role) && (entry.info.type === 'TXT' || entry.info.record_types?.includes('TXT'))){
+      for(const [label, path] of [['Analyze TXT','/analyze'], ['Legacy TXT verify','/verify']]){
+        const button = viewNode('button', label); button.dataset.access = 'operator';
+        button.onclick = () => runSelectedTargetAction(selection, path, button);
+        body.appendChild(button);
+      }
+      const result = viewNode('pre'); result.id = 'analyzeResult'; result.setAttribute('role','status'); body.appendChild(result);
+    }
+  }));
+  panel.hidden = false;
+  document.getElementById('statusLayout').classList.add('has-selection');
+  if(focus){ heading.focus({preventScroll:true}); panel.scrollIntoView({block:'nearest'}); }
+}
+async function runSelectedTargetAction(selection, path, button){
+  if(selectedTarget !== selection) return;
+  selection.controller?.abort();
+  const controller = selection.controller = new AbortController();
+  const feedback = viewFeedbackOwner('target-action', 'analyzeResult');
+  const token = feedback?.begin(selection.domain + ':' + path);
+  const result = document.getElementById('analyzeResult');
+  result.textContent = 'Running explicit action…'; button.disabled = true;
+  const payload = path === '/verify' ? {domains:[selection.domain]} : {domain:selection.domain,
+    txt:[...new Set((selection.info.values || []).map(String))].slice(0,20).join('|')};
+  try{
+    const data = await window.TraceAuth.readJSON(path, {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(payload), signal:controller.signal, feedback:token});
+    if(selectedTarget !== selection || controller.signal.aborted) return;
+    result.textContent = JSON.stringify(data, null, 2); feedback?.succeed(token);
+  }catch(error){
+    if(selectedTarget !== selection || controller.signal.aborted) return;
+    feedbackFailure(feedback, token, error, true);
+    result.textContent = error.status === 501 ? 'Legacy verify is not implemented by this server. Use Domain Verify for an explicit precheck.'
+      : feedback?.snapshot().error?.message || 'Action failed. Check saved state before retrying.';
+  }finally{ button.disabled = false; }
+}
+function ensureTargetHistory(domain){
+  if(!selectedTarget || selectedTarget.domain !== domain) openTargetDetail(domain, null, false);
+  let box = document.getElementById('historyBox');
+  if(!box){
+    box = viewNode('div'); box.id = 'historyBox';
+    document.getElementById('targetDetail').append(viewNode('h5','History · selected target'), box);
+  }
+  return box;
 }
 
 async function refreshResults(){
@@ -3890,188 +4595,40 @@ async function refreshResults(){
         if(s) managedSet.add(s);
       });
     });
-    uiOverview.statusRows = j.results_total_count ?? (j.page && j.page.total) ?? domains.length;
-    uiOverview.managedIps = managedSet.size;
-
     const items = domains.map(d=>({key:d, time:(resultsAgg[d] || {}).ts,
       content:{info:rowContentWithoutTime(resultsAgg[d] || {}, 'ts'), meta:domainMeta[d] || {}}}));
     reconcilePreparedRows(tbody, items, item=>{
       const d = item.key;
       const info = resultsAgg[d] || {};
-      const values = Array.isArray(info.values) ? info.values : [];
-      const decodedIps = Array.isArray(info.decoded_ips) ? info.decoded_ips : [];
-      const servers = Array.isArray(info.servers) ? info.servers : [];
-      const recordTypes = Array.isArray(info.record_types) ? info.record_types.map(x=>String(x || '').toUpperCase()) : [];
-      const observation = (domainMeta[d] || {}).dht_observation;
-      const rowType = String(info.type || (observation ? 'DHT' : 'A')).toUpperCase();
-      const hasDht = rowType === 'DHT' || recordTypes.includes('DHT') || !!observation;
-      const hasRpc = rowType === 'RPC' || recordTypes.includes('RPC');
-      const hasTxt = rowType === 'TXT' || rowType === 'MIXED' || recordTypes.includes('TXT');
-
-      const tr = document.createElement('tr');
-      tr.dataset.domain = d;
-
-      const tdDomain = document.createElement('td');
-      tdDomain.textContent = d;
-      if(hasDht) tdDomain.className = 'dht-identifier';
-      else applyNxdomainLifecycleStyle(tdDomain, domainMeta[d], d);
-
-      const tdType = document.createElement('td');
-      tdType.textContent = rowType;
-
-      const tdVals = document.createElement('td');
-      renderPreparedValues(tdVals, values);
-
-      const tdDecoded = document.createElement('td');
-      renderPreparedValues(tdDecoded, decodedIps);
-
-      const tdMethod = document.createElement('td');
-      tdMethod.className = 'wrap-cell';
-      const methodSummary = String(info.method_summary || '').trim();
-      tdMethod.textContent = methodSummary || '-';
-      tdMethod.title = methodSummary || '-';
-      if(hasDht){
-        renderDhtEvidence(tdMethod, info, observation, d);
-      }
-      if(hasRpc) renderRpcEvidence(tdMethod, info, (domainMeta[d] || {}).rpc_observation);
-
-      const tdServers = document.createElement('td');
-      tdServers.className = 'wrap-cell';
-      tdServers.textContent = formatDnsServerSummary(servers);
-      tdServers.title = servers.join(', ');
-
-      const tdTs = document.createElement('td');
-      tdTs.textContent = formatUnixTsLocal(info.ts);
-
-      const tdActions = document.createElement('td');
-
-      const histBtn = document.createElement('button');
-      histBtn.className = 'action-btn';
-      histBtn.textContent = 'History';
-      histBtn.title = 'View history for this domain';
-      histBtn.onclick = ()=> loadHistory(d);
-      tdActions.appendChild(histBtn);
-
-      if(hasTxt){
-        const sampleTxt = Array.from(new Set(values.map(v=>String(v || '').trim()).filter(Boolean))).slice(0, 20).join('|');
-
-        const analyzeBtn = document.createElement('button');
-        analyzeBtn.className = 'action-btn';
-        analyzeBtn.textContent = 'Analyze';
-        analyzeBtn.title = 'Analyze TXT decoding methods';
-        analyzeBtn.onclick = async ()=>{
-          try{
-            const rr = await fetch('/analyze', {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({domain: d, txt: sampleTxt})
-            });
-            const jj = await rr.json();
-            renderAnalyzeResult(jj);
-          }catch(e){
-            document.getElementById('analyzeResult').textContent = 'Analyze error: ' + e;
-          }
-        };
-        tdActions.appendChild(analyzeBtn);
-
-        const verifyBtn = document.createElement('button');
-        verifyBtn.className = 'action-btn';
-        verifyBtn.textContent = 'Verify';
-        verifyBtn.title = 'Verify this domain\'s TXT records';
-        verifyBtn.onclick = async ()=>{
-          const next = tr.nextElementSibling;
-          if(next && next.classList && next.classList.contains('verify-row') && next.dataset && next.dataset.domain === d){
-            next.remove();
-            return;
-          }
-          const vtr = document.createElement('tr');
-          vtr.className = 'verify-row';
-          vtr.dataset.domain = d;
-          const vtd = document.createElement('td');
-          vtd.colSpan = 8;
-          vtd.textContent = 'Verifying ' + d + '...';
-          vtr.appendChild(vtd);
-          tr.parentNode.insertBefore(vtr, tr.nextSibling);
-          try{
-            const vr = await fetch('/verify', {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({domains: [d]})
-            });
-            const vj = await vr.json();
-            vtd.innerHTML = '';
-            if(vj && vj.results && vj.results[d]){
-              const data = vj.results[d];
-              if(data.error){
-                vtd.textContent = 'Error: ' + data.error;
-              } else {
-                const analysis = data.analysis || {};
-                const keys = Object.keys(analysis).sort((a, b)=>(analysis[b].score || 0) - (analysis[a].score || 0));
-                keys.forEach(k=>{
-                  const infoRow = analysis[k];
-                  const h = document.createElement('div');
-                  h.style.fontWeight = '600';
-                  h.style.marginTop = '10px';
-                  h.textContent = `${k} — score=${infoRow.score} raw=${infoRow.raw_count}`;
-                  vtd.appendChild(h);
-                  const ips = infoRow.detailed_ips || [];
-                  if(!ips.length){
-                    const none = document.createElement('div');
-                    none.textContent = 'No decoded IPs';
-                    vtd.appendChild(none);
-                  } else {
-                    const tbl = document.createElement('table');
-                    tbl.style.width = '100%';
-                    tbl.style.marginTop = '6px';
-                    const thr = document.createElement('tr');
-                    thr.innerHTML = '<th>IP</th><th>Valid</th><th>VT(malicious/suspicious)</th><th>Summary</th>';
-                    tbl.appendChild(thr);
-                    ips.forEach(it=>{
-                      const trr = document.createElement('tr');
-                      const tdIp = document.createElement('td');
-                      tdIp.textContent = it.ip || '';
-                      const tdV = document.createElement('td');
-                      tdV.textContent = it.valid ? 'YES' : 'NO';
-                      const tdVT = document.createElement('td');
-                      const tdSum = document.createElement('td');
-                      if(it.vt){
-                        tdVT.textContent = `${it.vt.malicious || 0}/${it.vt.suspicious || 0}`;
-                        tdSum.textContent = `ASN:${it.vt.asn || ''} ${it.vt.country || ''}`;
-                      } else {
-                        tdVT.textContent = '-';
-                        tdSum.textContent = '-';
-                      }
-                      trr.appendChild(tdIp);
-                      trr.appendChild(tdV);
-                      trr.appendChild(tdVT);
-                      trr.appendChild(tdSum);
-                      tbl.appendChild(trr);
-                    });
-                    vtd.appendChild(tbl);
-                  }
-                });
-              }
-            } else {
-              vtd.textContent = 'No data returned';
-            }
-          }catch(e){
-            vtd.textContent = 'Verify error: ' + e;
-          }
-        };
-        tdActions.appendChild(verifyBtn);
-      }
-
-      tr.appendChild(tdDomain);
-      tr.appendChild(tdType);
-      tr.appendChild(tdVals);
-      tr.appendChild(tdDecoded);
-      tr.appendChild(tdMethod);
-      tr.appendChild(tdServers);
-      tr.appendChild(tdTs);
-      tr.appendChild(tdActions);
+      const meta = domainMeta[d] || {};
+      const tr = viewNode('tr'); tr.dataset.domain = d;
+      const name = viewNode('td', d); name.className = 'target-name';
+      applyNxdomainLifecycleStyle(name, meta, d);
+      const observation = viewNode('td', statusObservation(info, meta)); observation.className = 'observation-cell';
+      const ips = managedIpsForResult(info);
+      const managed = viewNode('td', ips.length ? ips.slice(0,3).join(' · ') + (ips.length > 3 ? ` · +${ips.length-3} (see details)` : '') : 'None recorded');
+      managed.className = 'managed-summary';
+      const action = viewNode('td');
+      const details = viewNode('button', 'Details'); details.setAttribute('aria-controls','targetDetail');
+      details.onclick = () => openTargetDetail(d, details);
+      action.appendChild(details);
+      for(const cell of [name, viewNode('td', info.type || (meta.dht_observation ? 'DHT' : 'Unknown')), observation,
+        managed, viewNode('td', formatUnixTsLocal(info.ts)), action]) tr.appendChild(cell);
       return tr;
-    }, 6);
-    touchOverviewTs();
+    }, 4);
+    statusPageRows.clear();
+    for(const d of domains.slice(0,200)) statusPageRows.set(d, {info:resultsAgg[d] || {}, meta:domainMeta[d] || {},
+      snapshot:formatUnixTsLocal(j.snapshot?.generated_at)});
+    if(selectedTarget){
+      const current = statusPageRows.get(selectedTarget.domain);
+      if(!current) closeTargetDetail(false);
+      else if(JSON.stringify(current.info) !== JSON.stringify(selectedTarget.info) || JSON.stringify(current.meta) !== JSON.stringify(selectedTarget.meta)){
+        document.getElementById('targetDetailUpdate').hidden = false;
+      }
+    }
+    uiOverview.statusRows = j.results_total_count ?? (j.page && j.page.total) ?? domains.length;
+    uiOverview.managedIps = managedSet.size;
+    touchOverviewTs('status');
     completePreparedRender(owner);
   }catch(e){
     failSectionRefresh(owner, e);
@@ -4080,56 +4637,121 @@ async function refreshResults(){
   }
 }
 
-async function loadHistory(domain){
-  try{
-    const r = await fetch('/history?domain='+encodeURIComponent(domain));
-    if(!r.ok) { log('history load failed'); return; }
-    const j = await r.json();
-    const el = document.getElementById('historyBox');
-    // j.history is in the format { meta: {...}, events: [...], current: {...} }
-    const hist = j.history || {};
-    const events = hist.events || [];
-    const meta = hist.meta || {};
-    
-    if(!events || events.length === 0) {
-      el.textContent = 'No history for ' + domain + 
-        (meta.first_seen ? '\nFirst seen: ' + formatUnixTsLocal(meta.first_seen) : '') +
-        (meta.last_changed ? '\nLast changed: ' + formatUnixTsLocal(meta.last_changed) : '');
-      return;
+function cancelHistoryRead(){
+  const previous = loadHistory.active;
+  if(previous){
+    previous.controller.abort(); previous.feedback?.invalidate();
+    if(selectedTarget === previous.selection){
+      const status = document.getElementById('historyStatus');
+      if(status) status.textContent = (previous.selection.historyFailure || '') +
+        ' History read stopped. Select History again to retry.' + (loadHistory.lastGood ? ' Previous history is stale.' : '');
     }
-    
-    const lines = ['History for ' + domain];
-    if(meta.first_seen) lines.push('First seen: ' + formatUnixTsLocal(meta.first_seen));
-    if(meta.last_changed) lines.push('Last changed: ' + formatUnixTsLocal(meta.last_changed));
-    lines.push('---');
-    
-    events.forEach(h=>{
-      const t = formatUnixTsLocal(h.ts);
-      if(h.new && h.old){
-        if(String(h.type).toUpperCase() === 'RPC'){
-          lines.push(`${t} [${h.server}] (${h.type}) C2 ${ (h.old.decoded_endpoints||[]).join(',') || '(none)' } -> ${ (h.new.decoded_endpoints||[]).join(',') || '(none)' }`);
-          for(const side of ['old', 'new']){
-            const snapshot = h[side];
-            lines.push(`  ${side} raw ABI: ${ (snapshot.values||[]).join(',') }`);
-            lines.push(`  ${side} RPC provenance (auxiliary roles are not C2): ${JSON.stringify({profile:snapshot.rpc_profile, record:snapshot.rpc_record||{}})}`);
-          }
-        } else {
-          lines.push(`${t} [${h.server}] (${h.type}) ${ (h.old.values||[]).join(',') } -> ${ (h.new.values||[]).join(',') }`);
-        }
-      } else if(h.values){
-        lines.push(`${t} [${h.server}] (${h.type}) ${ (h.values||[]).join(',') }`);
-      } else {
-        lines.push(JSON.stringify(h));
+  }
+  loadHistory.active = null;
+}
+
+function historyEventText(h){
+  const t = formatUnixTsLocal(h.ts);
+  if(h.new && h.old){
+    if(String(h.type).toUpperCase() === 'RPC'){
+      const lines = [`${t} [${h.server}] (${h.type}) C2 ${(h.old.decoded_endpoints||[]).join(',') || '(none)'} -> ${(h.new.decoded_endpoints||[]).join(',') || '(none)'}`];
+      for(const side of ['old','new']){
+        const snapshot = h[side];
+        lines.push(`  ${side} raw ABI: ${(snapshot.values||[]).join(',')}`);
+        lines.push(`  ${side} RPC provenance (auxiliary roles are not C2): ${JSON.stringify({profile:snapshot.rpc_profile,record:snapshot.rpc_record||{}})}`);
       }
+      return lines.join('\n');
+    }
+    return `${t} [${h.server}] (${h.type}) ${(h.old.values||[]).join(',')} -> ${(h.new.values||[]).join(',')}`;
+  }
+  return h.values ? `${t} [${h.server}] (${h.type}) ${(h.values||[]).join(',')}` : JSON.stringify(h);
+}
+function historyPageText(domain, hist, offset = 0){
+  const events = hist.events || [], meta = hist.meta || {};
+  const lines = [(events.length ? 'History for ' : 'No history for ') + domain];
+  if(meta.first_seen) lines.push('First seen: '+formatUnixTsLocal(meta.first_seen));
+  if(meta.last_changed) lines.push('Last changed: '+formatUnixTsLocal(meta.last_changed));
+  if(events.length) lines.push('---', ...events.slice(offset,offset+50).map(historyEventText));
+  return lines.join('\n');
+}
+function renderHistoryPage(record, offset = 0){
+  const box = document.getElementById('historyBox');
+  const selection = selectedTarget;
+  if(!box || !selection || selection !== record.selection || window.TraceAuth?.accessInvalidated) return;
+  const events = record.history.events || [];
+  const fragment = document.createDocumentFragment();
+  const summary = viewNode('p', events.length ? `History for ${record.domain} · Events ${offset+1}–${Math.min(offset+50,events.length)} of ${events.length}` : historyPageText(record.domain, record.history));
+  fragment.appendChild(summary);
+  fragment.appendChild(viewNode('p', 'Entire history response received by the browser; pages bound rendering only, not server response size. Last read (browser): '+record.readAt));
+  for(const [id,label,next] of [['historyPrev','Previous events',offset-50],['historyNext','Next events',offset+50]]){
+    const button = viewNode('button',label); button.id=id; button.disabled=next<0 || next>=events.length;
+    button.onclick = () => {
+      if(button.isConnected && !button.disabled && selectedTarget === selection && loadHistory.lastGood === record){
+        renderHistoryPage(record,next);
+        const same = document.getElementById(id);
+        (same?.disabled ? document.getElementById(id === 'historyNext' ? 'historyPrev' : 'historyNext') : same)?.focus();
+      }
+    };
+    fragment.appendChild(button);
+  }
+  events.slice(offset,offset+50).forEach((event,index) => {
+    const detail = lazyViewDetails(`${formatUnixTsLocal(event.ts)} · ${event.type || 'Event'} · ${event.server || 'source unknown'}`, body => {
+      if(detail.isConnected && selectedTarget === selection && loadHistory.lastGood === record && !window.TraceAuth?.accessInvalidated) body.appendChild(viewNode('pre',historyEventText(event)));
     });
-    el.textContent = lines.join('\n');
-  }catch(e){ log('history error:'+e); }
+    detail.className='history-event'; detail.dataset.index=String(offset+index); fragment.appendChild(detail);
+  });
+  // Request outcome belongs to the selected target, not the cached event page.
+  // Keep its live node mounted while paging, including during an in-flight read.
+  let page = box.querySelector('.history-page');
+  if(!page){ page = viewNode('div'); page.className = 'history-page'; box.appendChild(page); }
+  page.replaceChildren(fragment);
+}
+
+async function loadHistory(domain){
+  if(window.TraceAuth?.accessInvalidated) return;
+  cancelHistoryRead();
+  const el = ensureTargetHistory(domain);
+  const feedback = viewFeedbackOwner('history', 'historyBox');
+  const selection = selectedTarget;
+  const owner = {domain, selection, controller:new AbortController(), feedback, token:feedback?.begin(domain)};
+  const current = () => loadHistory.active === owner && selectedTarget === selection && el.isConnected &&
+    !owner.controller.signal.aborted && feedbackCurrent(owner.token) && !window.TraceAuth?.accessInvalidated;
+  loadHistory.active = owner;
+  const retained = loadHistory.lastGood?.domain === domain ? loadHistory.lastGood : null;
+  let status = document.getElementById('historyStatus');
+  if(!status){ status=viewNode('p'); status.id='historyStatus'; status.setAttribute('role','status'); el.appendChild(status); }
+  status.textContent = (selection.historyFailure || '') + ` Loading history for ${domain}…` + (retained ? ' Previous history is stale.' : '');
+  try{
+    const j = await window.TraceAuth.readJSON('/history?domain='+encodeURIComponent(domain),
+      {signal:owner.controller.signal, feedback:owner.token});
+    if(!current()) return;
+    const hist = j?.history;
+    if(!hist || typeof hist !== 'object' || Array.isArray(hist) || !Array.isArray(hist.events ?? [])) throw new Error('Invalid history');
+    const record = {domain, selection, history:hist, readAt:new Date().toISOString()};
+    renderHistoryPage(record);
+    loadHistory.lastGood = record;
+    selection.historyFailure = '';
+    status.textContent = 'History for ' + domain;
+    feedback?.succeed(owner.token);
+  }catch(e){
+    if(!current()) return;
+    feedbackFailure(feedback, owner.token, e);
+    selection.historyFailure = `History read failed for ${domain}. Select History again to retry.` +
+      (retained ? ' Previous history is stale.' : ' No successful history read for this target.');
+    status.textContent = selection.historyFailure;
+  }finally{
+    if(loadHistory.active === owner) loadHistory.active = null;
+  }
 }
 
 document.getElementById('doQuery').onclick = async ()=>{
   const v = document.getElementById('queryValue').value.trim();
   await runQuery(v);
 };
+document.getElementById('cancelQuery').onclick = ()=>cancelQuery();
+document.getElementById('queryValue').addEventListener('input', ()=>{
+  if(currentQuery) cancelQuery('Input changed; previous results belong to their labeled query and may be stale. Search explicitly.');
+});
 
 
 
@@ -4157,6 +4779,38 @@ function updateIpsMeta(j){
   el.textContent = txt;
 }
 
+function openIpDetail(section, item, opener){
+  if(window.TraceAuth?.accessInvalidated || getActiveSectionId() !== section || !opener?.isConnected) return;
+  const row = opener.closest('tr'), tbody = row?.parentElement;
+  const accepted = tbody?._preparedRows?.get(item.ip);
+  if(accepted?.row !== row || !accepted?.item.value) return;
+  // Timestamp-only refreshes reuse the row and its controls, not the old data.
+  item = accepted.item.value;
+  document.getElementById('ipDetail')?.remove();
+  const panel = viewNode('aside'); panel.id='ipDetail'; panel.className='selection-detail';
+  const current = () => panel.isConnected && opener.isConnected && getActiveSectionId() === section &&
+    !window.TraceAuth?.accessInvalidated && tbody._preparedRows?.get(item.ip)?.row === row;
+  const heading = viewNode('h4',item.ip); heading.tabIndex=-1;
+  const close = viewNode('button','Close IP details'); close.onclick=()=>{panel.remove();if(opener.isConnected)opener.focus();};
+  panel.append(heading, close, viewNode('p','Last observed: '+formatUnixTsLocal(item.last_ts)),
+    viewNode('p',`Retained occurrences: ${item.count ?? 'unknown'}; not independent queries or infections.`),
+    viewNode('pre','Related targets:\n'+(item.domains||[]).join('\n')),
+    viewNode('p',item.vt ? `VT M/S: ${item.vt.malicious ?? 'unknown'}/${item.vt.suspicious ?? 'unknown'} · ASN: ${item.vt.asn ?? 'unknown'} · ${item.vt.country || 'country unknown'}` : 'No VT result in this accepted page.'));
+  panel.appendChild(lazyViewDetails('Source / AS / VT record',body=>{
+    if(current()) body.appendChild(viewNode('pre',JSON.stringify(item,null,2)));
+  }));
+  if(isIPv4(item.ip)){
+    const query=viewNode('button','Query this IPv4 address (local + MISP)'); query.dataset.access='operator';
+    query.hidden=window.TraceAuth?.user?.role==='viewer';
+    query.onclick=()=>{if(current())openQueryForValue(item.ip);}; panel.appendChild(query);
+  }
+  document.getElementById(section).appendChild(panel); heading.focus(); panel.scrollIntoView({block:'nearest'});
+}
+function ipDetailButton(section, item){
+  const cell=viewNode('td'), button=viewNode('button','Details');
+  button.onclick=()=>openIpDetail(section,item,button); cell.appendChild(button); return cell;
+}
+
 async function refreshIPs(){
   const owner = beginSectionRefresh('ips');
   if(!owner) return;
@@ -4168,9 +4822,6 @@ async function refreshIPs(){
     const arr = j.ips || [];
     if(!Array.isArray(arr)) throw new Error('Invalid IP page');
 
-    // overview counts should reflect total, not just the current page
-    uiOverview.allIps = j.all_ips_total_count ?? j.ips_total_count ?? arr.length;
-    updateOverviewPanel();
 
     const items = arr.map(it=>({key:it.ip, time:it.last_ts, content:{includeVT, info:rowContentWithoutTime(it, 'last_ts')}, value:it}));
     reconcilePreparedRows(tbody, items, item=>{
@@ -4189,10 +4840,8 @@ async function refreshIPs(){
       tdDomains.textContent = domains.join(', ');
       tdDomains.title = domains.join(', ');
 
-      const tdCount = document.createElement('td'); tdCount.textContent = it.count || 0;
       const tdTs = document.createElement('td'); tdTs.textContent = formatUnixTsLocal(it.last_ts);
       const tdVtScore = document.createElement('td');
-      const tdVtCtx = document.createElement('td');
       const vt = it.vt || null;
       if(vt){
         const m = Number(vt.malicious || 0);
@@ -4203,21 +4852,22 @@ async function refreshIPs(){
         else if(s > 0) badge.classList.add('mid');
         badge.textContent = `${m}/${s}`;
         tdVtScore.appendChild(badge);
-        tdVtCtx.textContent = `ASN:${vt.asn || '-'} ${vt.country || '-'}`;
+
       } else {
         tdVtScore.textContent = includeVT ? '-' : 'off';
-        tdVtCtx.textContent = includeVT ? '-' : 'VT disabled';
+
       }
 
       tr.appendChild(tdIp);
       tr.appendChild(tdDomains);
-      tr.appendChild(tdCount);
       tr.appendChild(tdTs);
       tr.appendChild(tdVtScore);
-      tr.appendChild(tdVtCtx);
+      tr.appendChild(ipDetailButton('ips',it));
       return tr;
-    }, 3);
+    }, 2);
 
+    uiOverview.allIps = j.all_ips_total_count ?? j.ips_total_count ?? arr.length;
+    updateOverviewPanel();
     updateIpsMeta(j);
     touchOverviewTs();
     completePreparedRender(owner);
@@ -4265,8 +4915,7 @@ async function refreshValidIPs(){
     if(!Array.isArray(arr)) throw new Error('Invalid IP page');
     // display only syntactically valid IPs (backend also provides 'valid')
     const validOnly = arr.filter(it => it && it.valid);
-    uiOverview.allIps = j.all_ips_total_count ?? uiOverview.allIps;
-    uiOverview.validIps = j.ips_total_count ?? (j.page && j.page.total) ?? validOnly.length;
+
     const items = validOnly.map(it=>({key:it.ip, time:it.last_ts, content:rowContentWithoutTime(it, 'last_ts'), value:it}));
     reconcilePreparedRows(tbody, items, item=>{
       const it = item.value;
@@ -4279,12 +4928,15 @@ async function refreshValidIPs(){
         tdIp.onclick = ()=> openQueryForValue(it.ip);
       }
       const tdDomains = document.createElement('td'); tdDomains.textContent = (it.domains||[]).join(', ');
-      const tdCount = document.createElement('td'); tdCount.textContent = it.count || 0;
       const tdTs = document.createElement('td'); tdTs.textContent = formatUnixTsLocal(it.last_ts);
       const tdValid = document.createElement('td'); tdValid.textContent = it.valid ? 'YES' : 'NO';
-      tr.appendChild(tdIp); tr.appendChild(tdDomains); tr.appendChild(tdCount); tr.appendChild(tdTs); tr.appendChild(tdValid);
+      tr.appendChild(tdIp); tr.appendChild(tdDomains); tr.appendChild(tdTs); tr.appendChild(tdValid);
+      tr.appendChild(ipDetailButton('validips',it));
       return tr;
-    }, 3);
+    }, 2);
+    uiOverview.allIps = j.all_ips_total_count ?? uiOverview.allIps;
+    uiOverview.validIps = j.ips_total_count ?? (j.page && j.page.total) ?? validOnly.length;
+    updateOverviewPanel();
     touchOverviewTs();
     completePreparedRender(owner);
   }catch(e){ failSectionRefresh(owner, e); }
@@ -4437,6 +5089,11 @@ window.addEventListener('load', ()=>{
   const includeVtEl = document.getElementById('ips_include_vt');
   if(includeVtEl){
     includeVtEl.addEventListener('change', ()=>{ refreshIPs(); });
+  }
+  const manageDomainsBtn = document.getElementById('domainAnalysisManageBtn');
+  if(manageDomainsBtn){
+    manageDomainsBtn.onclick = ()=>setDomainAnalysisManageMode(!domainAnalysisManageMode);
+    window.TraceAuth.ready.then(()=>{ manageDomainsBtn.hidden = !canManageDomainAnalysis(); }).catch(()=>{});
   }
   const domainAnalysisRefreshBtn = document.getElementById('refreshDomainAnalysisBtn');
   if(domainAnalysisRefreshBtn){
@@ -4651,6 +5308,7 @@ function setIpIntelInputValue(value){
   if(!input) return false;
   const nextValue = String(value == null ? '' : value);
   if(String(input.value || '') === nextValue) return false;
+  cancelIpIntelInputReads(false);
   input.value = nextValue;
   updateIpIntelInputStats();
   renderMergedIpIntelHints();
@@ -4861,7 +5519,8 @@ function markIpRelationshipResultsStale(){
   const banner = document.getElementById('ipRelQualityBanner');
   if(banner){
     if(banner.dataset) banner.dataset.state = 'stale';
-    banner.textContent = 'Inputs changed — these results are from the previous run. Run the analysis again before making a decision.';
+    const quality=buildIpRelationshipResultModel(window.IP_REL_LAST_SUCCESS).quality;
+    banner.textContent = 'Inputs changed — these results are from the previous run. Run the analysis again before making a decision. Previous run quality: '+quality.label+' '+quality.detail;
   }
   return true;
 }
@@ -4875,15 +5534,17 @@ function cancelActiveIpRelationshipAnalysis(){
   if(jobId && !ipRelCancelRequestedJobs.has(jobId)){
     ipRelCancelRequestedJobs.add(jobId);
     void cancelIpRelationshipJob(jobId).then(cancelled=>{
-      if(cancelled || requestSeq !== ipRelAnalyzeSeq) return;
-      controller.serverCancelUnconfirmed = true;
+      if(requestSeq !== ipRelAnalyzeSeq || controller.browserDetached) return;
+      controller.serverCancelConfirmed = cancelled;
+      controller.serverCancelUnconfirmed = !cancelled;
       setIpRelationshipRunState(
         'cancelled',
-        'Client polling stopped, but server cancellation could not be confirmed.'
+        cancelled ? 'Server cancellation confirmed. Previous results, if any, belong to the previous successful run.'
+          : 'Client polling stopped, but server cancellation could not be confirmed.'
       );
     });
   }
-  setIpRelationshipRunState('cancelled');
+  setIpRelationshipRunState('cancelled','Browser polling stopped; server cancellation not yet confirmed.');
   renderIpRelationshipError(
     document.querySelector('#ipRelPairsTable tbody'),
     document.querySelector('#ipRelClustersTable tbody'),
@@ -4914,6 +5575,7 @@ function renderIpRelationshipProductSummary(result){
 
 function renderFilteredIpRelationshipResults(){
   if(!window.IP_REL_CACHE) return;
+  closeIpRelationshipEvidence(false);
   const filter = document.getElementById('ipRelFilterInput');
   const filtered = filterIpRelationshipResults(window.IP_REL_CACHE, (filter || {}).value);
   renderIpRelationshipPairsTable(document.querySelector('#ipRelPairsTable tbody'), filtered.pairs);
@@ -4954,6 +5616,18 @@ function safeLocalStorageSet(key, value){
 }
 
 function setIpRelView(name){
+  closeIpRelationshipEvidence(false);
+  if(name !== 'graph'){
+    resetIpRelVisualCaches();
+    const root=document.getElementById('ipRelGraph'); if(root) root.textContent='';
+    const details=document.getElementById('ipRelGraphDetails'); if(details) details.textContent='';
+  }
+  if(name !== 'map') clearIpRelMapMarkers();
+  if(name !== 'table'){
+    for(const selector of ['#ipRelPairsTable tbody','#ipRelClustersTable tbody']){
+      const body=document.querySelector(selector); if(body) body.textContent='';
+    }
+  }else if(window.IP_REL_CACHE) renderFilteredIpRelationshipResults();
   const table = document.getElementById('ipRelTableView');
   const graph = document.getElementById('ipRelGraphView');
   const map = document.getElementById('ipRelMapView');
@@ -5285,6 +5959,7 @@ function renderIpRelGraphFromCache(){
   }
 
   cy.on('tap', 'node', (evt)=>{
+    if(cache !== window.IP_REL_CACHE || cy !== window.IP_REL_GRAPH) return;
     const d = evt.target.data();
     const f = getIpFeature(d.id) || {};
     const out = {
@@ -5310,6 +5985,7 @@ function renderIpRelGraphFromCache(){
   });
 
   cy.on('tap', 'edge', (evt)=>{
+    if(cache !== window.IP_REL_CACHE || cy !== window.IP_REL_GRAPH) return;
     const d = evt.target.data();
     const out = {
       type: 'pair',
@@ -5367,6 +6043,9 @@ async function loadWorldGeoJson(){
 }
 
 function clearIpRelMapMarkers(){
+  const root=document.getElementById('ipRelMap');
+  if(root){root._viewGeneration=(root._viewGeneration || 0)+1;root.textContent='';}
+  const summary=document.getElementById('ipRelMapSummary'); if(summary) summary.textContent='';
   try{
     (window.IP_REL_MAP_MARKERS || []).forEach(m=>{ try{ m.remove(); }catch(e){} });
   }catch(e){}
@@ -5514,6 +6193,8 @@ async function renderIpRelMapFromCache(){
   const cache = window.IP_REL_CACHE;
   const el = document.getElementById('ipRelMap');
   if(!el) return;
+  const generation=el._viewGeneration;
+  const current=()=>cache===window.IP_REL_CACHE && generation===el._viewGeneration && !document.getElementById('ipRelMapView')?.hidden;
   if(!cache || !Array.isArray(cache.country_summary)){
     renderIpRelCountrySummary([]);
     window.IP_REL_MAP_SVG = null;
@@ -5526,6 +6207,7 @@ async function renderIpRelMapFromCache(){
   renderIpRelCountrySummary(rows);
 
   const centroids = await loadCountryCentroids();
+  if(!current()) return;
   if(!centroids){
     window.IP_REL_MAP_SVG = null;
     window.IP_REL_MAP_SIGNATURE = '';
@@ -5534,6 +6216,7 @@ async function renderIpRelMapFromCache(){
   }
 
   const world = await loadWorldGeoJson();
+  if(!current()) return;
   if(!world || !Array.isArray(world.features)){
     window.IP_REL_MAP_SVG = null;
     window.IP_REL_MAP_SIGNATURE = '';
@@ -5608,6 +6291,7 @@ async function renderIpRelMapFromCache(){
     circle.appendChild(title);
 
     const activateCountry = async ()=>{
+      if(!current()) return;
       const ipFeat = cache.ip_features || {};
       const ips = Object.keys(ipFeat).filter(ip=> String((ipFeat[ip]||{}).country||'').toUpperCase() === cc);
       setIpIntelInputValue(ips.join('\n'));
@@ -5666,14 +6350,20 @@ function wireIpRelViewButtons(){
 }
 
 function wireIpRelationshipProductControls(){
+  for(const id of ['ipIntelEvidence','ipIntelRaw']){
+    document.getElementById(id)?.addEventListener('toggle',()=>renderIpIntelCachedEvidence());
+  }
   const input = document.getElementById('ipIntelInput');
   const cancel = document.getElementById('cancelIpRelationshipBtn');
   const filter = document.getElementById('ipRelFilterInput');
   const exportButton = document.getElementById('exportIpRelationshipBtn');
   if(input) input.addEventListener('input', ()=>{
+    cancelIpIntelInputReads();
+    setIpIntelResultState('stale','Input changed. Previous per-IP data, if present, is stale; enrich explicitly.');
     updateIpIntelInputStats();
     markIpRelationshipResultsStale();
   });
+  document.getElementById('ipIntelMispEventId')?.addEventListener('input',()=>cancelIpIntelInputReads());
   ['ipIntelIncludeVt', 'ipIntelVtBudget', 'ipIntelVtWorkers'].forEach(id=>{
     const control = document.getElementById(id);
     if(!control) return;
@@ -5707,6 +6397,7 @@ function setIpRelPairsPanelVisible(visible, options){
     btn.textContent = txt;
     btn.setAttribute('aria-expanded', isVisible ? 'true' : 'false');
   }
+  if(window.IP_REL_CACHE) renderFilteredIpRelationshipResults();
 }
 
 function wireIpRelPairsToggle(){
@@ -6017,9 +6708,32 @@ function formatPairAssessment(pair){
   };
 }
 
+let ipRelationshipEvidenceOwner = null;
+function closeIpRelationshipEvidence(restoreFocus = true){
+  const old = ipRelationshipEvidenceOwner; ipRelationshipEvidenceOwner = null;
+  const root = document.getElementById('ipRelEvidence');
+  if(root){root.replaceChildren();root.hidden=true;}
+  if(restoreFocus && old?.button?.isConnected) old.button.focus();
+}
+function openIpRelationshipEvidence(title, record, button, cache, generation){
+  if(cache !== window.IP_REL_CACHE || generation !== ipRelAnalyzeSeq) return;
+  closeIpRelationshipEvidence(false);
+  const root=document.getElementById('ipRelEvidence'); if(!root) return;
+  ipRelationshipEvidenceOwner={cache,generation,button};
+  const close=viewNode('button','Close evidence'); close.onclick=()=>closeIpRelationshipEvidence();
+  root.appendChild(close);
+  root.appendChild(viewNode('h4',title));
+  root.appendChild(viewNode('p','Cached evidence from the accepted run. Inspecting does not change inputs or issue provider requests.'));
+  root.appendChild(viewNode('pre',JSON.stringify(record,null,2)));
+  root.hidden=false;
+  close.focus();
+}
+
 function renderIpRelationshipPairsTable(tbody, pairs){
   if(!tbody) return;
   tbody.innerHTML = '';
+  if(document.getElementById('ipRelPairsPanel')?.style.display === 'none') return;
+  const cache=window.IP_REL_CACHE, generation=ipRelAnalyzeSeq;
   const allPairs = Array.isArray(pairs) ? pairs : [];
   if(!allPairs.length){
     setSummaryMessage(tbody, 4, 'No strong pairs found (try lowering min score)');
@@ -6070,20 +6784,12 @@ function renderIpRelationshipPairsTable(tbody, pairs){
     const evMain = document.createElement('div');
     evMain.className = 'evidence-main';
     evMain.textContent = summarizeEvidence(ev);
-    const evSub = document.createElement('div');
-    evSub.className = 'evidence-sub';
-    evSub.textContent = formatEvidenceDetails(ev);
     tdE.appendChild(evMain);
-    if(evSub.textContent !== '-'){
-      tdE.appendChild(evSub);
-    }
-    if(it && it.gate_reason){
-      const evNote = document.createElement('div');
-      evNote.className = 'evidence-note';
-      evNote.textContent = `gate: ${String(it.gate_reason)}`;
-      tdE.appendChild(evNote);
-    }
-    tdE.title = formatEvidenceDetails(ev);
+    const inspect = document.createElement('button');
+    inspect.type = 'button'; inspect.textContent = 'Inspect pair';
+    inspect.setAttribute('aria-label',`Inspect pair ${a} and ${b}`);
+    inspect.onclick = ()=>openIpRelationshipEvidence(`${a} ↔ ${b}`,it,inspect,cache,generation);
+    tdE.appendChild(inspect);
 
     tr.appendChild(tdA); tr.appendChild(tdB); tr.appendChild(tdS); tr.appendChild(tdE);
     frag.appendChild(tr);
@@ -6097,6 +6803,7 @@ function renderIpRelationshipPairsTable(tbody, pairs){
 function renderIpRelationshipClustersTable(tbody, clusters, vtEnabled){
   if(!tbody) return;
   tbody.innerHTML = '';
+  const cache=window.IP_REL_CACHE, generation=ipRelAnalyzeSeq;
   const allClusters = (Array.isArray(clusters) ? clusters : []).slice().sort((a, b)=>{
     const aMulti = Number((a && a.size) || 0) >= 2 ? 1 : 0;
     const bMulti = Number((b && b.size) || 0) >= 2 ? 1 : 0;
@@ -6138,13 +6845,17 @@ function renderIpRelationshipClustersTable(tbody, clusters, vtEnabled){
     const clusterButton = document.createElement('button');
     clusterButton.type = 'button';
     clusterButton.className = 'table-link-button';
-    clusterButton.textContent = String(idx + 1);
+    clusterButton.textContent = `Analyze cluster ${idx + 1}`;
     clusterButton.setAttribute('aria-label', `Analyze cluster ${idx + 1}, ${ips.length} IPs`);
     clusterButton.title = fp.length
       ? `Analyze this cluster in Per-IP Details\n${fp.join(' | ')}`
       : 'Analyze this cluster in Per-IP Details';
     clusterButton.onclick = activateCluster;
     tdId.appendChild(clusterButton);
+    const inspect = document.createElement('button');
+    inspect.type='button'; inspect.textContent=`Inspect cluster ${idx + 1}`;
+    inspect.onclick=()=>openIpRelationshipEvidence(`Cluster ${idx + 1}`,c,inspect,cache,generation);
+    tdId.appendChild(inspect);
 
     tr.appendChild(tdId); tr.appendChild(tdSz); tr.appendChild(tdCoh); tr.appendChild(tdAsn); tr.appendChild(tdOwn); tr.appendChild(tdCty); tr.appendChild(tdCsp); tr.appendChild(tdVt);
     frag.appendChild(tr);
@@ -6184,7 +6895,8 @@ function restorePreviousIpRelationshipResult(previous, pairsBody, clustersBody){
   const banner = document.getElementById('ipRelQualityBanner');
   if(banner){
     if(banner.dataset) banner.dataset.state = 'stale';
-    banner.textContent = 'Previous successful result preserved — the latest run did not complete. These metrics and exports belong to the previous successful run.';
+    const quality=buildIpRelationshipResultModel(previous).quality;
+    banner.textContent = 'Previous successful result preserved — the latest run did not complete. These metrics and exports belong to the previous successful run. Previous run quality: '+quality.label+' '+quality.detail;
   }
   return true;
 }
@@ -6244,11 +6956,14 @@ function formatIpRelationshipQuality(j){
 }
 
 async function cancelIpRelationshipJob(jobId){
+  const scope=viewFeedbackOwner('relationship-cancel','ipRelRunStatus');
+  const token=scope?.begin(jobId);
   try{
     const response = await fetch(`/ip-relationship-jobs/${encodeURIComponent(jobId)}/cancel`, {
-      method: 'POST'
+      method: 'POST', feedback:token
     });
-    return response.ok;
+    const data=await response.json();
+    return response.ok && data.status==='cancelled' && data.cancelled===true;
   }catch(e){
     return false;
   }
@@ -6257,6 +6972,7 @@ async function cancelIpRelationshipJob(jobId){
 async function fetchIpRelationshipJobResult(requestBody, controller, onStatus){
   const submit = await fetch('/ip-relationship-jobs', {
     method: 'POST',
+    feedback: controller?.feedback,
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify(requestBody)
   });
@@ -6267,7 +6983,10 @@ async function fetchIpRelationshipJobResult(requestBody, controller, onStatus){
   const jobId = String(sj.job_id || '');
   if(onStatus) onStatus(jobId, 'active');
   if(controller && controller.signal && controller.signal.aborted){
-    await cancelIpRelationshipJob(jobId);
+    if(!controller.browserDetached){
+      controller.serverCancelConfirmed=await cancelIpRelationshipJob(jobId);
+      controller.serverCancelUnconfirmed=!controller.serverCancelConfirmed;
+    }
     if(onStatus) onStatus(jobId, 'terminal');
     return { ok: false, status: 499, body: { error: 'relationship request cancelled' } };
   }
@@ -6291,6 +7010,7 @@ async function fetchIpRelationshipJobResult(requestBody, controller, onStatus){
     });
     const rr = await fetch(`/ip-relationship-jobs/${encodeURIComponent(jobId)}?result=1`, {
       method: 'GET',
+      feedback: controller?.feedback,
       signal: controller ? controller.signal : undefined
     });
     const jj = await rr.json();
@@ -6340,6 +7060,7 @@ async function analyzeIpRelationships(){
   let relationshipJobTerminal = false;
   let relationshipJobCancelRequested = false;
   const cancelActiveRelationshipJob = ()=>{
+    if(controller?.browserDetached) return;
     if(!activeRelationshipJobId || relationshipJobTerminal || relationshipJobCancelRequested) return;
     if(typeof ipRelCancelRequestedJobs !== 'undefined' && ipRelCancelRequestedJobs.has(activeRelationshipJobId)){
       relationshipJobCancelRequested = true;
@@ -6372,6 +7093,9 @@ async function analyzeIpRelationships(){
 
   const controller = (typeof AbortController === 'function') ? new AbortController() : null;
   ipRelAnalyzeController = controller;
+  const feedback=viewFeedbackOwner('ip-relationships','ipRelRunStatus');
+  const token=feedback?.begin(inputSignature);
+  if(controller) controller.feedback=token;
   const requestSeq = ipRelAnalyzeSeq;
   const isStale = ()=> requestSeq !== ipRelAnalyzeSeq || ipRelAnalyzeController !== controller;
   setIpIntelBusy(true);
@@ -6428,8 +7152,9 @@ async function analyzeIpRelationships(){
     }
     if(!jobResult.ok || !j || j.status !== 'ok'){
       cancelActiveRelationshipJob();
-      const errorText = (j && j.error) ? String(j.error) : `HTTP ${jobResult.status}`;
-      const cancelled = jobResult.status === 499 || /cancel/i.test(errorText);
+      const errorText = jobResult.status === 504 ? 'relationship job timed out' : 'Relationship analysis failed. No usable result was returned.';
+      const cancelled = jobResult.status === 499;
+      feedbackFailure(feedback,token,{status:jobResult.status});
       const restored = restorePreviousIpRelationshipResult(previousSuccessfulResult, pairsBody, clustersBody);
       if(meta){
         const statusText = cancelled ? 'Similarity analysis cancelled' : `Similarity analysis failed: ${errorText}`;
@@ -6443,6 +7168,7 @@ async function analyzeIpRelationships(){
 
     window.IP_REL_CACHE = j;
     window.IP_REL_LAST_SUCCESS = j;
+    feedback?.succeed(token);
     resetIpRelVisualCaches();
     setIpIntelRelationshipInsights(inputSignature, j);
     renderIpRelationshipProductSummary(j);
@@ -6486,7 +7212,8 @@ async function analyzeIpRelationships(){
         const restored = restorePreviousIpRelationshipResult(previousSuccessfulResult, pairsBody, clustersBody);
         const cancellationMessage = controller && controller.serverCancelUnconfirmed
           ? 'Client polling stopped, but server cancellation could not be confirmed.'
-          : 'Similarity analysis cancelled';
+          : controller && controller.serverCancelConfirmed ? 'Server cancellation confirmed.'
+          : 'Browser polling stopped; server cancellation not yet confirmed.';
         if(meta) meta.textContent = `${cancellationMessage}${restored ? ' Previous successful result preserved.' : ''}`;
         if(!restored) renderIpRelationshipError(pairsBody, clustersBody, 'Analysis cancelled');
         updateRelationshipRunState('cancelled', cancellationMessage);
@@ -6495,9 +7222,11 @@ async function analyzeIpRelationships(){
     }
     clearIpIntelRelationshipInsights(inputSignature);
     const restored = restorePreviousIpRelationshipResult(previousSuccessfulResult, pairsBody, clustersBody);
-    if(meta) meta.textContent = `Similarity analysis error: ${e}${restored ? '. Previous successful result preserved.' : ''}`;
+    feedbackFailure(feedback,token,e,true);
+    const errorText=feedback?.snapshot().error?.message || 'Relationship analysis failed. Server admission or completion is not confirmed.';
+    if(meta) meta.textContent = `${errorText}${restored ? ' Previous successful result preserved.' : ''}`;
     if(!restored) renderIpRelationshipError(pairsBody, clustersBody, 'Analysis failed');
-    updateRelationshipRunState('error', String(e));
+    updateRelationshipRunState('error', errorText);
   }finally{
     if(activeRelationshipJobId && typeof ipRelCancelRequestedJobs !== 'undefined'){
       ipRelCancelRequestedJobs.delete(activeRelationshipJobId);

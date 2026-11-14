@@ -92,6 +92,7 @@ test('committed warning stays visible without treating the settings save as roll
     const result = await response.json();
     await route.fulfill({response, json: {...result, warnings: ['alerts_runtime_apply_failed']}});
   });
+  await page.locator('#alertIntegrationAdvanced > summary').click();
   await page.fill('#vt_cache_ttl_days_front', '17');
   await page.click('#saveAlertSettingsBtn');
   await expect(page.locator('#alertSettingsStatus')).toContainText('Saved with warnings');

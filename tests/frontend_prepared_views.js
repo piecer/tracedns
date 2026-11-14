@@ -4,7 +4,7 @@
 const {chromium} = require('@playwright/test');
 const fs=require('fs'), http=require('http'), assert=require('assert/strict');
 const tests=[]; const test=(name,run)=>tests.push({name,run});
-const views=[['refreshResults','status','resultsTable'],['refreshIPs','ips','ipsTable'],['refreshValidIPs','validips','validIpsTable'],['refreshDomainAnalysis','domainanalysis','domainAnalysisTable']];
+const views=[['refreshResults','status','resultsTable'],['refreshIPs','ips','ipsTable'],['refreshValidIPs','validips','validIpsTable'],['refreshDomainAnalysis','domainanalysis','domainDomainStatsTable']];
 const snapshot={ready:true,stale:false,status:'ready',generated_at:1700000000,version:'s1',source_version:'source1',error_code:null};
 const payload=()=>({snapshot:{...snapshot},view_version:'v1',page:{offset:0,limit:100,displayed:1,total:201,next_offset:100,previous_offset:null,unit:'domains'},results_agg:{'full-long-domain.example.test':{type:'A',values:['8.8.8.8'],decoded_ips:[],servers:['one'],ts:1}},ips:[{ip:'8.8.8.8',valid:true,domains:['full-long-domain.example.test'],count:1,last_ts:1}],domains:[{domain:'full-long-domain.example.test',record_types:['A'],last_ts:1,resolving:true,ip_rows_total:1,ip_rows_offset:0,ip_rows_truncated:false,ip_rows:[{ip:'8.8.8.8',role:'resolved'}]}]});
 let browser,server,origin;
@@ -97,14 +97,19 @@ test('heavy results use bounded clickable previews and plaintext expansion, all 
  const page=await environment();try{
  const data=payload(); data.results_agg['full-long-domain.example.test'].values=Array.from({length:3000},(_,i)=>`token-${i}`);
  await refresh(page,'refreshResults',data);
- const cell=page.locator('#resultsTable tbody tr').first().locator('td').nth(2);
+ await page.evaluate(()=>openTargetDetail('full-long-domain.example.test',null,false));
+ await page.locator('#targetEvidence').evaluate(el=>{el.open=true;});
+ const cell=page.locator('#targetEvidence > div > .wrap-cell').last();
+ await cell.waitFor({state:'attached'});
  assert.equal(await cell.locator('details').count(),1,'heavy values need explicit expansion');
+ assert.equal(await cell.locator('pre').count(),0,'collapsed evidence is not eagerly mounted');
+ await cell.locator('details').evaluate(el=>{el.open=true;});
+ await cell.locator('pre').waitFor({state:'attached'});
  assert.match(await cell.locator('pre').textContent(),/token-2999/);
  assert(await cell.locator('*').count()<60,'expansion must not create per-token DOM');
- await cell.locator('summary').dispatchEvent('click');
- await page.evaluate(()=>window.__details=document.querySelector('#resultsTable details'));
+ await page.evaluate(()=>window.__details=document.querySelector('#targetEvidence'));
  await refresh(page,'refreshResults',data);
- assert(await page.evaluate(()=>__details===document.querySelector('#resultsTable details')));
+ assert(await page.evaluate(()=>__details===document.querySelector('#targetEvidence')));
  for(const [fn,,table] of views){const big=payload();big.results_agg={};big.ips=[];big.domains=[];for(let i=0;i<250;i++){big.results_agg['d'+i]={type:'A',values:[],ts:1};big.ips.push({ip:`1.1.1.${i}`,valid:true});big.domains.push({domain:'d'+i,ip_rows:[]});}await refresh(page,fn,big);assert(await page.locator(`#${table} tbody > tr`).count()<=200);}
  }finally{await page.close();}
 });
@@ -136,11 +141,13 @@ test('overview uses backend totals and domain coverage stays explicitly page-onl
  const page=await environment();try{
  const data=payload();data.results_total_count=801;data.ips_total_count=501;data.all_ips_total_count=900;data.page.domains_total=333;
  await refresh(page,'refreshResults',data);assert.equal(await page.locator('#metricStatusRows').textContent(),'801');
- await refresh(page,'refreshValidIPs',data);assert.match(await page.locator('#metricIps').textContent(),/^900 \/ valid 501$/);
+ await refresh(page,'refreshValidIPs',data);assert.equal(await page.locator('#metricIps').textContent(),'900');
+ assert.equal(await page.locator('#metricValidIps').textContent(),'501');
  const domain=data.domains[0];domain.ip_rows_total=300;domain.ip_rows_offset=40;domain.ip_rows_truncated=true;domain.resolved_ips=[];domain.decoded_ips=[];domain.resolving=true;
  await refresh(page,'refreshDomainAnalysis',data);
  assert.match(await page.locator('#domainanalysis_page_meta').textContent(),/333 domains/);
  assert.match(await page.locator('#domainDomainStatsTable tbody').textContent(),/41.*300/);
+ await page.evaluate(()=>setDomainAnalysisManageMode(true));
  assert.equal(await page.locator('#domainDomainStatsTable tbody input').isDisabled(),true,'page omissions must not imply non-resolving');
  assert.match(await page.locator('#domainDomainStatsTable thead').textContent(),/page/i);
  }finally{await page.close();}
@@ -195,7 +202,11 @@ test('late domain render failures preserve every table, filter, selection and va
  assert.deepEqual(await check(),{cache:true,selection:true,dom:true},'unchanged A must retain coherent A');
  await refresh(page,'refreshDomainAnalysis',changed);
  assert.match(await page.locator('#domainDomainStatsTable tbody').textContent(),/changed-B/);
- assert.match(await page.locator('#domainAnalysisTable tbody').textContent(),/changed-B/);
+ await page.selectOption('#domainAnalysisDomainSelect','changed-B.test');
+ await page.evaluate(()=>applyDomainAnalysisFilter());
+ await page.locator('#domainAnalysisRaw').evaluate(el=>{el.open=true;});
+ await page.locator('#domainAnalysisRaw pre').waitFor({state:'attached'});
+ assert.match(await page.locator('#domainAnalysisRaw pre').textContent(),/changed-B/);
  }finally{await page.close();}}
 });
 test('Valid IP recent-seconds filter is sent and changes reset pagination',async()=>{

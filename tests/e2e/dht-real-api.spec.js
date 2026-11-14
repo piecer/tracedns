@@ -62,6 +62,7 @@ test('real API and worker preserve signed DHT state through browser registration
     await page.selectOption('#verifyDomainType', 'DHT');
     await page.fill('#verifyDomainName', label);
     await page.fill('#verifyDhtPublicKey', server.key);
+    await page.locator('#verifyAdvanced > summary').click();
     await page.fill('#verifyDhtOptions', '{"duration":1,"max_queries":4}');
     await page.click('#runDomainVerifyBtn');
     await expect(page.locator('#domainVerifySummary')).toContainText('Last-confirmed sequence: 9007199254740993');
@@ -74,10 +75,12 @@ test('real API and worker preserve signed DHT state through browser registration
     await expect(card.locator('.dht-public-key')).toHaveValue(server.key);
     await expect(card.locator('.domain-created time')).toHaveAttribute('datetime', /T/);
     await page.click('#menuStatus');
-    await expect(page.locator('#resultsTable')).toContainText('9007199254740993', {timeout:15000});
-    await expect(page.locator('#resultsTable')).toContainText('192.0.2.123');
-    await expect(page.locator('#resultsTable')).toContainText('Selected record signature: valid');
-    const evidence = page.locator('#resultsTable .dht-evidence details');
+    await expect(page.locator('#resultsTable')).toContainText('192.0.2.123', {timeout:15000});
+    await page.locator('#resultsTable tbody tr').first().getByRole('button',{name:'Details',exact:true}).click();
+    await page.locator('#targetEvidence > summary').click();
+    await expect(page.locator('#targetEvidence')).toContainText('9007199254740993');
+    await expect(page.locator('#targetEvidence')).toContainText('Selected record signature: valid');
+    const evidence = page.locator('#targetEvidence .dht-evidence details');
     await expect(evidence).toBeVisible();
     await expect(evidence).not.toHaveAttribute('open');
     await evidence.locator('summary').click();
@@ -91,7 +94,7 @@ test('real API and worker preserve signed DHT state through browser registration
         aligned:Math.abs(cell.getBoundingClientRect().left-headers[index].getBoundingClientRect().left)<2
       }));
     });
-    expect(columns).toEqual(Array.from({length:8},()=>({display:'table-cell',aligned:true})));
+    expect(columns).toEqual(Array.from({length:6},()=>({display:'table-cell',aligned:true})));
     await fs.writeFile(path.join(root,'mode'), 'miss');
     await page.click('#menuSettings'); await page.click('#force'); await page.click('#menuStatus');
     await expect(page.locator('#resultsTable')).toContainText('no_verified_record', {timeout:15000});
@@ -99,9 +102,11 @@ test('real API and worker preserve signed DHT state through browser registration
     await stop(server); server = null;
     server = await start(root);
     await page.goto(server.origin+'/'); await page.waitForLoadState('load');
-    await expect(page.locator('#resultsTable')).toContainText('9007199254740993', {timeout:15000});
-    await expect(page.locator('#resultsTable')).toContainText('192.0.2.123');
+    await expect(page.locator('#resultsTable')).toContainText('192.0.2.123', {timeout:15000});
     await expect(page.locator('#resultsTable')).toContainText('no_verified_record');
+    await page.locator('#resultsTable tbody tr').first().getByRole('button',{name:'Details',exact:true}).click();
+    await page.locator('#targetEvidence > summary').click();
+    await expect(page.locator('#targetEvidence')).toContainText('9007199254740993');
     await page.screenshot({path:testInfo.outputPath('dht-real-api-restarted.png'), fullPage:true});
     const saved = JSON.parse(await fs.readFile(path.join(root,'config.json'),'utf8'));
     expect(saved.domains).toEqual([{name:label,type:'DHT',dht_public_key:server.key,dht_options:{duration:1,max_queries:4}}]);

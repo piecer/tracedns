@@ -57,9 +57,28 @@ test('real prepared HTTP pages recover without reload and retain unchanged rows'
     await page.click('#menuValidIPs');
     await expect(page.locator('#validIpsTable tbody tr').first()).toContainText('11.');
     expect(await page.locator('#validIpsTable tbody tr').count()).toBeLessThanOrEqual(200);
+    const domainResponse=page.waitForResponse(r=>{
+      const url=new URL(r.url());
+      return url.pathname==='/domain-analysis' && url.searchParams.get('read_mode')==='background' && r.status()===200;
+    });
     await page.click('#menuDomainAnalysis');
-    await expect(page.locator('#domainAnalysisTable tbody tr').first()).toContainText('a000.test');
-    expect(await page.locator('#domainAnalysisTable tbody tr').count()).toBeLessThanOrEqual(200);
+    const domainPage=await (await domainResponse).json();
+    expect(domainPage.snapshot.ready).toBe(true);
+    expect(domainPage.page.unit).toBe('ip_rows');
+    expect(Array.isArray(domainPage.domains)).toBe(true);
+    // Compact domain rows cannot prove the underlying prepared IP-row budget.
+    const primaryRows=domainPage.domains.reduce((total,domain)=>{
+      expect(Array.isArray(domain.ip_rows)).toBe(true);
+      return total+Math.max(1,domain.ip_rows.length);
+    },0);
+    expect(primaryRows).toBeGreaterThan(0);
+    expect(primaryRows).toBeLessThanOrEqual(200);
+    expect(primaryRows).toBeLessThanOrEqual(domainPage.page.limit);
+    expect(domainPage.page.limit).toBeLessThanOrEqual(200);
+    expect(domainPage.page.displayed).toBe(primaryRows);
+    expect(domainPage.domains[0]).toMatchObject({domain:'a000.test',ip_rows_total:450,ip_rows_truncated:true});
+    await expect(page.locator('#domainDomainStatsTable tbody tr').first()).toContainText('a000.test');
+    expect(await page.locator('#domainDomainStatsTable tbody tr').count()).toBeLessThanOrEqual(200);
     expect(errors).toEqual([]);
   }finally{
     const exited=once(child,'exit');

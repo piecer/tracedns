@@ -34,6 +34,10 @@ async function login(page, username = 'admin', password = 'test-admin-password')
   // URL commit can precede the new document's load handlers. Do not click
   // controls or attach post-login request counters to the departing document.
   await page.waitForLoadState('load');
+  if(page.url().includes('/dns_frontend.html') &&
+      await page.evaluate(async () => (await window.TraceAuth.ready)?.role !== 'viewer')) {
+    await page.locator('#deliveryDisclosure > summary').click();
+  }
 }
 
 for(const scenario of ['backlog', 'acked', 'overflow', 'degraded']) {
@@ -121,6 +125,7 @@ test('oversized bodies and out-of-range integer tokens fail closed', async ({pag
     await expect(page.locator('#deliveryDetails')).toContainText('Unknown');
     mutation = 'integer';
     await page.reload();
+    await page.locator('#deliveryDisclosure > summary').click();
     await expect(page.locator('#deliveryStatus')).toContainText('unavailable');
     await expect(page.locator('#deliveryDetails')).toContainText('Unknown');
   });
@@ -148,6 +153,7 @@ test('delayed auth cannot compress the interval between actual health requests',
     await page.reload();
     await page.clock.runFor(8000);
     release();
+    await page.locator('#deliveryDisclosure > summary').click();
     await expect(page.locator('#deliveryDetails')).toContainText('Pending: 2');
     expect(calls).toBe(1);
     await page.clock.runFor(7001);
@@ -173,6 +179,7 @@ test('private CA control validates, preserves blank, clears explicitly and keeps
       await page.click('#menuSettings');
       await page.click('#settingsTabAlerts');
       const input = page.locator('#misp_ca_bundle_front');
+      await page.locator('#alertIntegrationAdvanced > summary').click();
       await expect(input).toBeVisible();
       await expect(input).toHaveValue('');
       const settings = () => page.evaluate(async () => (await fetch('/settings')).json());
@@ -187,12 +194,12 @@ test('private CA control validates, preserves blank, clears explicitly and keeps
       expect((await sent).postDataJSON().revision).toBe(initial.revision);
       await expect(input).toHaveValue('');
       await expect(input).toHaveAttribute('placeholder', /Configured/);
-      await expect(page.locator('#alertSettingsStatus')).toHaveText('Saved');
+      await expect(page.locator('#alertSettingsStatus')).toHaveText(/^Saved \(revision \d+\)\. No runtime apply warnings reported\.$/);
       await page.evaluate(() => {
         window.caSaveFinished = false;
         const el = document.getElementById('alertSettingsStatus');
         const observer = new MutationObserver(() => {
-          if(el.textContent === 'Saved') { window.caSaveFinished = true; observer.disconnect(); }
+          if(/^Saved \(revision \d+\)\. No runtime apply warnings reported\.$/.test(el.textContent)) { window.caSaveFinished = true; observer.disconnect(); }
         });
         observer.observe(el, {childList:true});
       });
@@ -334,6 +341,7 @@ test('auth startup failure recovers into real delivery screen without reload', a
     fail = false;
     await page.clock.runFor(16000);
     await expect(page.locator('#deliveryHealth')).toBeVisible();
+    await page.locator('#deliveryDisclosure > summary').click();
     await expect(page.locator('#deliveryDetails')).toContainText('Pending: 2');
     await expect(page.locator('#security-message')).not.toContainText('Authentication unavailable');
   });

@@ -4,14 +4,25 @@
   const originalFetch = window.fetch.bind(window);
   const loginPage = location.pathname === '/login.html';
   let csrf = '';
-  const auth = window.TraceAuth = {user: null};
-  auth.message = text => {
+  const auth = window.TraceAuth = {user: null, accessInvalidated: false};
+  const messages = new Map();
+  const invalidationListeners = new Set();
+  auth.onInvalidated = listener => { invalidationListeners.add(listener); return () => invalidationListeners.delete(listener); };
+  function invalidate(status){
+    auth.accessInvalidated = true;
+    for(const listener of invalidationListeners){ try { listener(status); } catch (_) { /* Other owners still retire. */ } }
+  }
+  function failure(message, status, code){
+    const error = new Error(message); error.status = status; error.code = code; return error;
+  }
+  auth.message = (text, owner = 'fallback') => {
+    if(text) messages.set(owner, text); else messages.delete(owner);
     let el = document.getElementById('security-message');
     if (!el && document.body) {
       el = document.createElement('p'); el.id = 'security-message';
       el.setAttribute('role', 'alert'); document.body.prepend(el);
     }
-    if (el) el.textContent = text;
+    if (el) { el.textContent = Array.from(messages.values()).join(' '); el.hidden = !messages.size; }
   };
   // One lifetime owns auth wait, transport and body decoding. Aborting the
   // controller stops real browser I/O; the race also settles uncooperative peers.
@@ -52,7 +63,7 @@
   let failures = 0;
   const authUnavailableMessage = 'Authentication unavailable. Will retry on the next request.';
   function ensureReady(){
-    if (authBlocked) return Promise.reject(new Error('Sign-in failed or session expired.'));
+    if (authBlocked) return Promise.reject(failure('Sign-in failed or session expired.', 401, 'unauthenticated'));
     if (readyPromise && (!authFailed || authBlocked || Date.now() < retryAt)) return readyPromise;
     authFailed = false;
     readyPromise = lifetime(async signal => {
@@ -68,17 +79,17 @@
       return response.json();
     }).then(data => {
       csrf = data.csrf_token;
-      const message = document.getElementById('security-message');
-      if(message && message.textContent === authUnavailableMessage) message.textContent = '';
-      if(data.audit_available === false) auth.message('Audit storage is unavailable. Contact the administrator.');
+      auth.message('', 'authentication');
+      if(data.audit_available === false) auth.message('Audit storage is unavailable. Contact the administrator.', 'security');
       auth.user = data.user || null;
+      auth.accessInvalidated = false;
       if (auth.user && auth.user.must_change_password && location.pathname !== '/account.html') location.replace('/account.html');
       failures = 0;
       return auth.user;
     }).catch(error => {
       csrf = ''; auth.user = null; authFailed = true;
       retryAt = Date.now() + Math.min(30000, 1000 * (2 ** Math.min(failures++, 5)));
-      auth.message(authBlocked ? 'Sign-in failed or session expired.' : authUnavailableMessage);
+      auth.message(authBlocked ? 'Sign-in failed or session expired.' : authUnavailableMessage, 'authentication');
       throw error;
     });
     // Observe eager initialization failures without poisoning later reads of ready.
@@ -89,12 +100,20 @@
   Object.defineProperty(auth, 'retryDelay', {get: () => authBlocked ? null : Math.max(1000, retryAt - Date.now())});
   ensureReady();
   window.fetch = async (input, options = {}) => {
+    const {feedback, ...transportOptions} = options;
+    const feedbackAPI = window.TraceViewFeedback;
+    const local = feedbackAPI && feedbackAPI.known(feedback);
+    const checkOwner = () => {
+      if(local && !feedbackAPI.current(feedback)) throw new DOMException('Request owner replaced.', 'AbortError');
+    };
+    checkOwner();
     const url = new URL(input instanceof Request ? input.url : input, location.href);
-    if (url.origin !== location.origin) return originalFetch(input, options);
+    if (url.origin !== location.origin) return originalFetch(input, transportOptions);
     const signal = options.signal || (input instanceof Request ? input.signal : undefined);
     if (signal) await abortable(ensureReady, signal);
     else await auth.ready;
     if (signal && signal.aborted) throw signal.reason;
+    checkOwner();
     const method = String(options.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
     const write = !['GET','HEAD','OPTIONS'].includes(method);
     if (auth.user && auth.user.must_change_password && !['/auth/me','/auth/password','/auth/logout'].includes(url.pathname)) {
@@ -104,11 +123,17 @@
     headers.set('X-CSRF-Token', csrf);
     if (auth.user && auth.user.role === 'viewer' && ['/ips','/domain-analysis'].includes(url.pathname)) url.searchParams.set('include_vt','0');
     const request = input instanceof Request ? new Request(url, input) : url.href;
-    const response = await originalFetch(request, {...options, headers, credentials:'same-origin'});
+    const response = await originalFetch(request, {...transportOptions, headers, credentials:'same-origin'});
     if (signal && signal.aborted) throw signal.reason;
+    checkOwner();
     if (response.status === 401 && !loginPage) {
       authBlocked = true; csrf = ''; auth.user = null;
       location.replace('/login.html');
+    }
+    if(response.headers?.get('X-TraceDNS-Security-Error') === 'security_unavailable'){
+      const message = 'Security or audit storage is unavailable. Contact the administrator.';
+      auth.message(message, 'security');
+      throw failure(message, response.status, 'security_unavailable');
     }
     // Manual test outcomes have a closed, secret-free body even on these
     // statuses. Preserve it for the test UI; all authentication, CSRF and
@@ -122,7 +147,11 @@
         [400,404,409,429,503].includes(response.status)) return response;
     if (!response.ok) {
       const message = response.status === 409 ? 'Conflict: reload this page before saving again.' : response.status === 403 ? 'Permission denied for this action.' : response.status === 401 ? 'Sign-in failed or session expired.' : `Request failed (${response.status}).`;
-      auth.message(message); throw new Error(message);
+      const security = response.status === 401 || response.status === 403;
+      const code = response.status === 401 ? 'unauthenticated' : response.status === 403 ? 'forbidden' : response.status === 409 ? 'conflict' : 'http_error';
+      if(security) invalidate(response.status);
+      if(security || !local) auth.message(message, security ? 'access' : 'fallback');
+      throw failure(message, response.status, code);
     }
     return response;
   };

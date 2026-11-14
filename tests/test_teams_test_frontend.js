@@ -3,17 +3,18 @@ const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:a
 const source = fs.readFileSync('dns_frontend.js', 'utf8');
 const html = fs.readFileSync('dns_frontend.html', 'utf8');
 assert.equal((html.match(/id="teamsTestBtn"/g) || []).length, 1, 'one explicit actual-test button');
-assert(html.indexOf('id="teamsTestBtn"') > html.indexOf('id="teams_webhook_front"'));
+assert(html.indexOf('id="teamsTestBtn"') > html.indexOf('id="alertConfigurationSummary"'));
+assert(html.indexOf('id="teamsTestBtn"') < html.indexOf('id="alertIntegrationAdvanced"'), 'real test stays visible outside secret editor');
 assert(html.indexOf('id="teamsTestBtn"') < html.indexOf('id="misp_url_front"'));
 assert(html.includes('id="teamsTestStatus" role="status"'));
 assert(html.indexOf('src="/teams_test.js"') < html.indexOf('src="/dns_frontend.js"'));
-assert(source.includes('window.TraceTeamsTest.bind(() => alertRevision)'));
+assert(source.includes('window.TraceTeamsTest.bind(() => alertSettingsReady ? alertRevision : null)'));
 const tick = () => new Promise(setImmediate);
 function setup(role='admin') {
   const elements = new Map(), calls = [], timers = new Map(); let next = 0;
   const node = id => {
     if(!elements.has(id)) elements.set(id, {hidden:true, disabled:true, textContent:'', value:'PRIVATE-DRAFT', dataset:{},
-      classList:{add(){},remove(){}}, addEventListener(name,fn){this[name]=fn;}, setAttribute(){}});
+      classList:{add(){},remove(){}}, querySelectorAll:()=>[], addEventListener(name,fn){this[name]=fn;}, setAttribute(){}, removeAttribute(){}});
     return elements.get(id);
   };
   let body = {status:'accepted',reason:null,retry_after:null,diagnostic:{operation:'teams_send',http_status:202,
@@ -31,10 +32,14 @@ function setup(role='admin') {
       calls.push({path,options}); return new Response(JSON.stringify(body),{status:code});
     }});
   context.window=context;
+  vm.runInContext(fs.readFileSync('view_feedback.js','utf8'),context);
   vm.runInContext(fs.readFileSync('auth_frontend.js','utf8'),context);
   vm.runInContext(fs.readFileSync('teams_test.js','utf8'),context);
-  vm.runInContext('let alertRevision = null;'+source.slice(source.indexOf('async function loadAlertSettings(){'),source.indexOf('async function saveAlertSettings(){')),context);
-  vm.runInContext('window.TraceTeamsTest.bind(() => alertRevision);',context);
+  vm.runInContext(source.slice(source.indexOf('const localFeedbackOwners'),source.indexOf('window.TraceAuth?.onInvalidated')),context);
+  vm.runInContext(source.slice(source.indexOf('function settingsDraftStamp('),source.indexOf('function setAlertSettingsStatus(')),context);
+  vm.runInContext(source.slice(source.indexOf('function applyAlertSettings('),source.indexOf('async function loadAlertSettings(')),context);
+  vm.runInContext('let alertRevision = null; let alertSettingsReady = false;'+source.slice(source.indexOf('async function loadAlertSettings(){'),source.indexOf('async function saveAlertSettings(){')),context);
+  vm.runInContext('window.TraceTeamsTest.bind(() => alertSettingsReady ? alertRevision : null);',context);
   return {context,node,calls,timers,setResult:(value,status)=>{body=value;code=status;},get body(){return body;}};
 }
 (async()=>{
@@ -96,7 +101,8 @@ function setup(role='admin') {
   context.fetch=async()=>{throw new Error('PRIVATE-NETWORK');};
   await button.click();assert.match(status.textContent,/unknown/);assert(!status.textContent.includes('PRIVATE-NETWORK'));
   await context.loadAlertSettings();
-  assert(button.disabled,'failed settings reload invalidates the loaded revision');
+  assert(button.disabled,'failed settings reload invalidates readiness for a real test');
+  assert.equal(vm.runInContext('alertRevision',context),7,'failed reload keeps the draft revision without enabling real test');
   context.fetch=savedFetch;await context.loadAlertSettings();
   assert.equal(button.disabled,false);
   // Deterministically expire the real auth.readJSON lifetime, including a

@@ -28,6 +28,7 @@ const path = require('node:path');
     await page.fill('#password','test-admin-password');
     await page.click('#login-submit');
     const panel = page.locator('#deliveryHealth');
+    await page.locator('#deliveryDisclosure > summary').click();
     await panel.getByText('Teams dispatch: active', {exact:false}).waitFor();
     assert((await panel.innerText()).includes('ACKed: 0'));
     const control = name=>page.request.post(url+'/__fixture/'+name,{headers:{'X-Fixture-Token':process.env.STAGE4_TOKEN}});
