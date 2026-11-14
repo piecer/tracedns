@@ -39,14 +39,22 @@ counters, and does not replay failed alerts.
 
 ## Console
 
-The separate **Delivery diagnostics** section loads nothing until **Read
-diagnostics** is clicked. **Refresh diagnostics** performs another bounded read;
+Open **Delivery diagnostics · manual read** below the compact health summary.
+The separate diagnostics section loads nothing until **Read diagnostics** is
+clicked; opening either disclosure does not read or probe a provider. The
+evidence subtree mounts only while its evidence disclosure is open.
+**Refresh diagnostics** performs another bounded read;
 there is no polling. **Cancel read**, leaving the page or hiding the tab cancels
 an active read. A ten-second deadline covers auth wait, transport and body.
 Failures keep a clearly stale last successful snapshot; permission denial or
 session expiration clears it. Explicit refresh can recover from transient auth
 or transport failures. The evidence panel separates latest result, latest terminal
 failure, blocked reasons, recent groups, process incident and worker state.
+
+Health loss/uncertainty remains visible when operational details are collapsed.
+`#deliveryDiagnostics` opens the manual-read area and focuses its heading;
+`#deliveryHealth` opens health detail. Neither link retries notifications.
+See [console views](VIEW_PRESENTATION.md) for local failure ownership and bounds.
 
 **Download sanitized JSON** exports only the validated closed snapshot, never a
 raw provider response or HTTP error body. Its fixed filename contains no target

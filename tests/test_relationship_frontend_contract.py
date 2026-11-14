@@ -38,6 +38,9 @@ def _plain_function_body(name: str, next_name: str) -> str:
 
 
 def _run_node(script: str) -> None:
+    # These isolated legacy lifecycle probes omit the optional feedback asset.
+    # Real capability registration and localization are exercised in browser tests.
+    script = "global.viewFeedbackOwner=()=>null;global.feedbackFailure=()=>{};\n" + script
     subprocess.run(["node", "-e", script], check=True, text=True, capture_output=True)
 
 

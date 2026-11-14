@@ -61,7 +61,8 @@
       const status = document.getElementById('teamsTestStatus');
       if(!button || !status) return;
       let busy = false;
-      const isAdmin = () => window.TraceAuth && window.TraceAuth.user && window.TraceAuth.user.role === 'admin';
+      let blocked = false;
+      const isAdmin = () => !blocked && window.TraceAuth && window.TraceAuth.user && window.TraceAuth.user.role === 'admin';
       const validRevision = value => Number.isSafeInteger(value) && value >= 0;
       refresh = () => { button.hidden = !isAdmin(); button.disabled = !isAdmin() || busy || !validRevision(getRevision()); };
       button.addEventListener('click', async () => {
@@ -74,10 +75,15 @@
           const value = await window.TraceAuth.readJSON('/teams/test', {
             method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({revision})
           });
-          status.textContent = message(value);
+          if(!blocked) status.textContent = message(value);
         } catch(_) {
           status.textContent = unknown;
         } finally { busy = false; refresh(); }
+      });
+      window.TraceAuth?.onInvalidated?.(() => {
+        blocked = true;
+        status.textContent = 'Access changed. Reload to check permissions. ' + (busy ? unknown : '');
+        refresh();
       });
       if(window.TraceAuth) window.TraceAuth.ready.then(refresh).catch(() => {});
     }

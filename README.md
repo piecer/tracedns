@@ -32,8 +32,9 @@ results against the available evidence.
   <img src="docs/images/dashboard.png" alt="TraceDNS dashboard showing synthetic monitoring examples" width="880">
 </p>
 
-*Actual Status view, cropped from an isolated local instance with synthetic
-example data. No production data or live threat-intelligence results are shown.*
+*Actual Status view: an uncropped 1366×768 viewport from an isolated local instance
+with reserved synthetic example data and disabled integrations. No production
+data or live threat-intelligence results are shown.*
 
 ## How it works
 
@@ -139,8 +140,9 @@ use Ctrl+C when you want to stop this local instance.
 
 ### 4. Add your first target
 
-1. In **Settings**, replace the sample loopback resolver with a DNS resolver you
-   intend to use, then save. Leave it unchanged only if you run a local resolver.
+1. In **Settings**, open **Advanced server configuration**, replace the sample
+   loopback resolver with a DNS resolver you intend to use, then save. Leave it
+   unchanged only if you run a local resolver.
 2. Open **Domain Verify**, enter an explicitly selected target and choose its type
    and decoder. Review the returned values before adding it to monitoring.
 3. Check **Status** for the saved target and **All IPs** for its extracted addresses.
@@ -177,6 +179,13 @@ you compare the resulting IPs with the rest of your investigation. A shared
 hosting provider is a lead to inspect, not proof that the two IPs have the same
 operator. This is an illustrative workflow, not a captured incident or a benchmark.
 
+The console keeps results and coverage visible, with one selected target's
+evidence and separate advanced controls. **Details** in Status exposes raw values
+and History; **Manage domains** explicitly enables removal in Domain Analysis.
+Unread counts are not zero, and current-page counts are not global totals. See
+the [console view guide](docs/VIEW_PRESENTATION.md) for scopes, drafts, cancellation
+and the distinction between cached inspection and external work.
+
 ## Inside Botnet IP Analysis
 
 The workbench is for investigating relationships among IPs whose roles may be
@@ -188,7 +197,7 @@ C2 server.
 | Prepare the input | Paste newline-, comma- or space-separated IPs. Duplicate entries are analyzed once; the input supports up to 10,000 valid unique IPs. |
 | Add context | Use available VirusTotal infrastructure data, optional GeoIP country fallback, local DNS provenance and context from a selected MISP event. Availability depends on configuration and retained data. |
 | Choose the analysis profile | Start with Balanced, or select Conservative, Aggressive or saved Custom settings. Advanced controls include pair-selection and neighbor limits. |
-| Follow the job | Observe analysis progress and cancel a running job from the workbench. |
+| Follow the job | Observe progress and request cancellation. Stopped browser polling is not confirmation that server work stopped. |
 | Review the results | Inspect pair and cluster tables, or switch to Graph and Map. Filter results by IP, owner, country or evidence. |
 | Check coverage | Read the coverage/quality indicators alongside the results. A bounded or partially enriched result is not an exhaustive search. |
 | Keep a copy | Export the analysis as JSON for review or downstream processing. |
@@ -202,6 +211,11 @@ directly related to every other member.
 VirusTotal enrichment and MISP context are optional external inputs. Their
 presence, absence or age affects what can be concluded. Review the underlying
 observations before using a relationship score to prioritize follow-up work.
+
+**Inspect pair/cluster** opens cached evidence only. **Analyze cluster** replaces
+the input and runs Per-IP enrichment; activating a Map country replaces input and
+reruns relationship analysis. A failed rerun retains the previous successful
+result/export as stale, with its coverage warnings still visible.
 
 ## Where it fits
 
@@ -578,6 +592,7 @@ history and account database.
 | [AI client instructions](SKILL.md) | How an external agent should use the API safely. This is not an embedded LLM analysis engine. |
 | [DHT tracking](docs/DHT_TRACKING.md) | Public-key targets, signed records, retained state and lookup limits. |
 | [RPC tracking](docs/RPC_TRACKING.md) | Polygon configuration tracking and an offline decoder example. |
+| [Console views](docs/VIEW_PRESENTATION.md) | Result/detail/advanced workflow, count scopes, draft ownership, cancellation and UI limits. |
 | [Delivery diagnostics](docs/DELIVERY_DIAGNOSTICS.md) / [resend](docs/DELIVERY_RESEND.md) | Notification state, failures and deliberate duplicate sends. |
 | [ENS decoder evidence](docs/ens/) | Decoder-specific setup and preserved source records. |
 | [Validation](docs/VALIDATION.md) | Test environments, network isolation and promotion checks. |

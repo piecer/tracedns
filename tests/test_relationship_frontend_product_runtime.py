@@ -71,7 +71,12 @@ def _function_source(name: str) -> str:
 
 
 def _run_node(functions: list[str], body: str) -> None:
-    script = "\n".join(_function_source(name) for name in functions) + "\n" + body
+    if any(name in functions for name in ("markIpRelationshipResultsStale", "restorePreviousIpRelationshipResult")) and "buildIpRelationshipResultModel" not in functions:
+        functions = ["buildIpRelationshipResultModel", *functions]
+    if "wireIpRelationshipProductControls" in functions:
+        functions = ["setIpIntelResultState", *functions]
+    bindings = "global.window={};global.ipIntelMispController=null;global.ipIntelMispSeq=0;global.viewFeedbackOwner=()=>null;global.feedbackCurrent=()=>true;global.feedbackFailure=()=>{};global.cancelIpIntelInputReads=()=>{};\n"
+    script = bindings + "\n".join(_function_source(name) for name in functions) + "\n" + body
     completed = subprocess.run(["node", "-e", script], text=True, capture_output=True)
     assert completed.returncode == 0, completed.stderr
 
@@ -93,7 +98,7 @@ def test_misp_loader_posts_the_visible_event_id():
 const assert = require('assert');
 const elements = {
   ipIntelMispEventId: {value: '7342'},
-  ipIntelMeta: {textContent: ''},
+  ipIntelMispStatus: {textContent: ''},
   ipIntelInvalidBox: {textContent: ''}
 };
 global.document = {getElementById: id => elements[id] || null};
@@ -112,7 +117,7 @@ global.setIpIntelInputValue = () => true;
   assert.strictEqual(request.url, '/misp/event-ips');
   assert.strictEqual(request.options.method, 'POST');
   assert.deepStrictEqual(JSON.parse(request.options.body), {event_id: '7342'});
-  assert(elements.ipIntelMeta.textContent.includes('event 7342'));
+  assert(elements.ipIntelMispStatus.textContent.includes('event 7342'));
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """)
 
@@ -391,18 +396,19 @@ assert.strictEqual(revoked, 'blob:test');
 
 
 def test_run_state_and_tabs_execute_accessible_terminal_semantics():
-    _run_node(["setIpRelationshipRunState", "setIpRelView"], r"""
+    _run_node(["setIpRelationshipRunState", "closeIpRelationshipEvidence", "resetIpRelVisualCaches", "clearIpRelMapMarkers", "setIpRelView"], r"""
 const assert = require('assert');
 function node(id) {
   return elements[id] ||= {
     id, textContent:'', disabled:false, hidden:false, style:{}, attrs:{},
     classList:{toggle(){}}, setAttribute(k,v){this.attrs[k]=String(v)},
-    getAttribute(k){return this.attrs[k]}
+    getAttribute(k){return this.attrs[k]}, replaceChildren(){this.children=[];}
   };
 }
 const elements = {};
-global.document = {getElementById: node};
+global.document = {getElementById: node, querySelector:node};
 global.window = {IP_REL_CACHE:null};
+global.ipRelationshipEvidenceOwner = null;
 global.renderIpRelGraphFromCache = () => {};
 global.renderIpRelMapFromCache = () => {};
 window.IP_REL_LAST_SUCCESS = {status:'ok'};
@@ -660,8 +666,10 @@ class Element {
 }
 global.document = {
   createElement:tag=>new Element(tag),
-  createDocumentFragment:()=>new Element('fragment')
+  createDocumentFragment:()=>new Element('fragment'),
+  getElementById:()=>null
 };
+global.window = {IP_REL_CACHE:{}}; global.ipRelAnalyzeSeq = 1;
 global.IP_REL_PAIR_TABLE_RENDER_LIMIT = 200;
 global.isIPv4 = () => true;
 let opened = '';
@@ -694,6 +702,7 @@ global.document = {
   createDocumentFragment:()=>new Element('fragment'),
   getElementById:id=>id === 'ipIntelInput' ? input : null
 };
+global.window = {IP_REL_CACHE:{}}; global.ipRelAnalyzeSeq = 1;
 global.IP_REL_CLUSTER_TABLE_RENDER_LIMIT = 100;
 global.updateIpIntelInputStats = () => {};
 global.markIpRelationshipResultsStale = () => {};

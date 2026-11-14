@@ -104,7 +104,7 @@ def test_ordinary_auth_failure_retention_survives_disk_reload(tmp_path):
 
 
 def test_history_ui_shows_both_c2_endpoint_sides_not_only_ciphertext(tmp_path):
-    """Execute shipped loadHistory against history produced by the real engine."""
+    """Execute shipped History formatting against history produced by the engine."""
     from models import DomainSpec
     from test_dht_frontend import run_js
     name = domain_storage_name(DOMAIN)
@@ -117,7 +117,7 @@ def test_history_ui_shows_both_c2_endpoint_sides_not_only_ciphertext(tmp_path):
     stored = load_history_files(str(tmp_path))[name]
     assert stored['events'][-1]['old']['decoded_endpoints'] == ['192.0.2.10:18082']
     assert stored['events'][-1]['new']['decoded_endpoints'] == ['192.0.2.10:443']
-    run_js(['loadHistory'], '''
+    run_js(['historyEventText', 'historyPageText'], '''
 const box = {textContent:''};
 global.document = {getElementById:()=>box};
 global.formatUnixTsLocal = value=>String(value);
@@ -125,7 +125,7 @@ global.log = value=>{throw new Error(value);};
 const payload = ''' + json.dumps({'history': stored}) + ''';
 global.fetch = async()=>({ok:true,json:async()=>payload});
 (async()=>{
-  await loadHistory('Polygon config [RPC:polygon_aes_gcm_v1]');
+  box.textContent = historyPageText('Polygon config [RPC:polygon_aes_gcm_v1]', payload.history);
   process.stdout.write('HISTORY_UI_EVIDENCE='+JSON.stringify(box.textContent)+'\\n');
   assert(box.textContent.includes('192.0.2.10:18082'), 'old authenticated C2 endpoint absent from History panel');
   assert(box.textContent.includes('192.0.2.10:443'), 'new authenticated C2 endpoint absent from History panel');
@@ -418,7 +418,7 @@ def test_history_ui_rpc_primary_endpoints_secondary_provenance_are_safe_text(tmp
                                     current_results=current, history=history, history_dir=str(tmp_path),
                                     query_fail_counts={}, max_workers=1)
     stored = load_history_files(str(tmp_path))[name]
-    run_js(['loadHistory'], '''
+    run_js(['historyEventText', 'historyPageText'], '''
 const box = {textContent:'', set innerHTML(value){throw new Error('unsafe HTML sink');},
   insertAdjacentHTML(){throw new Error('unsafe HTML sink');}};
 global.document = {getElementById:()=>box};
@@ -427,7 +427,7 @@ global.log = value=>{throw new Error(value);};
 const payload = ''' + json.dumps({'history': stored}) + ''';
 global.fetch = async()=>({ok:true,json:async()=>payload});
 (async()=>{
-  await loadHistory('Polygon config');
+  box.textContent = historyPageText('Polygon config', payload.history);
   const lines = box.textContent.split('\\n');
   const primary = lines.find(line=>line.includes('(RPC)'));
   assert(primary.endsWith('C2 192.0.2.10:18082 -> 192.0.2.10:443'), primary);
@@ -450,7 +450,7 @@ global.fetch = async()=>({ok:true,json:async()=>payload});
 def test_history_ui_non_rpc_rendering_is_unchanged():
     from test_dht_frontend import run_js
 
-    run_js(['loadHistory'], r'''
+    run_js(['historyEventText', 'historyPageText'], r'''
 const box = {textContent:'', set innerHTML(value){throw new Error('unsafe HTML sink');}};
 global.document = {getElementById:()=>box};
 global.formatUnixTsLocal = value=>'time:'+value;
@@ -464,7 +464,7 @@ let history = {meta:{first_seen:1,last_changed:2},events:[
 ]};
 global.fetch = async()=>({ok:true,json:async()=>({history})});
 (async()=>{
-  await loadHistory('fixture');
+  box.textContent = historyPageText('fixture', history);
   assert.equal(box.textContent, [
     'History for fixture','First seen: time:1','Last changed: time:2','---',
     'time:3 [dns] (A) 192.0.2.1 -> 192.0.2.2',
@@ -474,7 +474,7 @@ global.fetch = async()=>({ok:true,json:async()=>({history})});
     '{"ts":7,"unknown":"event"}'
   ].join('\n'));
   history = {meta:{first_seen:1,last_changed:2},events:[]};
-  await loadHistory('fixture');
+  box.textContent = historyPageText('fixture', history);
   assert.equal(box.textContent, 'No history for fixture\nFirst seen: time:1\nLast changed: time:2');
 })().catch(error=>{console.error(error);process.exitCode=1;});
 ''')

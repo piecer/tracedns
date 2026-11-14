@@ -30,6 +30,7 @@ const {chromium, expect} = require('@playwright/test');
     await expect(button).toBeEnabled();
     await expect(page.locator('#teamsTestHelp')).toContainText('Unsaved edits are ignored');
     assert.deepEqual(posts, [], 'loading settings must not send a test');
+    await page.locator('#alertIntegrationAdvanced > summary').click();
     await page.fill('#teams_webhook_front', 'https://draft.invalid/never-send-here');
     page.once('dialog', dialog => dialog.dismiss());
     await button.click();

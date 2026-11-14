@@ -12,7 +12,7 @@ class Element {
   replaceChildren(fragment) { this.children = fragment.children; }
 }
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
-const elements = Object.fromEntries(['deliveryHealth', 'deliveryStatus', 'deliveryDetails', 'deliveryChecked'].map(id => [id, new Element()]));
+const elements = Object.fromEntries(['deliveryHealth', 'deliveryStatus', 'deliveryWarnings', 'deliveryDetails', 'deliveryChecked'].map(id => [id, new Element()]));
 const context = {TextDecoder, AbortController, Response, setTimeout, clearTimeout, performance,
   document: {getElementById: id => elements[id], createDocumentFragment: () => new Element(),
     createElement: () => new Element(), addEventListener: () => {}},
@@ -20,7 +20,7 @@ const context = {TextDecoder, AbortController, Response, setTimeout, clearTimeou
 vm.createContext(context);
 vm.runInContext(source.slice(start, end).replace(/\}\)\(\);\s*$/, '  globalThis.healthTest = {validate, render};\n})();'), context);
 for (const health of input.sequence) context.healthTest.render(context.healthTest.validate(health));
-const headline = elements.deliveryStatus.textContent;
+const headline = elements.deliveryStatus.textContent + ' ' + elements.deliveryWarnings.textContent;
 for (const expected of input.contains) assert(headline.includes(expected), JSON.stringify({headline, expected}));
 for (const unexpected of input.excludes || []) assert(!headline.includes(unexpected), JSON.stringify({headline, unexpected}));
 assert(headline.length <= 600, 'live-region summary must remain bounded');

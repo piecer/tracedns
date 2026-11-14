@@ -20,6 +20,7 @@ const {chromium, expect} = require('@playwright/test');
     await expect(page).not.toHaveURL(/login\.html/);
     // Visibility can precede the final script attaching the click listener.
     await page.waitForLoadState('load');
+    await page.locator('#deliveryOperations > summary').click();
     await expect(page.locator('#diagnosticsRead')).toBeVisible();
     assert.deepEqual(reads, []);
     await page.locator('#diagnosticsRead').click();

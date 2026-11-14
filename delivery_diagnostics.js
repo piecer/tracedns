@@ -8,6 +8,12 @@
   const downloadButton = document.getElementById('diagnosticsDownload');
   const status = document.getElementById('diagnosticsStatus');
   const details = document.getElementById('diagnosticsDetails');
+  const disclosure = document.getElementById('diagnosticsDisclosure');
+  const operations = document.getElementById('deliveryOperations');
+  const feedback = window.TraceViewFeedback?.register('delivery-diagnostics', state => {
+    if(state.error) status.setAttribute('data-feedback-id', state.error.identity);
+    else status.removeAttribute('data-feedback-id');
+  });
   const reasons = [
     'delivery_storage','delivery_capacity','tracking_overflow','old_binding_blocked',
     'client_unavailable','configuration_unavailable','provider_auth','provider_tls',
@@ -119,8 +125,10 @@
       (r.reason !== null || d.tls_kind || d.http_status === 302 ? hint(r.reason, d) : '');
   }
   let snapshot = null;
-  function render(result){
-    const h = result.data;
+  function renderEvidence(){
+    details.replaceChildren();
+    if(!snapshot || disclosure && !disclosure.open || operations && !operations.open) return;
+    const h = snapshot.data;
     const lines = [
       'Health last_error prioritizes the oldest blocked item, not necessarily the latest attempt. Compare latest result with latest terminal failure below; a later success does not erase retained failures.',
       'Retained terminal failure groups (latest first, at most 10), not cumulative failure counts. Items is the number of affected destination-items in each group. Failed items are not automatically replayed.',
@@ -145,14 +153,20 @@
     const fragment = document.createDocumentFragment();
     for(const line of lines){ const p = document.createElement('p'); p.textContent = line; fragment.appendChild(p); }
     details.replaceChildren(fragment);
+  }
+  function render(result){
+    const h = result.data;
     status.textContent = `${h.counts_stale ? 'Counts stale' : 'Cached counts at observation'} · observed ${timestamp(h.observed_at)} · last read ${new Date().toISOString()}. Snapshot only, not live; refresh explicitly.`;
     snapshot = result;
+    renderEvidence();
     downloadButton.disabled = false;
   }
+  if(disclosure) disclosure.addEventListener('toggle', renderEvidence);
   let active = null;
   let stopped = false;
   function forget(){
     snapshot = null;
+    feedback?.forget();
     details.replaceChildren();
     downloadButton.disabled = true;
     panel.hidden = true;
@@ -161,6 +175,7 @@
     if(active || stopped || document.hidden) return;
     const controller = new AbortController();
     active = controller;
+    const token = feedback?.begin('/delivery-diagnostics');
     readButton.disabled = true;
     cancelButton.disabled = false;
     downloadButton.disabled = true;
@@ -176,16 +191,17 @@
       if(controller.signal.aborted) return;
       if(!user || !['admin','operator'].includes(user.role)) { forget(); return; }
       panel.hidden = false;
-      const response = await fetch('/delivery-diagnostics', {method:'GET', cache:'no-store', signal:controller.signal});
+      const response = await fetch('/delivery-diagnostics', {method:'GET', cache:'no-store', signal:controller.signal, feedback:token});
       if(controller.signal.aborted) return;
       if(response.status === 401 || response.status === 403) { forget(); return; }
       const result = await readDiagnostics(response, controller.signal);
-      if(!controller.signal.aborted && active === controller) render(result);
+      if(!controller.signal.aborted && active === controller){ render(result); feedback?.succeed(token); }
     };
     try {
       await Promise.race([work(), cancelled]);
     } catch(error) {
-      if(['Permission denied for this action.', 'Sign-in failed or session expired.'].includes(error?.message)) forget();
+      if(error?.status === 401 || error?.status === 403) forget();
+      feedback?.fail(token, window.TraceViewFeedback.code(error));
       status.textContent = snapshot ? 'Diagnostics unavailable or cancelled — stale last successful snapshot. Refresh explicitly.' : 'Diagnostics unavailable or cancelled — unknown. Refresh explicitly.';
     } finally {
       clearTimeout(timer);
@@ -212,6 +228,11 @@
     if(active) active.abort();
     if(snapshot) status.textContent = 'Diagnostics paused — stale last successful snapshot. Refresh explicitly.';
   }
+  if(operations) operations.addEventListener('toggle', () => {
+    if(!operations.open) pause();
+    renderEvidence();
+  });
+  window.TraceAuth.onInvalidated?.(() => { stopped = true; pause(); forget(); });
   document.addEventListener('visibilitychange', () => { if(document.hidden) pause(); });
   window.addEventListener('pagehide', () => { stopped = true; pause(); });
   window.addEventListener('pageshow', () => { stopped = false; });

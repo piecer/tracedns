@@ -81,7 +81,8 @@ assert.equal(formatDhtSequence('0'), '0');
 
 
 def test_dht_storage_name_removal_is_key_specific():
-    run_js(["domainStorageName", "removeDomainsFromConfig"], r"""
+    run_js(["domainStorageName", "canManageDomainAnalysis", "removeDomainsFromConfig"], r"""
+let domainAnalysisManageMode = true, domainAnalysisManageEpoch = 1, domainAnalysisRemovalPending = false;
 (async()=>{
   const first = {name:'Label.',type:'DHT',dht_public_key:'AB'.repeat(32)};
   const second = {...first,dht_public_key:'CD'.repeat(32)};
@@ -89,14 +90,19 @@ def test_dht_storage_name_removal_is_key_specific():
   assert.equal(domainStorageName(first), storage);
   assert.equal(domainStorageName({name:'dns.test',type:'A'}), 'dns.test');
   let posted;
-  global.window = {confirm:()=>true};
+  global.window = {confirm:()=>true,TraceAuth:{user:{role:'operator'}}};
+  global.viewFeedbackOwner = ()=>null;
+  global.feedbackCurrent = ()=>true;
+  global.feedbackFailure = ()=>{};
+  global.clearDomainAnalysisDetail = ()=>{};
   global.fetch = async (_, options)=>({ok:true,json:async()=>{
-    if(!options) return {domains:[first,second,'legacy.test'],revision:4};
-    posted = JSON.parse(options.body); return {status:'ok'};
+    if(options?.method !== 'POST') return {domains:[first,second,'legacy.test'],revision:4};
+    posted = JSON.parse(options.body); return {status:'ok',revision:posted.revision+1,config:{domains:[second,'legacy.test']}};
   }});
   global.setDomainRemoveStatus = ()=>{};
   global.getDomainAnalysisSelectionSet = ()=>new Set();
-  global.refreshDomainAnalysis = global.loadCfg = global.refreshResults = global.refreshIPs = global.refreshValidIPs = async()=>{};
+  global.refreshDomainAnalysis = global.refreshResults = global.refreshIPs = global.refreshValidIPs = async()=>{};
+  global.loadCfg = ()=>{throw new Error('must not rebase settings draft');};
   assert.equal(await removeDomainsFromConfig([storage]), true);
   assert.deepEqual(posted, {domains:[second,'legacy.test'],revision:4});
 })().catch(error=>{console.error(error);process.exitCode=1;});

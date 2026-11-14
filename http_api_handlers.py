@@ -97,6 +97,7 @@ ALLOWED_STATIC_FILES = {
     "settings.html",
     "dns_frontend.css",
     "dns_frontend.js",
+    "view_feedback.js",
     "delivery_diagnostics.js",
     "teams_test.js",
     "delivery_resend.js",

@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <script src="/auth_frontend.js"></script>
+<script src="/view_feedback.js"></script>
 <script defer src="/security_ui.js"></script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -13,38 +14,49 @@
 
 </head>
 <body>
+<a class="skip-link" href="#workspace">Skip to current view</a>
 <div class="container">
-<header>
-  <div class="header-kicker">TraceDNS Console</div>
-  <h1>DNS Monitor</h1>
-  <p>Resolve, decode, verify, and track IOC lifecycle from one operational screen.</p>
-  <div class="header-tags">
-    <span>TXT/A Decode</span>
-    <span>MISP Sync</span>
-    <span>Teams Alerting</span>
-    <span>History Tracking</span>
-  </div>
+<header class="workspace-header">
+  <h1>TraceDNS</h1>
+  <span id="currentView">Monitoring / Status</span>
+  <details id="accountMenu"><summary>Account</summary><div id="accountNavigation"></div></details>
 </header>
-<nav>
-  <button id="menuSettings" data-access="operator">Settings</button>
-  <button id="menuDomainVerify" data-access="operator">Domain Verify</button>
-  <button id="menuStatus" class="active">Status</button>
-  <button id="menuQuery">Query</button>
-  <button id="menuDomainAnalysis">Domain Analysis</button>
-  <button id="menuIpIntel">Botnet IP Analysis</button>
-  <button id="menuIPs">All IPs</button>
-  <button id="menuValidIPs">Valid IPs</button>
+<nav class="workspace-nav" aria-label="Workspaces">
+  <div class="nav-group" role="group" aria-label="Monitoring"><span>Monitoring</span>
+    <button id="menuStatus" class="active" aria-current="page">Status</button>
+    <button id="menuIPs">All IPs</button>
+    <button id="menuValidIPs">Valid IPs</button>
+  </div>
+  <div class="nav-group" role="group" aria-label="Lookup and verification"><span>Lookup &amp; verify</span>
+    <button id="menuQuery">Query</button>
+    <button id="menuDomainVerify" data-access="operator">Domain Verify</button>
+  </div>
+  <div class="nav-group" role="group" aria-label="Analysis"><span>Analysis</span>
+    <button id="menuDomainAnalysis">Domain Analysis</button>
+    <button id="menuIpIntel">Botnet IP Analysis</button>
+  </div>
+  <div class="nav-group" role="group" aria-label="Operations and settings" data-access="operator"><span>Operations</span>
+    <button id="menuSettings" data-access="operator">Settings</button>
+    <a class="nav-link" href="#deliveryDiagnostics">Delivery</a>
+  </div>
 </nav>
+<main id="workspace" tabindex="-1">
 <section id="deliveryHealth" class="delivery-health" aria-labelledby="deliveryHeading" hidden>
-  <h2 id="deliveryHeading">Notification delivery</h2>
+  <h2 id="deliveryHeading" tabindex="-1">Notification delivery</h2>
   <p id="deliveryStatus" role="status" aria-live="polite" aria-atomic="true">Unknown — waiting for health.</p>
-  <p>Observation policy: continue independently of notification delivery; source progress may be uncertain.</p>
-  <div id="deliveryDetails">Unknown — no successful health read yet.</div>
-  <p id="deliveryChecked">Last successful health read: unknown</p>
-  <p class="hint">Enqueued is not ACKed. At-least-once attempts can duplicate delivery; an ACK is destination acceptance, not human receipt.</p>
+  <p id="deliveryWarnings"></p>
+  <details id="deliveryDisclosure">
+    <summary>Delivery details</summary>
+    <p>Observation policy: continue independently of notification delivery; source progress may be uncertain.</p>
+    <div id="deliveryDetails">Unknown — no successful health read yet.</div>
+    <p id="deliveryChecked">Last successful health read: unknown</p>
+    <p class="hint">Enqueued is not ACKed. At-least-once attempts can duplicate delivery; an ACK is destination acceptance, not human receipt.</p>
+  </details>
 </section>
+<details id="deliveryOperations" class="operations-disclosure" data-access="operator">
+<summary>Delivery diagnostics · manual read</summary>
 <section id="deliveryDiagnostics" class="delivery-health" data-access="operator" aria-labelledby="diagnosticsHeading">
-  <h2 id="diagnosticsHeading">Delivery diagnostics</h2>
+  <h2 id="diagnosticsHeading" tabindex="-1">Delivery diagnostics</h2>
   <p>Read-only cached evidence. No provider probes, retry, replay or queue changes.</p>
   <div class="diagnostics-actions">
     <button id="diagnosticsRead" type="button">Read diagnostics</button>
@@ -52,36 +64,31 @@
     <button id="diagnosticsDownload" type="button" disabled>Download sanitized JSON</button>
   </div>
   <p id="diagnosticsStatus" role="status" aria-live="polite" aria-atomic="true">Unknown — read diagnostics explicitly.</p>
-  <details>
+  <details id="diagnosticsDisclosure">
     <summary>Diagnostic evidence and next checks</summary>
     <div id="diagnosticsDetails">Unknown — no successful diagnostics read yet.</div>
   </details>
 </section>
+</details>
 <div class="overview-grid" id="overviewGrid">
   <div class="metric-card">
-    <span class="metric-label">Configured Domains</span>
-    <span class="metric-value" id="metricConfigured">0</span>
+    <span class="metric-label">Targets in Status snapshot (total)</span>
+    <span class="metric-value" id="metricStatusRows">—</span>
   </div>
   <div class="metric-card">
-    <span class="metric-label">Status Domains (total)</span>
-    <span class="metric-value" id="metricStatusRows">0</span>
+    <span class="metric-label">Managed IPs · current Status page</span>
+    <span class="metric-value" id="metricDecoded">—</span>
   </div>
+
   <div class="metric-card">
-    <span class="metric-label">Managed IOC IPs (status page)</span>
-    <span class="metric-value" id="metricDecoded">0</span>
-  </div>
-  <div class="metric-card">
-    <span class="metric-label">All / Valid IPs</span>
-    <span class="metric-value" id="metricIps">0 / valid 0</span>
-  </div>
-  <div class="metric-card">
-    <span class="metric-label">Last UI Refresh (Local)</span>
-    <span class="metric-value" id="metricUpdated">-</span>
+    <span class="metric-label">Status read (browser)</span>
+    <span class="metric-value" id="metricUpdated">—</span>
   </div>
 </div>
 
 <div id="settings" data-access="operator" class="section">
   <h3>⚙️ Settings</h3>
+  <p>Last loaded configuration · targets: <span id="metricConfigured">—</span></p>
   <div class="tab-buttons">
     <button id="settingsTabDomains" class="active">Domain settings</button>
     <button id="settingsTabCustom" data-access="admin">Custom decoders</button>
@@ -103,6 +110,9 @@
     <button id="addDomain" data-access="operator">+ Add Domain</button>
     <p id="domainSettingsStatus" role="status" aria-live="polite"></p>
     
+    <details id="serverSettingsAdvanced" data-access="admin">
+    <summary>Advanced server configuration · providers and interval</summary>
+    <p>These fields are saved together with the target configuration. Blank secret inputs keep saved values; only an explicit Clear saved value removes one.</p>
     <label>Servers (comma separated)
       <input id="servers" data-access="admin" type="text" placeholder="8.8.8.8, 1.1.1.1" />
     </label>
@@ -115,14 +125,17 @@
     <label>Interval (seconds)
       <input id="interval" data-access="admin" type="number" min="1" value="60" />
     </label>
+    </details>
     
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin:20px 0;">
       <button id="load">📥 Load</button>
       <button id="save" data-access="operator">💾 Save</button>
-      <button id="force" data-access="operator">⚡ Force Resolve</button>
+      <button id="force" data-access="operator" aria-describedby="forceResolveHelp">⚡ Force Resolve</button>
       <button id="verifyBtn" data-access="operator">🔬 Verify</button>
     </div>
     
+    <p id="forceResolveHelp">Force Resolve uses the current form to select configured target identities, then uses their saved definitions and saved providers. It does not save or run unsaved definitions. New or changed identities must be saved first. Acceptance is request admission, not completed resolution.</p>
+    <p id="forceResolveStatus" role="status" aria-live="polite"></p>
     <div id="verifyResult" style="background:#f8f9fa;padding:15px;max-height:240px;overflow:auto;margin-top:15px;font-family:monospace;border-radius:8px;border:2px solid #e9ecef;"></div>
   </div>
 
@@ -166,12 +179,16 @@
   </div>
   <div id="alertsSection" data-access="admin" style="display:none">
     <p style="color:#5b6a77;margin-bottom:12px;">Configure Teams/MISP/VirusTotal integration directly from the main console.</p>
-    <label for="teams_webhook_front">Teams Webhook URL
-      <input id="teams_webhook_front" type="text" placeholder="https://outlook.webhook.office.com/webhookb2/..." />
-    </label>
+    <p id="alertConfigurationSummary">Saved integration configuration not loaded.</p>
     <button id="teamsTestBtn" type="button" data-access="admin" disabled hidden aria-describedby="teamsTestHelp">Send real Teams test</button>
     <p id="teamsTestHelp" class="hint">Sends one real message using saved, applied settings only. Unsaved edits are ignored; save and load settings first to test changes. Does not retry queued alerts.</p>
     <p id="teamsTestStatus" role="status" aria-live="polite"></p>
+    <details id="alertIntegrationAdvanced">
+    <summary>Edit integration settings · secrets and advanced options</summary>
+    <p>Blank secrets keep saved values. Use Clear saved value to remove one explicitly. Saved configuration does not prove connectivity, delivery or successful runtime application.</p>
+    <label for="teams_webhook_front">Teams Webhook URL
+      <input id="teams_webhook_front" type="text" placeholder="https://outlook.webhook.office.com/webhookb2/..." />
+    </label>
     <label for="misp_url_front">MISP URL
       <input id="misp_url_front" type="text" placeholder="https://misp.example.com" />
     </label>
@@ -197,10 +214,11 @@
         <input id="vt_cache_ttl_days_front" type="number" min="1" max="3650" step="1" placeholder="1" />
       </label>
     </div>
+    </details>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center;">
       <button id="loadAlertSettingsBtn">Load Alert Settings</button>
       <button id="saveAlertSettingsBtn">Save Alert Settings</button>
-      <span id="alertSettingsStatus" class="settings-status"></span>
+      <span id="alertSettingsStatus" class="settings-status" role="status" aria-live="polite"></span>
     </div>
   </div>
   <pre id="log"></pre>
@@ -239,15 +257,11 @@
     <label>ENS Decode
       <select id="verifyEnsDecode"></select>
     </label>
-    <label>ENS Options (JSON)
-      <input id="verifyEnsOptions" type="text" placeholder='{"xor_byte":"0xA5"}' />
-    </label>
+
     <label>SNS Decode
       <select id="verifySnsDecode"></select>
     </label>
-    <label>SNS Options (JSON)
-      <input id="verifySnsOptions" type="text" placeholder='{"key_u32":"0x00400454"}' />
-    </label>
+
     <label hidden>RPC profile
       <select id="verifyRpcProfile" disabled aria-describedby="verifyRpcHelp">
         <option value="polygon_aes_gcm_v1">Polygon AES-128-GCM (rpc.txt)</option>
@@ -256,9 +270,7 @@
     <label hidden>DHT public key
       <textarea id="verifyDhtPublicKey" class="dht-public-key" rows="3" spellcheck="false" disabled aria-describedby="verifyDhtHelp" placeholder="64 hexadecimal characters; no prefix or whitespace"></textarea>
     </label>
-    <label hidden>DHT lookup options (JSON)
-      <textarea id="verifyDhtOptions" class="dht-options" rows="3" spellcheck="false" disabled aria-describedby="verifyDhtHelp" placeholder="Optional JSON object"></textarea>
-    </label>
+
     <label style="display:flex;align-items:center;gap:8px;margin-top:30px;font-weight:700;color:#334c5e;">
       <input id="verifyIncludeVt" type="checkbox" checked style="width:auto;margin:0;" />
       Include VT score
@@ -266,6 +278,19 @@
     <label style="display:flex;align-items:center;gap:8px;margin-top:30px;font-weight:700;color:#334c5e;">
       <input id="verifyAnalyzeDecoders" type="checkbox" checked style="width:auto;margin:0;" />
       Try all decoders (find hidden IPs)
+    </label>
+  </div>
+  <details id="verifyAdvanced">
+    <summary>Advanced validation options · JSON, budgets and workers</summary>
+    <div class="domain-verify-grid">
+    <label>ENS Options (JSON)
+      <input id="verifyEnsOptions" type="text" placeholder='{"xor_byte":"0xA5"}' />
+    </label>
+    <label>SNS Options (JSON)
+      <input id="verifySnsOptions" type="text" placeholder='{"key_u32":"0x00400454"}' />
+    </label>
+    <label hidden>DHT lookup options (JSON)
+      <textarea id="verifyDhtOptions" class="dht-options" rows="3" spellcheck="false" disabled aria-describedby="verifyDhtHelp" placeholder="Optional JSON object"></textarea>
     </label>
     <label>Top decoder candidates
       <input id="verifyDecoderTopN" type="number" min="1" max="50" value="8" />
@@ -277,37 +302,48 @@
       <input id="verifyVtWorkers" type="number" min="1" max="32" value="8" />
     </label>
   </div>
+  </details>
   <p id="verifyDhtHelp" class="field-help" hidden>Read-only BEP44 signed DNS lookup via the server. No C2 contact or republish; VT enrichment is disabled for DHT precheck. The public key is not secret; the name is a display label, not necessarily a DNS name. No DNS server, ENS RPC or SNS proxy is required. Allowed lookup options: duration, max_queries, timeout, rate, concurrency, max_nodes, bootstraps. A valid target can be registered even if no record is found. Bounded lookup coverage cannot prove absence or deletion, and signed DNS is not proof of actual C2 activity.</p>
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 10px;">
     <p id="verifyRpcHelp" class="field-help" hidden>Read-only Polygon contract lookup with AES-128-GCM authentication. The name is a display label; public RPC endpoints, contract, selector and sample key are built in. Only authenticated C2 entries become managed IPs. Relay, download and mining settings stay separate. No C2 contact or VT enrichment. A valid profile can be added even if the current lookup fails.</p>
     <button id="runDomainVerifyBtn">🔬 Validate Domain</button>
     <button id="addVerifiedDomainBtn">➕ Add Verified Domain</button>
     <button id="clearDomainVerifyBtn">🧹 Clear</button>
-    <span id="domainVerifyStatus" class="settings-status"></span>
+    <span id="domainVerifyStatus" class="settings-status" role="status" aria-live="polite"></span>
   </div>
   <div id="domainVerifySummary" style="background:#f8f9fa;padding:12px;border:1px solid #d7e4eb;border-radius:10px;margin-bottom:10px;">No validation result yet.</div>
-  <h4>Decoder Candidates</h4>
+  <details id="verifyCandidates" class="verify-evidence">
+  <summary>Decoder candidates · inspect without validating</summary>
+  <p>Only “Apply decoder and validate” changes the decoder and sends a new validation request.</p>
   <table id="domainVerifyDecoderTable">
     <thead><tr><th>Type</th><th>Decoder</th><th>Score</th><th>IPs</th><th>Anomaly</th><th>VT (M/S)</th><th>ASNs</th><th>Countries</th><th>Sample IPs</th></tr></thead>
     <tbody></tbody>
   </table>
 
-  <h4>DNS Server Results</h4>
+  </details>
+  <details id="verifyServers" class="verify-evidence">
+  <summary>DNS server results</summary>
   <table id="domainVerifyServerTable">
     <thead><tr><th>DNS Server</th><th>Query Type</th><th>Status</th><th>Values</th><th>Managed IPs</th><th>Method</th></tr></thead>
     <tbody></tbody>
   </table>
-  <h4>IP VT Summary</h4>
+  </details>
+  <details id="verifyIps" class="verify-evidence">
+  <summary>IP and VT evidence</summary>
   <table id="domainVerifyIpTable">
     <thead><tr><th>IP</th><th>Role</th><th>VT (M/S)</th><th>ASN</th><th>AS Owner</th><th>Country</th></tr></thead>
     <tbody></tbody>
   </table>
+  </details>
+  <details id="verifyRaw" class="verify-evidence">
+    <summary>Full validation response · raw values and add payload</summary>
+    <pre></pre>
+  </details>
 </div>
 
 <div id="status" class="section">
   <h3>📊 Current Status</h3>
-  <p><a data-full-json href="/results?include_raw=1" download="status-full.json">Download full legacy JSON (raw facts; may be large)</a></p>
-  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:15px;">
+  <div class="status-actions">
     <button id="pauseRefreshBtn">⏸️ Pause Auto-Refresh</button>
     <button id="statusVerifyBtn" data-access="operator">🔬 Verify Domains</button>
     <span id="refreshState">Auto-refresh active</span>
@@ -318,60 +354,52 @@
     <button id="status_next_btn" disabled>Next</button>
     <span id="status_page_meta" role="status">Preparing page...</span>
   </div>
-  <table id="resultsTable">
-    <thead><tr><th>Domain</th><th>Type</th><th>Values</th><th>Decoded IPs</th><th>Method</th><th>DNS Servers</th><th>Last Seen</th><th>Actions</th></tr></thead>
-    <tbody></tbody>
-  </table>
-  <h4>Analyzer</h4>
-  <div>
-    <label>Analysis output:
-      <div id="analyzeResult" style="background:#f8f9fa;padding:15px;max-height:200px;overflow:auto;font-family:monospace;border-radius:8px;border:2px solid #e9ecef;"></div>
-    </label>
+  <div class="status-layout" id="statusLayout">
+    <div class="table-scroll" tabindex="0" role="region" aria-label="Status targets">
+      <table id="resultsTable">
+        <thead><tr><th>Target</th><th>Type</th><th>Observation</th><th>Managed IPs</th><th>Last observed</th><th>Details</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <aside id="targetDetail" class="selection-detail" aria-labelledby="targetDetailHeading" hidden></aside>
   </div>
-  <h4>Domain History</h4>
-  <div id="historyBox">Select a domain's "History" button to view events.</div>
+  <details class="raw-export"><summary>Raw data export</summary><p><a data-full-json href="/results?include_raw=1" download="status-full.json">Download full legacy JSON (raw facts; may be large)</a></p></details>
 </div>
 
 <div id="query" class="section">
   <h3>🔎 Query</h3>
-  <label>Search value (IP or TXT fragment)
+  <p>IPv4 uses the local IP index. Other input, including IPv6, is matched as text against current values and the history of currently listed targets—not a server-wide history search.</p>
+  <label>IPv4 address or observed-value text fragment
     <input id="queryValue" type="text" placeholder="1.2.3.4 or example-txt" />
   </label>
-  <button id="doQuery" data-access="operator">🔍 Search</button>
-  <h4 style="margin-top:12px;">Local Results</h4>
+  <button id="doQuery">🔍 Search</button>
+  <button id="cancelQuery" disabled>Cancel browser read</button>
+  <p id="queryStatus" role="status">Not searched. Search explicitly reads local data and, for operator/admin, MISP.</p>
+  <h4>Current observations</h4>
+  <p id="queryLocalStatus" role="status">Not read.</p>
   <div id="queryResult"></div>
-  <h4 style="margin-top:12px;">MISP Results</h4>
-  <div id="queryMispResult" style="background:#f8f9fa;padding:12px;border:1px solid #d7e4eb;border-radius:10px;">-</div>
+  <h4>Recorded history matches</h4>
+  <p id="queryHistoryStatus" role="status">Not read.</p>
+  <div id="queryHistoryResult"></div>
+  <h4>MISP · external source</h4>
+  <p id="queryMispStatus" role="status">Not read.</p>
+  <div id="queryMispResult"></div>
 </div>
 
-<div id="domainanalysis" class="section">
-  <h3>🧭 Domain Analysis</h3>
-  <p><a data-full-json href="/domain-analysis?include_vt=0" download="domainanalysis-full.json">Download full legacy JSON (raw facts; may be large)</a></p>
-  <label>Search all domains (substring)<input id="domain_analysis_query" type="search" maxlength="253" placeholder="Domain substring" /></label>
-  <p>IP and AS statistics below describe the current page only. A domain can span multiple pages; lifecycle status describes the full domain.</p>
-  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
-    <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
-      <input id="domain_analysis_include_vt" type="checkbox" checked style="width:auto;margin:0;" />
-      Include AS context (VT)
-    </label>
-    <button id="refreshDomainAnalysisBtn">🔄 Refresh</button>
-    <span id="domainAnalysisMeta" style="font-size:.78rem;color:#5b6a77;"></span>
-    <span class="nxdomain-legend" title="When all DNS servers return NXDOMAIN or fail (with at least one NXDOMAIN), lifecycle starts yellow and turns red over 30 days.">
-      <span class="swatch"></span>
-      NXDOMAIN lifecycle (30 days)
-    </span>
+<div id="domainanalysis" class="section" aria-labelledby="domainAnalysisHeading">
+  <h3 id="domainAnalysisHeading">Domain Analysis</h3>
+  <p>Status is domain-wide; IP, AS and country evidence is current-page only. A domain may span pages.</p>
+  <div class="domain-analysis-tools">
+    <label>Search all domains (substring)<input id="domain_analysis_query" type="search" maxlength="253" placeholder="Domain substring" /></label>
+    <label><input id="domain_analysis_include_vt" type="checkbox" checked /> Include AS context (VT)</label>
+    <button id="refreshDomainAnalysisBtn">Refresh</button>
+  <button id="domainAnalysisManageBtn" data-access="operator" aria-expanded="false" aria-controls="domainAnalysisManageTools" hidden>Manage domains</button>
   </div>
-  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
-    <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
-      Current-page domain filter
-      <select id="domainAnalysisDomainSelect" style="width:auto;min-width:220px;margin-top:0;">
-        <option value="">All domains on this page</option>
-      </select>
-    </label>
-    <button id="clearDomainAnalysisFilterBtn">Show current page</button>
+  <div id="domainAnalysisManageTools" class="domain-analysis-tools" data-access="operator" hidden>
+    <span>Manage non-resolving domains on this page only.</span>
     <button id="selectNonResolvingDomainsBtn">Select Non-resolving on this page</button>
     <button id="clearSelectedDomainsBtn">Clear Selection</button>
-    <button id="removeSelectedDomainsBtn" data-access="operator">🗑️ Remove Selected</button>
+    <button id="removeSelectedDomainsBtn" data-access="operator">Remove Selected</button>
     <span id="domainRemoveStatus" class="settings-status"></span>
   </div>
   <div class="toolbar-row">
@@ -380,36 +408,23 @@
     <span id="domainanalysis_page_meta" role="status">Preparing page...</span>
   </div>
   <table id="domainDomainStatsTable">
-    <thead><tr><th>Domain</th><th>Status</th><th>Resolved IPs (page)</th><th>Decoded IPs (page)</th><th>Unique AS (page)</th><th>Unique Countries (page)</th><th>Top AS (page)</th><th>Top Country (page)</th><th>Last Seen</th><th>Select</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Domain</th><th>Status / IP coverage (page)</th><th>Record types</th><th>Last seen</th><th>Actions</th></tr></thead>
     <tbody></tbody>
   </table>
-  <div class="domain-summary-grid">
-    <div class="summary-card">
-      <h4>AS Group Summary (current page only)</h4>
-      <table id="domainAsSummaryTable">
-        <thead><tr><th>ASN</th><th>AS Owner</th><th>IPs</th><th>Domains</th><th>Countries</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-    <div class="summary-card">
-      <h4>Country Summary (current page only)</h4>
-      <table id="domainCountrySummaryTable">
-        <thead><tr><th>Country</th><th>IPs</th><th>Domains</th><th>ASNs</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-    <div class="summary-card">
-      <h4>AS × Country Intersection (current page only)</h4>
-      <table id="domainAsCountrySummaryTable">
-        <thead><tr><th>ASN</th><th>Country</th><th>AS Owner</th><th>IPs</th><th>Domains</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
+  <div class="domain-analysis-tools">
+    <label>Current-page domain filter
+      <select id="domainAnalysisDomainSelect"><option value="">Select a domain on this page</option></select>
+    </label>
+    <button id="clearDomainAnalysisFilterBtn">Clear domain selection</button>
+    <span id="domainAnalysisMeta" role="status"></span>
   </div>
-  <table id="domainAnalysisTable">
-    <thead><tr><th>Domain</th><th>Status</th><th>Record Types</th><th>Role</th><th>IP</th><th>ASN</th><th>AS Owner</th><th>Country</th><th>VT (M/S)</th><th>Last Seen</th></tr></thead>
-    <tbody></tbody>
-  </table>
+  <section id="domainAnalysisDetail" aria-label="Selected domain detail" hidden></section>
+  <details id="domainAnalysisSummaries">
+    <summary>Cached AS / country summaries (current page only)</summary>
+    <div id="domainAnalysisSummaryContent"></div>
+  </details>
+  <p class="nxdomain-legend">NXDOMAIN lifecycle: yellow to red over 30 days. No-data and Error-only are not NXDOMAIN.</p>
+  <p><a data-full-json href="/domain-analysis?include_vt=0" download="domainanalysis-full.json">Download full legacy JSON (raw facts; may be large)</a> — explicit download only; never an automatic fallback.</p>
 </div>
 
 <div id="ipintel" class="section" aria-labelledby="ipIntelHeading">
@@ -439,6 +454,7 @@
     </div>
     <p id="ipRelRunStatus" class="run-status" role="status" aria-live="polite" aria-atomic="true">Ready to analyze relationships.</p>
     <span id="ipIntelMeta" class="supporting-status"></span>
+    <p id="ipIntelMispStatus" class="supporting-status" role="status"></p>
 
     <details class="ipintel-enrichment-settings">
       <summary>Per-IP enrichment options</summary>
@@ -498,7 +514,10 @@
       <div class="iprel-metric"><span>Coverage</span><strong id="ipRelMetricCoverage" data-empty-value="—">—</strong></div>
     </div>
     <div id="ipRelQualityBanner" class="quality-banner quality-neutral" role="status" aria-live="polite" aria-atomic="true">Run an analysis to assess result quality.</div>
-    <span id="ipRelMeta" class="supporting-status" role="status" aria-live="polite" aria-atomic="true">Detailed job metadata appears after analysis.</span>
+    <details id="ipRelJobDetails"><summary>Job metadata · parameters and counts</summary>
+      <span id="ipRelMeta" class="supporting-status" role="status" aria-live="polite" aria-atomic="true">Detailed job metadata appears after analysis.</span>
+    </details>
+    <p class="field-help">Display limits: 1,000 pairs and 1,000 clusters in tables; up to 400 nodes and 600 edges in Graph. These are view limits, not proof of complete analysis. Export retains the accepted result.</p>
 
     <div class="iprel-tabs" role="tablist" aria-label="Relationship result views">
       <button id="ipRelViewTableBtn" type="button" role="tab" aria-controls="ipRelTableView" aria-selected="true" tabindex="0">Table</button>
@@ -517,10 +536,13 @@
         </div>
       </div>
       <h4>Clusters</h4>
+      <p class="field-help">Inspect opens cached evidence only. Analyze cluster replaces the input list and runs Per-IP enrichment.</p>
       <div id="ipRelClustersTableScroll" class="table-scroll" role="region" aria-label="Relationship clusters table" tabindex="0">
         <table id="ipRelClustersTable"><thead><tr><th>Cluster</th><th>Size</th><th>Cohesion</th><th>Top ASN</th><th>Top Owner</th><th>Top Country</th><th>Top CSP</th><th>VT Summary</th></tr></thead><tbody><tr><td colspan="8">Run an analysis to populate clusters.</td></tr></tbody></table>
       </div>
     </div>
+
+    <aside id="ipRelEvidence" class="selection-detail" aria-label="Selected relationship evidence" hidden></aside>
 
     <div id="ipRelGraphView" role="tabpanel" aria-labelledby="ipRelViewGraphBtn" tabindex="0" style="display:none;">
       <div class="visual-result-layout">
@@ -542,6 +564,10 @@
     <div id="ipIntelHintsBox" class="ipintel-hints-box"></div>
     <p id="ipIntelResultsEmpty" class="empty-state" role="status">Run “Enrich Per-IP Details” to populate summaries and evidence.</p>
     <div id="ipIntelResultsContent" hidden="hidden">
+    <details id="ipIntelEvidence"><summary>Inspect cached per-IP evidence and summaries</summary>
+    <p id="ipIntelEvidenceRange" role="status"></p>
+    <button id="ipIntelEvidencePrevious" type="button">Previous evidence page</button>
+    <button id="ipIntelEvidenceNext" type="button">Next evidence page</button>
     <div class="domain-summary-grid ipintel-summary-grid">
       <div class="summary-card span-all"><h4 id="ipIntelCspSummaryHeading">CSP Footprint Summary</h4><div class="table-scroll" role="region" aria-labelledby="ipIntelCspSummaryHeading" tabindex="0"><table id="ipIntelCspSummaryTable"><thead><tr><th>CSP</th><th>IPs</th><th>ASNs</th><th>Countries</th><th>Malicious</th></tr></thead><tbody></tbody></table></div></div>
       <div class="summary-card"><h4 id="ipIntelAsSummaryHeading">AS Group Summary</h4><div class="table-scroll" role="region" aria-labelledby="ipIntelAsSummaryHeading" tabindex="0"><table id="ipIntelAsSummaryTable"><thead><tr><th>ASN</th><th>AS Owner</th><th>CSP</th><th>IPs</th><th>Malicious</th><th>Countries</th></tr></thead><tbody></tbody></table></div></div>
@@ -552,12 +578,15 @@
     <div class="table-scroll" role="region" aria-label="Per-IP enrichment details table" tabindex="0"><table id="ipIntelResultTable"><thead><tr><th>IP</th><th>ASN</th><th>AS Owner</th><th>CSP</th><th>Country</th><th>VT (M/S)</th></tr></thead><tbody></tbody></table></div>
     <h4>Invalid Inputs</h4>
     <div id="ipIntelInvalidBox" class="invalid-inputs-box"></div>
+    <details id="ipIntelRaw"><summary>Full received enrichment JSON · includes all returned rows</summary><pre></pre></details>
+    </details>
     </div>
   </section>
 </div>
 
 <div id="ips" class="section">
   <h3>📍 All IPs</h3>
+  <p>All recorded IPs (current + history): <span id="metricIps">—</span>. Count describes retained entries, not independent queries or infections.</p>
   <p><a data-full-json href="/ips?include_vt=0&amp;limit=5000" download="ips-legacy.json">Download legacy IP JSON (first 5,000 rows; use offset for more)</a> · <a href="/results?include_raw=1" download="dns-raw.json">Download full current DNS raw facts</a></p>
   <div class="toolbar-row" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
     <label style="margin:0;font-weight:700;color:#334c5e;display:inline-flex;align-items:center;gap:6px;">
@@ -573,6 +602,7 @@
       </select>
     </label>
 
+    <details><summary>VT work limits</summary>
     <label style="margin:0;display:inline-flex;align-items:center;gap:6px;">
       VT workers
       <input id="ips_vt_workers" type="number" min="1" max="32" value="8" style="width:88px;" />
@@ -582,6 +612,7 @@
       VT budget
       <input id="ips_vt_budget" type="number" min="0" max="5000" value="200" style="width:96px;" />
     </label>
+    </details>
 
     <button id="ips_prev_btn">◀ Prev</button>
     <button id="ips_next_btn">Next ▶</button>
@@ -592,13 +623,15 @@
   </div>
 
   <table id="ipsTable">
-    <thead><tr><th>IP</th><th>Domains</th><th>Count</th><th>Last Seen</th><th>VT Score (M/S)</th><th>VT Context</th></tr></thead>
+    <thead><tr><th>IP</th><th>Related targets</th><th>Last observed</th><th>Enrichment</th><th>Details</th></tr></thead>
     <tbody></tbody>
   </table>
 </div>
 
 <div id="validips" class="section">
   <h3>✅ Valid IPs (syntactically valid)</h3>
+  <p>Matching the last accepted recent-time filter: <span id="metricValidIps">—</span>. Validity is syntax, not safety. Count describes retained entries, not independent queries or infections.</p>
+  <p>Legacy IP download does not apply this view's validity or recent-time filters.</p>
   <p><a data-full-json href="/ips?include_vt=0&amp;limit=5000" download="validips-legacy.json">Download legacy IP JSON (first 5,000 rows; use offset for more)</a> · <a href="/results?include_raw=1" download="dns-raw.json">Download full current DNS raw facts</a></p>
   <label>Recent seconds:
     <input id="valid_since" type="number" min="0" value="3600" />
@@ -610,10 +643,11 @@
     <span id="validips_page_meta" role="status">Preparing page...</span>
   </div>
   <table id="validIpsTable">
-    <thead><tr><th>IP</th><th>Domains</th><th>Count</th><th>Last Seen</th><th>Valid</th></tr></thead>
+    <thead><tr><th>IP</th><th>Related targets</th><th>Last observed</th><th>Validity</th><th>Details</th></tr></thead>
     <tbody></tbody>
   </table>
 </div>
+</main>
 </div>
 
 <dialog id="deliveryResendDialog" aria-labelledby="deliveryResendHeading" aria-describedby="deliveryResendWarning">

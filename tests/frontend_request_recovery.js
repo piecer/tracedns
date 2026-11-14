@@ -13,13 +13,14 @@ function environment(transport){
   const timers = new Map(), elements = new Map(), listeners = new Map();
   const node = id => {
     if(!elements.has(id)) elements.set(id, {style:{},dataset:{},textContent:'',innerHTML:'retained',value:'',checked:false,
-      children:[], setAttribute(){}, prepend(el){elements.set(el.id,el);},
+      children:[], setAttribute(){}, removeAttribute(){}, prepend(el){elements.set(el.id,el);},
       get childNodes(){return this.children;},
       replaceChildren(...children){this.children=[];children.forEach(el=>this.appendChild(el));},
       appendChild(el){this.children.push(el);el.parentNode=this;},
+      append(...children){children.forEach(el=>this.appendChild(el));}, focus(){}, scrollIntoView(){},
       insertBefore(el){this.appendChild(el);},
       remove(){if(this.parentNode)this.parentNode.children=this.parentNode.children.filter(n=>n!==this);},
-      querySelectorAll(){return [];},
+      querySelectorAll(){return [];}, querySelector(selector){return node(String(id)+':'+selector);},
       classList:{add(){},remove(){},toggle(){},contains(){return false;}}, addEventListener(){}});
     return elements.get(id);
   };
@@ -362,18 +363,30 @@ test('clean VT completion replaces pending context and later ASN changes render'
   await env.context.TraceAuth.ready;
   vm.runInContext(fs.readFileSync('dns_frontend.js','utf8'),env.context);
   env.node('ips_include_vt').checked=true;
+  env.node('.section.active').id='ips';
   const rows=[];
-  env.node('#ipsTable tbody').appendChild=row=>rows.push(row);
+  const tbody=env.node('#ipsTable tbody'); tbody.isConnected=true;
+  tbody.appendChild=row=>{rows.push(row);row.parentElement=tbody;};
   const original=env.context.document.createElement;
-  env.context.document.createElement=()=>{const n=original();n.children=[];n.appendChild=c=>n.children.push(c);return n;};
+  // Details now resolves through the mounted, accepted row. Model that DOM
+  // ownership without bypassing the production entrypoint or its assertions.
+  env.context.document.createElement=tag=>{
+    const n=original();n.tagName=tag;n.children=[];
+    n.appendChild=c=>{n.children.push(c);c.parentElement=n;};
+    Object.defineProperty(n,'isConnected',{get(){return !!this.parentElement?.isConnected;}});
+    n.closest=selector=>{for(let p=n;p;p=p.parentElement)if(p.tagName===selector)return p;return null;};
+    return n;
+  };
   await env.context.refreshIPs();
   vt={malicious:0,suspicious:0,asn:15169,country:'US'};
   await env.context.refreshIPs();
   assert.equal(rows.length,2,'clean reports are not equivalent to absent reports');
-  assert.match(rows[1].children[5].textContent,/15169/);
+  rows[1].children[4].children[0].onclick();
+  assert.match(env.node('ips').children.at(-1).children.map(el=>el.textContent).join(' '),/15169/);
   vt={...vt,asn:1234};
   await env.context.refreshIPs();
-  assert.match(rows[2].children[5].textContent,/1234/);
+  rows[2].children[4].children[0].onclick();
+  assert.match(env.node('ips').children.at(-1).children.map(el=>el.textContent).join(' '),/1234/);
 });
 
 test('native fetch aborts a real partial JSON body and closes the response socket', async()=>{

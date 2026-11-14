@@ -6,6 +6,7 @@ READ = {'/config', '/results', '/decoders', '/decoders/custom', '/history', '/ip
 OPERATE = {'/resolve', '/ip', '/analyze', '/verify', '/domain-precheck', '/ip-list-analysis',
            '/ip-relationship-jobs', '/ip-relationship-analysis', '/misp/search', '/misp/event-ips'}
 PAGES = {'/', '/dns_frontend.html', '/dns_dashboard.html', '/dns_frontend.js', '/dns_frontend.css',
+         '/view_feedback.js',
          '/delivery_resend.js', '/teams_test.js', '/delivery_diagnostics.js', '/auth_frontend.js', '/security_ui.js', '/account.html', '/audit.html',
          '/country_centroids.json', '/cytoscape.min.js', '/world_countries_110m.geojson'}
 SELF_GET = {'/auth/me', '/auth/csrf', '/auth/activity', '/auth/sessions'}
