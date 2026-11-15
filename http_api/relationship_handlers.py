@@ -388,6 +388,7 @@ def start_ip_relationship_job(
     local_dns_context: Optional[Dict[str, Any]] = None,
     misp_context: Optional[Dict[str, Any]] = None,
     *, principal=None, security_store=None, request_id="", source_ip="", service=None,
+    ai_source_stamp=None,
 ) -> Dict[str, Any]:
     service = service if service is not None else _legacy_job_service
     valid_ips, _invalid = _validate_relationship_request(data)
@@ -399,6 +400,10 @@ def start_ip_relationship_job(
     now = time.time()
     job = {
         "job_id": job_id,
+        # Server-only original provenance; never part of ordinary job responses.
+        "_ai_source_stamp": ai_source_stamp,
+        "_ai_source_id": uuid.uuid4().hex if ai_source_stamp is not None else None,
+        "_ai_has_misp_context": misp_context is not None or data.get('misp_event_id') not in (None, ''),
         "owner_id": (principal or {}).get("id"),
         "actor": dict(principal) if principal is not None else None,
         "security_store": security_store,
@@ -469,6 +474,82 @@ def get_ip_relationship_job(job_id: str, *, include_result: bool = False, princi
         if include_result and job.get("status") in ("completed", "failed"):
             out["result"] = job.get("result")
         return (out, 200)
+
+
+def _read_ai_pair(service, selector, user_id, session_id, deadline, *, retained=None):
+    """Private bounded selected-pair read; never export or retain a whole result.
+
+    Initial lookup is capped before iteration. Rechecks access exactly the
+    original index, never search for a replacement after eviction/reordering.
+    """
+    import math
+    from local_ai.contracts import AIError
+    from local_ai.evidence import project_pair
+    from local_ai.sources import RelationshipStamp, bounded_lock
+
+    if type(service) is not RelationshipJobService:
+        raise AIError('source_unavailable')
+    with bounded_lock(service.lock, deadline):
+        if service.stopped or type(service.jobs) is not dict:
+            raise AIError('source_revoked')
+        job = service.jobs.get(selector['job_id'])
+        if type(job) is not dict:
+            raise AIError('source_revoked' if retained else 'not_found')
+        stamp = job.get('_ai_source_stamp')
+        if type(stamp) is not RelationshipStamp:
+            raise AIError('source_revoked' if retained else 'source_unavailable')
+        if ((stamp.user_id, stamp.session_id) != (user_id, session_id)
+                or job.get('owner_id') != user_id):
+            raise AIError('source_revoked' if retained else 'not_found')
+        actor = job.get('actor')
+        if (job.get('job_id') != selector['job_id'] or type(actor) is not dict
+                or (actor.get('id'), actor.get('session_id')) != (stamp.user_id, stamp.session_id)):
+            raise AIError('source_revoked' if retained else 'source_unavailable')
+        if stamp.has_misp_context is not False or job.get('_ai_has_misp_context') is not False:
+            raise AIError('source_revoked' if retained else 'source_unavailable')
+        if job.get('status') != 'completed':
+            raise AIError('source_revoked' if retained else 'source_not_ready')
+        done = job.get('done_at')
+        if (type(done) not in (int, float) or not math.isfinite(done)
+                or time.time() - done > _IP_REL_JOB_TTL_SECONDS):
+            raise AIError('source_revoked')
+        if (type(job.get('status_code')) is not int or not 200 <= job['status_code'] < 300
+                or job.get('error') is not None):
+            raise AIError('source_unavailable')
+        identity = job.get('_ai_source_id')
+        if type(identity) is not str or re.fullmatch('[a-f0-9]{32}', identity) is None:
+            raise AIError('source_unavailable')
+        result = job.get('result')
+        if type(result) is not dict or type(result.get('pairs')) is not list:
+            raise AIError('source_unavailable')
+        # Identity scalars fence replacement without retaining the result graph.
+        identity = [identity, id(job), id(result)]
+        pairs = result['pairs']
+        if len(pairs) > 5000:
+            raise AIError('too_large')
+        if retained is None:
+            index = None
+            for position, pair in enumerate(pairs):
+                if (type(pair) is not dict or any(type(pair.get(key)) is not str
+                        or len(pair[key]) > 15 for key in ('a', 'b'))):
+                    raise AIError('source_unavailable')
+                if (pair.get('a'), pair.get('b')) == (selector['a'], selector['b']):
+                    index = position
+                    break
+            if index is None:
+                raise AIError('not_found')
+        else:
+            index, expected_identity, expected_stamp = retained
+            if (identity != expected_identity or stamp != expected_stamp or index >= len(pairs)):
+                raise AIError('source_revoked')
+        pair = pairs[index]
+        if (type(pair) is not dict or any(type(pair.get(key)) is not str
+                or len(pair[key]) > 15 for key in ('a', 'b'))
+                or (pair.get('a'), pair.get('b')) != (selector['a'], selector['b'])):
+            raise AIError('source_revoked')
+        projected = project_pair(pair, result.get('quality'), result.get('analysis_window'),
+                                 source_job_id=selector['job_id'], has_misp_context=False)
+        return index, identity, stamp, projected
 
 
 def cancel_ip_relationship_job(job_id: str, *, principal=None, service=None) -> Tuple[Dict[str, Any], int]:

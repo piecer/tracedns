@@ -2,6 +2,7 @@
 import json
 import threading
 import time
+import uuid
 
 
 class BackgroundReadModel:
@@ -34,6 +35,7 @@ class BackgroundReadModel:
         self._dirty = True
         self._stale = False
         self._epoch = 0
+        self._authority_id = uuid.uuid4().hex
         self._error = None
 
     def start(self):
@@ -55,6 +57,19 @@ class BackgroundReadModel:
                            else "ready" if ready else "building"),
                 "error_code": self._error,
             }
+
+    def publication_authority(self, *, timeout=0.02) -> tuple[str, int]:
+        """Read private instance/revocation identity without capturing source data."""
+        if type(timeout) not in (int, float) or not 0 <= timeout <= 0.1:
+            raise ValueError('authority wait must be between zero and 0.1 seconds')
+        if not self._condition.acquire(timeout=timeout):
+            raise TimeoutError('publication authority busy')
+        try:
+            if self._stopped:
+                raise RuntimeError('publication owner stopped')
+            return self._authority_id, self._epoch
+        finally:
+            self._condition.release()
 
     def invalidate(self, hard=False):
         """Coalesce work; hard invalidation also revokes all older publications."""

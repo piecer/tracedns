@@ -90,6 +90,7 @@ used in its place. Node.js is needed for browser tests, not to serve the dashboa
 | VirusTotal | Set a VT API key in Settings. No separate VT SDK is needed. |
 | Teams / MISP | Configure the destination in Settings. PyMISP is included in the base requirements. |
 | GeoIP country fallback | Provide a MaxMind `.mmdb` file through `GEOIP_MMDB_PATH` or `geoip_mmdb_path` in the config. The base requirements include `geoip2`. |
+| Experimental local AI | Disabled by default. An explicitly qualified local Ollama model/profile and exact digest are required; see [local AI assistance](docs/LOCAL_AI.md) for scope, qualification status and limits. |
 
 If you already run TraceDNS on Python 3.10, prepare and validate a separate
 Python 3.11+ environment before switching. Keep the old environment and consistent
@@ -245,8 +246,11 @@ agent or a replacement for network telemetry.
 - **A missing result is not a clean bill of health.** Timeouts, unavailable
   enrichment and resource limits can leave gaps. In particular, a failed DHT
   attempt is kept separate from the last confirmed signed record.
-- **An external AI client is not a built-in LLM detector.** The API and `SKILL.md`
-  support external tooling; local LLM inference is not a shipped analysis feature.
+- **AI assistance is not a detector.** The API and `SKILL.md` support external
+  tooling. Separate, disabled-by-default [local AI assistance](docs/LOCAL_AI.md)
+  can propose decoder candidates or explain selected evidence; it cannot change
+  deterministic verdicts or automatically apply changes. Its qualification status
+  and operational limits are explicit in that guide.
 
 Use only targets and services you are authorized to query. Start with the empty
 example configuration, review outgoing-service settings and keep credentials out
@@ -590,6 +594,7 @@ history and account database.
 | [Deployment and accounts](docs/security/deployment.md) | HTTPS, roles, audit, account recovery and backups. |
 | [REST API](docs/API.md) / [OpenAPI](docs/openapi.json) | Authentication, requests, response contracts and external clients. |
 | [AI client instructions](SKILL.md) | How an external agent should use the API safely. This is not an embedded LLM analysis engine. |
+| [Experimental local AI assistance](docs/LOCAL_AI.md) | Explicit decoder proposals, selected-pair/cached-diagnostic explanations, startup policy, privacy, ownership and unsettled-provider recovery. |
 | [DHT tracking](docs/DHT_TRACKING.md) | Public-key targets, signed records, retained state and lookup limits. |
 | [RPC tracking](docs/RPC_TRACKING.md) | Polygon configuration tracking and an offline decoder example. |
 | [Console views](docs/VIEW_PRESENTATION.md) | Result/detail/advanced workflow, count scopes, draft ownership, cancellation and UI limits. |

@@ -145,6 +145,11 @@
     if (method === 'POST' && ['/delivery-resend/preview','/delivery-resend',
         '/api/v1/delivery-resend/preview','/api/v1/delivery-resend'].includes(url.pathname) &&
         [400,404,409,429,503].includes(response.status)) return response;
+    // Closed local-AI refusals belong to the invoking panel. Do not broaden
+    // this exception to unknown methods/IDs or bypass auth/audit failures.
+    const aiRead = method === 'GET' && /^\/(?:api\/v1\/)?ai\/(?:status|jobs\/[a-f0-9]{32})$/.test(url.pathname);
+    const aiWrite = method === 'POST' && /^\/(?:api\/v1\/)?ai\/jobs(?:\/[a-f0-9]{32}\/cancel)?$/.test(url.pathname);
+    if ((aiRead || aiWrite) && [400,404,409,413,422,429,502,503,504].includes(response.status)) return response;
     if (!response.ok) {
       const message = response.status === 409 ? 'Conflict: reload this page before saving again.' : response.status === 403 ? 'Permission denied for this action.' : response.status === 401 ? 'Sign-in failed or session expired.' : `Request failed (${response.status}).`;
       const security = response.status === 401 || response.status === 403;

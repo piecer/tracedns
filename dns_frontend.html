@@ -8,6 +8,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>DNS Monitor</title>
 <link rel="stylesheet" href="/dns_frontend.css">
+<link rel="stylesheet" href="/local_ai_frontend.css">
 
 <!-- Phase 2/3: lightweight graph/map visualization (no build step) -->
 <script src="/cytoscape.min.js"></script>
@@ -64,6 +65,8 @@
     <button id="diagnosticsDownload" type="button" disabled>Download sanitized JSON</button>
   </div>
   <p id="diagnosticsStatus" role="status" aria-live="polite" aria-atomic="true">Unknown — read diagnostics explicitly.</p>
+  <button id="deliveryLocalAI" type="button">Local AI assistance · 로컬 AI 도움</button>
+  <div id="deliveryLocalAIPanel"></div>
   <details id="diagnosticsDisclosure">
     <summary>Diagnostic evidence and next checks</summary>
     <div id="diagnosticsDetails">Unknown — no successful diagnostics read yet.</div>
@@ -174,6 +177,8 @@
       <button id="reloadCustom">Reload catalog</button>
     </div>
     <div id="customPreviewResult" style="background:#fff7e6;padding:15px;margin-top:15px;white-space:pre-wrap;font-family:monospace;border-radius:8px;border:2px solid #ffeaa7;"></div>
+    <button id="decoderLocalAI" type="button">Local AI assistance · 로컬 AI 도움</button>
+    <div id="decoderLocalAIPanel"></div>
     <h5 style="margin-top:15px;color:#1b5970;">Registered Custom Decoders</h5>
     <div id="customList" style="border:2px solid #e9ecef;padding:15px;max-height:220px;overflow:auto;background:#f8f9fa;border-radius:8px;"></div>
   </div>
@@ -671,6 +676,7 @@
 </dialog>
 <script src="/delivery_resend.js"></script>
 <script src="/teams_test.js"></script>
+<script src="/local_ai_frontend.js"></script>
 <script src="/dns_frontend.js"></script>
 <script src="/delivery_diagnostics.js"></script>
 

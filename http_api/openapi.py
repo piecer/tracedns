@@ -6,6 +6,10 @@ This is documentation, not a second validation or authorization implementation.
 import copy
 
 from http_api.rest import PATTERNS, PREFIX, ROUTES
+from http_api.local_ai_schema import (
+    REQUEST_SCHEMA as AI_REQUEST, EMPTY_SCHEMA as AI_EMPTY, STATUS_SCHEMA as AI_STATUS,
+    JOB_SCHEMA as AI_JOB, CANCEL_SCHEMA as AI_CANCEL, ERROR_SCHEMA as AI_ERROR,
+)
 from http_api.delivery_health import HEALTH_SCHEMA, PROGRESS_SCHEMA
 from http_api.delivery_diagnostics import DIAGNOSTICS_SCHEMA
 from http_api.teams_test import REQUEST_SCHEMA as TEAMS_TEST_REQUEST, RESULT_SCHEMA as TEAMS_TEST_RESULT
@@ -96,6 +100,8 @@ CONFIG = obj({
 DECODER = obj({'revision': REVISION, 'name': STRING, 'decoder_type': {'enum': ['TXT', 'A'], 'default': 'TXT'},
                'steps': {'type': 'array', 'items': OBJECT}}, ('revision', 'name', 'steps'))
 BODIES = {
+    '/ai/jobs': AI_REQUEST,
+    '/ai/jobs/{job_id}/cancel': AI_EMPTY,
     '/delivery-resend/preview': PREVIEW_REQUEST_SCHEMA,
     '/delivery-resend': CONFIRM_REQUEST_SCHEMA,
     '/teams/test': TEAMS_TEST_REQUEST,
@@ -167,6 +173,10 @@ for _path in PREPARED_PATHS:
 QUERIES['/ips']['valid_only'] = {'type': 'boolean', 'default': False, 'description': 'Filter before prepared pagination.'}
 QUERIES['/ips']['limit']['description'] = 'Legacy: max 5000/default 500. Prepared: max 200/default 100, further reduced by byte budget.'
 DESCRIPTIONS = {
+    '/ai/status': 'Admin/operator-only startup configuration/capacity, no model request. No session touch. active_job identifies only this user AND session, never another session even for admins. Disabled by default.',
+    '/ai/jobs': 'Explicit local assistance; decoder_suggest is admin-only, relationship_pair/delivery admin or operator. Closed16KiB request; no endpoint/model/prompt overrides. One physical worker/two queued/one unfinished per user.120-second original deadline; no automatic retry. Pair must select an authorized completed submission-stamped non-MISP source. Decoder validation inputs never reach generation. 202 is admission, not completion. Original facts and decisions never change.',
+    '/ai/jobs/{job_id}': 'Originating user AND session only, including administrators. No session touch. In-memory job/result can expire or be revoked. Result usable only when completed and audit_status=success; pending audit is not accepted success. Complete envelope<=32KiB. Terminal retention600s/32 records/1MiB aggregate. Source ownership and configured-secret publication are rechecked.',
+    '/ai/jobs/{job_id}/cancel': 'Explicit publication cancellation. Queued cancellation can be confirmed; running cancellation drains the native request and remains pending until physical settlement. Unknown provider settlement blocks new inference durably across restart. This endpoint never stops, unloads or kills the provider; no auto cancellation on browser navigation.',
     '/delivery-resend/preview': 'Admin-only preview of current saved managed IPs for one saved target and selected Teams/MISP channels. Unique JSON keys; body <=4096 bytes. No live lookup or provider calls. Last-good data is not proof of freshness/reachability. Ready creates an actor-bound 300-second in-memory intent (capacity 128), not delivery. Over 256 IPs or the configured unit budget is refused, never truncated. See docs/DELIVERY_RESEND.md.',
     '/delivery-resend': 'Admin-only explicit confirmation of exactly the actor-bound preview token. Revalidates configuration, source and destination bindings before atomic durable admission of all channels. Queued is not provider ACK or human receipt. Same actor/token yields already_queued without new work. 30-second per-target cooldown, bounded durable markers (256, 24-hour retention). Pending/blocked work is not reset. No history deletion, automatic retry or arbitrary destinations. Unknown or transport failure must not be interpreted as no commit. See docs/DELIVERY_RESEND.md.',
     '/teams/test': 'Admin-only explicit real Teams test using saved, applied settings at the supplied revision; no draft credentials or message. One in-flight request and a 30-second cooldown after an admitted send. No queued alert replay, ledger/diagnostic-history change, or automatic retry. Accepted means provider acceptance, not human receipt. Timeout/transport failure can mean unknown delivery. See docs/TEAMS_TEST.md.',
@@ -227,6 +237,8 @@ DECODER_CATALOG = obj({
 }, ('revision', 'decoders', 'a_decoders', 'ens_decoders', 'custom', 'custom_a', 'custom_all'))
 WARNINGS = {'type': 'array', 'items': STRING, 'description': 'Sanitized post-commit application/cleanup warnings. The revision is committed; these are not rollback or retry instructions.'}
 READ_RESPONSES = {
+    '/ai/status': AI_STATUS,
+    '/ai/jobs/{job_id}': AI_JOB,
     '/delivery-health': HEALTH_SCHEMA,
     '/delivery-diagnostics': DIAGNOSTICS_SCHEMA,
     '/decoders': DECODER_CATALOG,
@@ -250,6 +262,8 @@ READ_RESPONSES = {
        for path in ('/auth/activity', '/admin/audit')},
 }
 WRITE_RESPONSES = {
+    '/ai/jobs': AI_JOB,
+    '/ai/jobs/{job_id}/cancel': AI_CANCEL,
     '/delivery-resend/preview': PREVIEW_RESULT_SCHEMA,
     '/delivery-resend': CONFIRM_RESULT_SCHEMA,
     '/teams/test': TEAMS_TEST_RESULT,
@@ -267,6 +281,8 @@ WRITE_RESPONSES = {
 
 
 def roles(path, method):
+    if path.startswith('/ai/'):
+        return ['operator', 'admin']
     if path.startswith('/admin/') or path in RESEND_PATHS or path in ('/settings', '/teams/test') or (path.startswith('/decoders/custom') and method != 'GET'):
         return ['admin']
     if path.startswith('/auth/') or path in ('/', '/openapi.json'):
@@ -282,7 +298,7 @@ def openapi_document():
     for path, methods in ROUTES.items():
         paths[path] = {}
         for method in methods:
-            success = '202' if path == '/ip-relationship-jobs' else '201' if path == '/admin/users' and method == 'POST' else '200'
+            success = '202' if path in ('/ip-relationship-jobs', '/ai/jobs') else '201' if path == '/admin/users' and method == 'POST' else '200'
             operation = {
                 'operationId': method.lower() + '_' + (path.strip('/').replace('/', '_').replace('-', '_').replace('.', '_').replace('{', '').replace('}', '') or 'discovery'),
                 'summary': method + ' ' + path,
@@ -302,6 +318,16 @@ def openapi_document():
             for status in ('400', '413'):
                 operation['responses'][status]['content']['text/plain'] = {'schema': STRING}
             operation['responses']['503']['description'] += '; worker saturation may return an empty body'
+            if path.startswith('/ai/'):
+                operation['x-max-body-bytes'] = 16384
+                operation['x-max-response-bytes'] = 32768
+                for status in ('400', '404', '409', '413', '422', '429', '502', '503', '504'):
+                    operation['responses'][status] = {
+                        'description': 'Closed AI refusal or shared security/framing failure. Never automatically retry mutations.',
+                        'content': {'application/json': {'schema': {'anyOf': [AI_ERROR, {'$ref': '#/components/schemas/Error'}]}}}}
+                for status in ('400', '413'):
+                    operation['responses'][status]['content']['text/plain'] = {'schema': STRING}
+                operation['responses']['503']['description'] += ' Worker saturation may return an empty body.'
             if path in RESEND_PATHS:
                 result_schema = PREVIEW_RESULT_SCHEMA if path.endswith('/preview') else CONFIRM_RESULT_SCHEMA
                 operation['x-max-body-bytes'] = 4096
@@ -351,7 +377,7 @@ def openapi_document():
                 operation['responses']['429']['headers'] = {'Retry-After': {
                     'description': 'Seconds, only when retry_after is present; do not automatically resend.',
                     'schema': {'type': 'integer', 'minimum': 0, 'maximum': 30}}}
-            if path.endswith('/cancel'):
+            if path.endswith('/cancel') and not path.startswith('/ai/'):
                 operation['responses']['409']['description'] = 'Already running or already finished; cancelled=false'
                 operation['responses']['409']['content']['application/json']['schema'] = OBJECT
             params = []

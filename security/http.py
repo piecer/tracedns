@@ -124,9 +124,18 @@ class HttpSecurity:
                 limit = (16384 if path.startswith(('/auth/', '/admin/')) else handler.max_body_bytes)
                 if path in RESEND_PATHS:
                     limit = min(limit, RESEND_MAX_BODY)
+                if path.startswith('/ai/'):
+                    limit = min(limit, 16384)
+                    get_all = getattr(handler.headers, 'get_all', None)
+                    if get_all and any(len(get_all(name, [])) > 1 for name in ('Content-Length', 'Transfer-Encoding')):
+                        raise SecurityError('Ambiguous request framing', 400)
                 raw, rejected = get_request_body(handler, max_length=limit)
                 if rejected:
                     return
+                if path.startswith('/ai/'):
+                    if len(raw) != int(handler.headers.get('Content-Length', '0')):
+                        raise SecurityError('Incomplete request body', 400)
+                    handler._ai_request_body = raw
                 try:
                     data = json.loads(raw) if raw else {}
                     if not isinstance(data, dict):
@@ -153,7 +162,10 @@ class HttpSecurity:
                 self.cookie(handler, 'td_session', new_token)
                 self.cookie(handler, 'td_pre', '', delete=True)
                 return send_json(handler, {'user': user, 'csrf_token': self.csrf(new_token)})
-            handler.principal = self.store.authenticate(token)
+            if handler.command == 'GET' and path.startswith('/ai/'):
+                handler.principal = self.store.authenticate(token, touch=False)
+            else:
+                handler.principal = self.store.authenticate(token)
             if not handler.principal:
                 if handler.command == 'GET' and (path == '/' or path.endswith('.html')):
                     handler.send_response(303)
