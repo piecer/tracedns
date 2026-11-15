@@ -9,6 +9,12 @@ import time
 from contextlib import contextmanager
 
 
+# AI operations have a short lock wait and a cooperative SQLite VM work budget.
+# These do not promise a hard deadline for filesystem syscalls or fsync.
+_AI_BUSY_SECONDS = 0.25
+_AI_SQL_SECONDS = 1.0
+
+
 class SecurityError(Exception):
     def __init__(self, message, status=400):
         super().__init__(message)
@@ -78,6 +84,158 @@ class SecurityStore:
             raise
         finally:
             db.close()
+
+    @contextmanager
+    def _read_db(self):
+        """AI reads never acquire a writer lock or reconfigure the journal."""
+        db = sqlite3.connect(self.path.as_uri() + '?mode=ro', uri=True, timeout=_AI_BUSY_SECONDS)
+        db.row_factory = sqlite3.Row
+        try:
+            deadline = time.monotonic() + _AI_SQL_SECONDS
+            db.set_progress_handler(lambda: time.monotonic() >= deadline, 1000)
+            yield db
+        finally:
+            db.close()
+
+    @contextmanager
+    def _llm_db(self):
+        """Short AI-only writer transaction; legacy security waits are unchanged."""
+        db = sqlite3.connect(self.path.as_uri() + '?mode=rw', uri=True, timeout=_AI_BUSY_SECONDS)
+        db.row_factory = sqlite3.Row
+        try:
+            deadline = time.monotonic() + _AI_SQL_SECONDS
+            db.set_progress_handler(lambda: time.monotonic() >= deadline, 1000)
+            db.execute('BEGIN IMMEDIATE')
+            yield db
+            db.commit()
+        except BaseException:
+            db.set_progress_handler(None, 0)
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    def ensure_llm_interlock(self):
+        """Explicit enabled-feature setup, never called by ordinary startup."""
+        with self._llm_db() as db:
+            db.execute("CREATE INDEX IF NOT EXISTS audit_llm_provider ON audit_events(action) "
+                       "WHERE action='llm.provider'")
+
+    def audit_llm_lifecycle(self, job_id, actor, *, kind, outcome, error=None,
+                            request_id='', source_ip=''):
+        """Fixed grammar, short AI transaction, once per intent/terminal phase.
+
+        No prompt, model prose, bearer or session digest is accepted. Return
+        False for an existing phase; never overwrite a prior terminal outcome.
+        """
+        import ipaddress
+        import re
+        from local_ai.contracts import ERROR_STATUS
+
+        if (type(job_id) is not str or re.fullmatch('[0-9a-f]{32}', job_id) is None
+                or type(kind) is not str or kind not in ('delivery', 'relationship_pair', 'decoder_suggest')
+                or type(outcome) is not str or outcome not in ('started', 'completed', 'failed', 'cancelled')
+                or (error is not None and (type(error) is not str or error not in ERROR_STATUS))
+                or (outcome == 'failed') != (error is not None)
+                or type(request_id) is not str or re.fullmatch('[A-Za-z0-9_.:-]{0,128}', request_id) is None
+                or type(source_ip) is not str or len(source_ip) > 45):
+            raise SecurityError('Invalid lifecycle audit')
+        if source_ip:
+            try:
+                ipaddress.ip_address(source_ip)
+            except ValueError:
+                raise SecurityError('Invalid lifecycle audit') from None
+        safe_actor = None
+        if actor is not None:
+            if (type(actor) is not dict or type(actor.get('id')) is not str
+                    or re.fullmatch('[0-9a-f]{32}', actor['id']) is None
+                    or type(actor.get('username')) is not str
+                    or re.fullmatch('[A-Za-z0-9_.@-]{1,64}', actor['username']) is None
+                    or actor.get('role') not in ('admin', 'operator', 'viewer')):
+                raise SecurityError('Invalid lifecycle audit')
+            safe_actor = {key: actor[key] for key in ('id', 'username', 'role')}
+        with self._llm_db() as db:
+            # Separate from the interlock index, so ordinary feature-disabled
+            # startup and legacy audit behavior are not changed.
+            db.execute("CREATE INDEX IF NOT EXISTS audit_llm_lifecycle ON audit_events(job_id) "
+                       "WHERE action='llm.lifecycle'")
+            prior = db.execute("SELECT outcome FROM audit_events WHERE action='llm.lifecycle' "
+                               "AND job_id=? ORDER BY rowid DESC LIMIT 1", (job_id,)).fetchone()
+            if prior and (outcome == 'started' or prior['outcome'] != 'started'):
+                return False
+            if not prior and outcome != 'started':
+                raise SecurityError('Invalid lifecycle audit')
+            status = ERROR_STATUS[error] if error else (None if outcome == 'started' else 200)
+            self._audit(db, safe_actor, 'llm.lifecycle', kind, outcome,
+                        request_id=request_id, source_ip=source_ip, status=status, job_id=job_id)
+            return True
+
+    @staticmethod
+    def _llm_provider_state(db):
+        # Insertion order, not wall-clock time, defines the latest reservation.
+        row = db.execute("SELECT job_id,outcome FROM audit_events WHERE action='llm.provider' "
+                         "ORDER BY rowid DESC LIMIT 1").fetchone()
+        if row is None:
+            return {'blocked': False, 'job_id': None, 'outcome': 'absent'}
+        return {'blocked': row['outcome'] not in ('settled', 'operator_confirmed_stopped'),
+                'job_id': row['job_id'], 'outcome': row['outcome']}
+
+    def llm_provider_state(self):
+        """Read durable state; absent has job_id=None and outcome='absent'.
+
+        Storage errors propagate and must fail closed in the caller.
+        """
+        with self._read_db() as db:
+            return self._llm_provider_state(db)
+
+    @staticmethod
+    def _llm_job_id(job_id):
+        if not isinstance(job_id, str) or not job_id:
+            raise SecurityError('Invalid provider job ID')
+
+    def begin_llm_provider(self, job_id, actor, *, request_id='', source_ip=''):
+        """Reserve before HTTP send; False means an unsettled reservation exists.
+
+        The service supplies a fresh, never-reused job ID and an authorized
+        actor. This helper owns physical capacity, not session authorization.
+        """
+        self._llm_job_id(job_id)
+        with self._llm_db() as db:
+            if self._llm_provider_state(db)['blocked']:
+                return False
+            self._audit(db, actor, 'llm.provider', outcome='started', request_id=request_id,
+                        source_ip=source_ip, job_id=job_id)
+            return True
+
+    def settle_llm_provider(self, job_id, *, actor=None):
+        """Caller must have accepted a complete native envelope with done is True.
+
+        This records that proof, not an HTTP disconnect, timeout or model JSON
+        validation result. Audit failure propagates and preserves the interlock.
+        """
+        self._llm_job_id(job_id)
+        with self._llm_db() as db:
+            state = self._llm_provider_state(db)
+            if not state['blocked'] or state['job_id'] != job_id:
+                return False
+            self._audit(db, actor, 'llm.provider', outcome='settled', job_id=job_id)
+            return True
+
+    def acknowledge_llm_provider_stopped(self, job_id, *, tracedns_stopped, provider_stopped):
+        """Offline human attestation, NOT observed completion or a stop action.
+
+        Return False when the exact job is not outstanding; require literal
+        True for both attestations. Never expose this operation over HTTP.
+        """
+        self._llm_job_id(job_id)
+        if tracedns_stopped is not True or provider_stopped is not True:
+            raise SecurityError('Both stopped attestations are required')
+        with self._llm_db() as db:
+            state = self._llm_provider_state(db)
+            if not state['blocked'] or state['job_id'] != job_id:
+                return False
+            self._audit(db, None, 'llm.provider', outcome='operator_confirmed_stopped', job_id=job_id)
+            return True
 
     def has_admin(self):
         with self._db() as db:
@@ -211,18 +369,37 @@ class SecurityStore:
             raise SecurityError('Invalid credentials', status)
         return token, principal
 
-    def authenticate(self, token):
+    def authenticate(self, token, *, touch=True):
         now = self.clock()
-        with self._db() as db:
+        with (self._db() if touch else self._read_db()) as db:
             row = db.execute('SELECT users.*, sessions.id AS session_id, last_seen, expires '
                              'FROM sessions JOIN users ON users.id=sessions.user_id WHERE digest=?',
                              (self._digest(token),)).fetchone()
             if not row:
                 return None
+            if not touch:
+                now = self.clock()
             if not row['active'] or row['expires'] <= now or row['last_seen'] + self.idle_seconds <= now:
-                db.execute('DELETE FROM sessions WHERE id=?', (row['session_id'],))
+                if touch:
+                    db.execute('DELETE FROM sessions WHERE id=?', (row['session_id'],))
                 return None
-            db.execute('UPDATE sessions SET last_seen=? WHERE id=?', (now, row['session_id']))
+            if touch:
+                db.execute('UPDATE sessions SET last_seen=? WHERE id=?', (now, row['session_id']))
+            principal = self._safe(row)
+            principal['session_id'] = row['session_id']
+            return principal
+
+    def authorize_session(self, session_id, user_id, allowed_roles):
+        """Revalidate an exact AI owner without retaining or touching a bearer."""
+        with self._read_db() as db:
+            row = db.execute('SELECT users.*, sessions.id AS session_id, last_seen, expires '
+                             'FROM sessions JOIN users ON users.id=sessions.user_id '
+                             'WHERE sessions.id=? AND users.id=?', (session_id, user_id)).fetchone()
+            now = self.clock()
+            if (not row or not row['active'] or row['must_change_password'] or
+                    row['role'] not in allowed_roles or row['expires'] <= now or
+                    row['last_seen'] + self.idle_seconds <= now):
+                return None
             principal = self._safe(row)
             principal['session_id'] = row['session_id']
             return principal
@@ -330,8 +507,9 @@ class SecurityStore:
         """Single-instance startup: mark interrupted audited operations unknown."""
         with self._db() as db:
             rows = db.execute('''SELECT a.* FROM audit_events a WHERE a.outcome='started'
-                AND NOT EXISTS (SELECT 1 FROM audit_events b WHERE b.request_id=a.request_id
-                AND b.action=a.action AND b.outcome!='started' AND b.rowid>a.rowid)''').fetchall()
+                AND NOT EXISTS (SELECT 1 FROM audit_events b WHERE b.action=a.action
+                AND b.rowid>a.rowid AND (a.action='llm.provider'
+                    OR (b.request_id=a.request_id AND b.outcome!='started')))''').fetchall()
             for row in rows:
                 actor = {'id': row['actor_user_id'], 'username': row['actor_username'], 'role': row['actor_role']}
                 self._audit(db, actor, row['action'], row['target'], 'unknown', row['request_id'],
@@ -340,7 +518,9 @@ class SecurityStore:
 
     def prune_audit(self):
         with self._db() as db:
-            count = db.execute('DELETE FROM audit_events WHERE timestamp<?',
+            count = db.execute('DELETE FROM audit_events WHERE timestamp<? AND rowid NOT IN '
+                               "(SELECT rowid FROM audit_events WHERE action='llm.provider' "
+                               'ORDER BY rowid DESC LIMIT 1)',
                                (self.clock() - self.retention_days * 86400,)).rowcount
             self._audit(db, None, 'audit.prune', details={'count': count})
             return count

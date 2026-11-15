@@ -10,6 +10,32 @@ const SECTION_BUTTON_MAP = {
 };
 
 const localFeedbackOwners = new Map();
+// A disclosure owns only its mounted UI. Detach never cancels or resumes a job.
+const localAIPanels = new Map();
+function retireLocalAI(kind){
+  for(const [key, panel] of localAIPanels){
+    if(kind && key !== kind) continue;
+    panel.dispose(); localAIPanels.delete(key);
+  }
+}
+function mountLocalAI(container, options){
+  if(window.TraceAuth?.accessInvalidated || !window.TraceLocalAI) return;
+  retireLocalAI(options.kind);
+  localAIPanels.set(options.kind, window.TraceLocalAI.mount(container, options));
+}
+document.getElementById('deliveryLocalAI')?.addEventListener('click',()=>{
+  const disclosure = document.getElementById('deliveryOperations');
+  if(!disclosure.open) return;
+  mountLocalAI(document.getElementById('deliveryLocalAIPanel'), {
+    kind:'delivery', getRequest:()=>({kind:'delivery'}),
+    isCurrent:()=>disclosure.open && !document.hidden
+  });
+});
+document.getElementById('deliveryOperations')?.addEventListener('toggle',event=>{
+  if(!event.target.open) retireLocalAI('delivery');
+});
+window.addEventListener('pagehide',()=>retireLocalAI());
+document.addEventListener('visibilitychange',()=>{if(document.hidden)retireLocalAI();});
 function viewFeedbackOwner(name, elementId){
   if(!window.TraceViewFeedback || !document.getElementById(elementId)) return null;
   if(!localFeedbackOwners.has(name)) localFeedbackOwners.set(name, window.TraceViewFeedback.register(name, state => {
@@ -25,6 +51,7 @@ function feedbackFailure(scope, token, error, mutation = false){
   if(scope) scope.fail(token, window.TraceViewFeedback.code(error, mutation));
 }
 window.TraceAuth?.onInvalidated?.(() => {
+  retireLocalAI();
   cancelSectionRefreshes();
   closeTargetDetail(false);
   preparedViews.clear();
@@ -237,6 +264,7 @@ function triggerSectionRefresh(name){
 }
 
 function showSection(name){
+  if(name !== getActiveSectionId()) retireLocalAI();
   cancelSectionRefreshes(name);
   if(name !== 'domainanalysis' && getActiveSectionId()==='domainanalysis'){
     clearDomainAnalysisDetail(); setDomainAnalysisManageMode(false);
@@ -344,6 +372,7 @@ function finalizeIpRelationshipRun(controller){
 }
 
 function invalidateAnalysisAccess(){
+  ipRelationshipAISources = new WeakMap();
   ++ipRelAnalyzeSeq; ++ipIntelAnalyzeSeq;
   ++ipIntelMispSeq; ipIntelMispController?.abort(); ipIntelMispController=null;
   for(const controller of [ipRelAnalyzeController,ipIntelAnalyzeController]){
@@ -3486,8 +3515,19 @@ window.CUSTOM_DECODERS = [];
 window.CUSTOM_A_DECODERS = [];
 
 let decoderRevision = null;
+let decoderDraftGeneration = 0;
+function retireDecoderAI(){
+  decoderDraftGeneration++;
+  retireLocalAI('decoder_suggest');
+}
+function decoderDraftStamp(){
+  return JSON.stringify([decoderRevision, decoderDraftGeneration,
+    ...['custom_name','custom_decoder_type','custom_steps','custom_sample'].map(id=>document.getElementById(id).value),
+    document.getElementById('custom_name').disabled]);
+}
 function applyDecoderCatalog(j){
   if(!j || !Number.isInteger(j.revision)) throw new Error('Invalid decoder catalog revision');
+  retireDecoderAI();
   decoderRevision = j.revision;
   window.DECODERS = Array.isArray(j.decoders) ? j.decoders : [];
   window.CUSTOM_DECODERS = Array.isArray(j.custom) ? j.custom : [];
@@ -3512,8 +3552,16 @@ function commitWarningText(result){
 }
 
 async function mutateDecoder(method, data){
-  const r = await fetch('/decoders/custom', {method, headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({...data, revision: decoderRevision})});
+  let r;
+  try{
+    r = await fetch('/decoders/custom', {method, headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({...data, revision: decoderRevision})});
+  }catch(error){
+    // The real auth wrapper rejects HTTP conflicts before returning a Response.
+    if(error?.status !== 409) throw error;
+    document.getElementById('customPreviewResult').textContent = 'Conflict: configuration changed. Draft retained. Reload catalog and review before retrying.';
+    return null;
+  }
   const j = await r.json();
   if(r.status === 409){
     document.getElementById('customPreviewResult').textContent = 'Conflict: configuration changed. Draft retained. Reload catalog and review before retrying.';
@@ -3872,6 +3920,7 @@ document.getElementById('addDomain').onclick = ()=>{
 
 // Settings tab switching (domains vs custom decoders)
 function showSettingsTab(tab){
+  if(tab !== 'custom') retireDecoderAI();
   const dom = document.getElementById('domainSettingsSection');
   const custom = document.getElementById('customSection');
   const alerts = document.getElementById('alertsSection');
@@ -5167,6 +5216,32 @@ window.addEventListener('load', ()=>{
   }
   refreshCustomSampleLabel();
 
+  for(const id of ['custom_name','custom_decoder_type','custom_steps','custom_sample']){
+    document.getElementById(id).addEventListener('input',retireDecoderAI);
+    document.getElementById(id).addEventListener('change',retireDecoderAI);
+  }
+  document.getElementById('decoderLocalAI').addEventListener('click',()=>{
+    if(getActiveSectionId() !== 'settings' || document.getElementById('customSection').style.display === 'none') return;
+    const stamp = decoderDraftStamp(), decoderType = getCustomDecoderType();
+    const isCurrent = ()=>getActiveSectionId() === 'settings' && !document.hidden &&
+      document.getElementById('customSection').style.display !== 'none' && stamp === decoderDraftStamp();
+    mountLocalAI(document.getElementById('decoderLocalAIPanel'), {
+      kind:'decoder_suggest', initialData:document.getElementById('custom_sample').value,
+      getRequest:()=>({kind:'decoder_suggest',decoder_type:decoderType}), isCurrent,
+      onApply:candidate=>{
+        if(!isCurrent()) throw new Error('Stale decoder draft');
+        // Keep the editor's loaded revision, even if the result was verified at
+        // a newer revision. Only explicit Reload may rebase this draft.
+        document.getElementById('custom_decoder_type').value = decoderType;
+        document.getElementById('custom_steps').value = JSON.stringify(candidate.steps,null,2);
+        refreshCustomSampleLabel();
+        document.getElementById('customPreviewResult').textContent =
+          'Applied to draft only · 초안에만 적용. Preview and revision-checked Save remain separate.';
+        retireDecoderAI();
+      }
+    });
+  });
+
   function renderCustomList(){
     const el = document.getElementById('customList'); el.innerHTML='';
     const txtArr = (window.CUSTOM_DECODERS || []).map(c=>({...(c||{}), decoder_type: 'TXT'}));
@@ -5179,6 +5254,7 @@ window.addEventListener('load', ()=>{
       const title = document.createElement('div'); title.textContent = `${c.name} [${dtype}]`; title.style.fontWeight='700'; row.appendChild(title);
       const btnRow = document.createElement('div'); btnRow.style.marginTop='6px';
       const edit = document.createElement('button'); edit.textContent='Edit'; edit.onclick = ()=>{
+        retireDecoderAI();
         document.getElementById('custom_name').value = c.name; document.getElementById('custom_name').disabled = true;
         document.getElementById('custom_decoder_type').value = dtype;
         refreshCustomSampleLabel();
@@ -5252,6 +5328,7 @@ window.addEventListener('load', ()=>{
     }catch(e){ document.getElementById('customPreviewResult').textContent = 'Register error: '+e; }
   };
   document.getElementById('clearCustom').onclick = ()=>{
+    retireDecoderAI();
     document.getElementById('custom_name').value='';
     document.getElementById('custom_decoder_type').value='TXT';
     document.getElementById('custom_steps').value='';
@@ -5278,6 +5355,9 @@ window.IP_REL_MAP = window.IP_REL_MAP || null;
 window.IP_REL_MAP_MARKERS = window.IP_REL_MAP_MARKERS || [];
 window.IP_REL_MAP_SVG = window.IP_REL_MAP_SVG || null;
 window.IP_REL_LAST_SUCCESS = window.IP_REL_LAST_SUCCESS || null;
+// Authority belongs to the exact accepted result, never the transient active
+// job ID. Restoring an older result restores only that result's original proof.
+let ipRelationshipAISources = new WeakMap();
 let ipRelActiveJobId = null;
 const ipRelCancelRequestedJobs = new Set();
 const IP_REL_CUSTOM_PROFILE_STORAGE_KEY = 'tracedns.iprel.custom_profile.v1';
@@ -5512,6 +5592,7 @@ function setIpRelationshipRunState(state, message){
 }
 
 function markIpRelationshipResultsStale(){
+  closeIpRelationshipEvidence(false);
   if(!window.IP_REL_LAST_SUCCESS) return false;
   const status = document.getElementById('ipRelRunStatus');
   if(status && status.dataset && status.dataset.state === 'running') return false;
@@ -6710,6 +6791,7 @@ function formatPairAssessment(pair){
 
 let ipRelationshipEvidenceOwner = null;
 function closeIpRelationshipEvidence(restoreFocus = true){
+  retireLocalAI('relationship_pair');
   const old = ipRelationshipEvidenceOwner; ipRelationshipEvidenceOwner = null;
   const root = document.getElementById('ipRelEvidence');
   if(root){root.replaceChildren();root.hidden=true;}
@@ -6725,6 +6807,22 @@ function openIpRelationshipEvidence(title, record, button, cache, generation){
   root.appendChild(viewNode('h4',title));
   root.appendChild(viewNode('p','Cached evidence from the accepted run. Inspecting does not change inputs or issue provider requests.'));
   root.appendChild(viewNode('pre',JSON.stringify(record,null,2)));
+  const source = ipRelationshipAISources.get(cache);
+  if(source?.eligible && cache.pairs?.includes(record)){
+    const owner = ipRelationshipEvidenceOwner;
+    const entry = viewNode('button','Local AI assistance · 로컬 AI 도움');
+    entry.type='button'; entry.id='pairLocalAI';
+    const host = viewNode('div'); host.id='pairLocalAIPanel';
+    const isCurrent = ()=>ipRelationshipEvidenceOwner === owner && window.IP_REL_CACHE === cache &&
+      ipRelationshipAISources.get(cache) === source && generation === ipRelAnalyzeSeq &&
+      !ipRelAnalyzeController && getActiveSectionId() === 'ipintel' && !document.hidden;
+    entry.onclick=()=>{
+      if(!isCurrent()) return;
+      mountLocalAI(host, {kind:'relationship_pair', isCurrent,
+        getRequest:()=>({kind:'relationship_pair',source:{job_id:source.jobId,a:record.a,b:record.b}})});
+    };
+    root.append(entry,host);
+  }
   root.hidden=false;
   close.focus();
 }
@@ -7018,8 +7116,9 @@ async function fetchIpRelationshipJobResult(requestBody, controller, onStatus){
       return { ok: false, status: rr.status, body: jj || {} };
     }
     if(jj.status === 'completed'){
+      const sourceJobId = jobId;
       if(onStatus) onStatus(jobId, 'terminal');
-      return { ok: true, status: Number(jj.status_code || 200), body: jj.result || {} };
+      return { ok: true, status: Number(jj.status_code || 200), body: jj.result || {}, sourceJobId };
     }
     if(jj.status === 'failed' || jj.status === 'cancelled'){
       if(onStatus) onStatus(jobId, 'terminal');
@@ -7031,6 +7130,7 @@ async function fetchIpRelationshipJobResult(requestBody, controller, onStatus){
 }
 
 async function analyzeIpRelationships(){
+  closeIpRelationshipEvidence(false);
   const updateRelationshipRunState = (...args)=>{
     if(typeof setIpRelationshipRunState === 'function') setIpRelationshipRunState(...args);
   };
@@ -7168,6 +7268,10 @@ async function analyzeIpRelationships(){
 
     window.IP_REL_CACHE = j;
     window.IP_REL_LAST_SUCCESS = j;
+    if(/^[a-f0-9]{32}$/.test(jobResult.sourceJobId || '')){
+      ipRelationshipAISources.set(j, Object.freeze({jobId:jobResult.sourceJobId,
+        eligible:!mispEventId, controller}));
+    }
     feedback?.succeed(token);
     resetIpRelVisualCaches();
     setIpIntelRelationshipInsights(inputSignature, j);

@@ -6,6 +6,7 @@ READ = {'/config', '/results', '/decoders', '/decoders/custom', '/history', '/ip
 OPERATE = {'/resolve', '/ip', '/analyze', '/verify', '/domain-precheck', '/ip-list-analysis',
            '/ip-relationship-jobs', '/ip-relationship-analysis', '/misp/search', '/misp/event-ips'}
 PAGES = {'/', '/dns_frontend.html', '/dns_dashboard.html', '/dns_frontend.js', '/dns_frontend.css',
+         '/local_ai_frontend.js', '/local_ai_frontend.css',
          '/view_feedback.js',
          '/delivery_resend.js', '/teams_test.js', '/delivery_diagnostics.js', '/auth_frontend.js', '/security_ui.js', '/account.html', '/audit.html',
          '/country_centroids.json', '/cytoscape.min.js', '/world_countries_110m.geojson'}
@@ -36,6 +37,13 @@ def allowed(role, method, path, qs=None, body=None):
         return role != 'viewer' or not external_read(path, qs)
     if method == 'GET' and path in ('/delivery-health', '/delivery-diagnostics'):
         return role in ('admin', 'operator')
+    if method == 'GET' and (path == '/ai/status' or re.fullmatch(r'/ai/jobs/[a-f0-9]{32}', path)):
+        return role in ('admin', 'operator')
+    if method == 'POST' and re.fullmatch(r'/ai/jobs/[a-f0-9]{32}/cancel', path):
+        return role in ('admin', 'operator')
+    if method == 'POST' and path == '/ai/jobs':
+        return role == 'admin' or (role == 'operator' and isinstance(body, dict)
+                                  and body.get('kind') in ('delivery', 'relationship_pair'))
     if re.fullmatch(r'/ip-relationship-jobs/[a-f0-9]{32}', path) and method == 'GET':
         return role in ('admin', 'operator')
     if re.fullmatch(r'/ip-relationship-jobs/[a-f0-9]{32}/cancel', path) and method == 'POST':

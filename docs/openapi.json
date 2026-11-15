@@ -1671,6 +1671,3603 @@
         ]
       }
     },
+    "/ai/jobs": {
+      "post": {
+        "description": "Explicit local assistance; decoder_suggest is admin-only, relationship_pair/delivery admin or operator. Closed16KiB request; no endpoint/model/prompt overrides. One physical worker/two queued/one unfinished per user.120-second original deadline; no automatic retry. Pair must select an authorized completed submission-stamped non-MISP source. Decoder validation inputs never reach generation. 202 is admission, not completion. Original facts and decisions never change.",
+        "operationId": "post_ai_jobs",
+        "parameters": [
+          {
+            "description": "Exact server public origin, scheme + authority; no path.",
+            "in": "header",
+            "name": "Origin",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "delivery"
+                      },
+                      "language": {
+                        "enum": [
+                          "ko",
+                          "en"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "language"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "relationship_pair"
+                      },
+                      "language": {
+                        "enum": [
+                          "ko",
+                          "en"
+                        ],
+                        "type": "string"
+                      },
+                      "source": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "a": {
+                            "description": "Canonical dotted-decimal IPv4 only; never normalized or contacted.",
+                            "format": "ipv4",
+                            "maxLength": 15,
+                            "minLength": 7,
+                            "type": "string"
+                          },
+                          "b": {
+                            "description": "Canonical dotted-decimal IPv4 only; never normalized or contacted.",
+                            "format": "ipv4",
+                            "maxLength": 15,
+                            "minLength": 7,
+                            "type": "string"
+                          },
+                          "job_id": {
+                            "maxLength": 32,
+                            "minLength": 32,
+                            "pattern": "^[a-f0-9]{32}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "job_id",
+                          "a",
+                          "b"
+                        ],
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "language",
+                      "source"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "decoder_type": {
+                        "enum": [
+                          "TXT",
+                          "A"
+                        ],
+                        "type": "string"
+                      },
+                      "generate": {
+                        "type": "boolean"
+                      },
+                      "kind": {
+                        "const": "decoder_suggest"
+                      },
+                      "language": {
+                        "enum": [
+                          "ko",
+                          "en"
+                        ],
+                        "type": "string"
+                      },
+                      "samples": {
+                        "contains": {
+                          "properties": {
+                            "usage": {
+                              "const": "example"
+                            }
+                          },
+                          "required": [
+                            "usage"
+                          ],
+                          "type": "object"
+                        },
+                        "description": "At least one example; duplicate raw data across all rows refused. Validation data/answers/feedback never sent to the model. Examples must also fit the8KiB projection cap.",
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "complete_expected": {
+                              "type": "boolean"
+                            },
+                            "data": {
+                              "description": "Raw string; also <=2048 UTF-8 bytes. No trimming.",
+                              "maxLength": 2048,
+                              "type": "string"
+                            },
+                            "expected_ips": {
+                              "items": {
+                                "description": "Canonical dotted-decimal IPv4 only; never normalized or contacted.",
+                                "format": "ipv4",
+                                "maxLength": 15,
+                                "minLength": 7,
+                                "type": "string"
+                              },
+                              "maxItems": 8,
+                              "minItems": 1,
+                              "type": "array",
+                              "uniqueItems": true
+                            },
+                            "usage": {
+                              "enum": [
+                                "example",
+                                "validation"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "data",
+                            "expected_ips",
+                            "usage",
+                            "complete_expected"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 6,
+                        "minItems": 1,
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "language",
+                      "decoder_type",
+                      "generate",
+                      "samples"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "audit_status": {
+                      "enum": [
+                        "pending",
+                        "success",
+                        "failed"
+                      ]
+                    },
+                    "cancel_requested": {
+                      "type": "boolean"
+                    },
+                    "created_at": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "deadline_at": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "error": {
+                      "anyOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "job_id": {
+                      "maxLength": 32,
+                      "minLength": 32,
+                      "pattern": "^[a-f0-9]{32}$",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "enum": [
+                        "decoder_suggest",
+                        "relationship_pair",
+                        "delivery"
+                      ]
+                    },
+                    "language": {
+                      "enum": [
+                        "ko",
+                        "en"
+                      ],
+                      "type": "string"
+                    },
+                    "result": {
+                      "anyOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "type": "object"
+                        }
+                      ],
+                      "description": "Engine-validated bounded result: snapshot, snapshot_digest, source_revision, model; explanation adds interpretation; decoder adds catalog/generated/proposal. No result before successful terminal audit. Citation syntax is not semantic proof."
+                    },
+                    "status": {
+                      "enum": [
+                        "queued",
+                        "running",
+                        "cancel_pending",
+                        "completed",
+                        "failed",
+                        "cancelled"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "job_id",
+                    "kind",
+                    "language",
+                    "status",
+                    "created_at",
+                    "deadline_at",
+                    "audit_status",
+                    "error",
+                    "result",
+                    "cancel_requested"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authentication required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Role, CSRF, origin, host or password-change restriction"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Method not allowed"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations. Worker saturation may return an empty body."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          }
+        },
+        "security": [
+          {
+            "csrf": [],
+            "session": []
+          }
+        ],
+        "summary": "POST /ai/jobs",
+        "x-max-body-bytes": 16384,
+        "x-max-response-bytes": 32768,
+        "x-roles": [
+          "operator",
+          "admin"
+        ]
+      }
+    },
+    "/ai/jobs/{job_id}": {
+      "get": {
+        "description": "Originating user AND session only, including administrators. No session touch. In-memory job/result can expire or be revoked. Result usable only when completed and audit_status=success; pending audit is not accepted success. Complete envelope<=32KiB. Terminal retention600s/32 records/1MiB aggregate. Source ownership and configured-secret publication are rechecked.",
+        "operationId": "get_ai_jobs_job_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-f0-9]{32}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "audit_status": {
+                      "enum": [
+                        "pending",
+                        "success",
+                        "failed"
+                      ]
+                    },
+                    "cancel_requested": {
+                      "type": "boolean"
+                    },
+                    "created_at": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "deadline_at": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "error": {
+                      "anyOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "job_id": {
+                      "maxLength": 32,
+                      "minLength": 32,
+                      "pattern": "^[a-f0-9]{32}$",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "enum": [
+                        "decoder_suggest",
+                        "relationship_pair",
+                        "delivery"
+                      ]
+                    },
+                    "language": {
+                      "enum": [
+                        "ko",
+                        "en"
+                      ],
+                      "type": "string"
+                    },
+                    "result": {
+                      "anyOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "type": "object"
+                        }
+                      ],
+                      "description": "Engine-validated bounded result: snapshot, snapshot_digest, source_revision, model; explanation adds interpretation; decoder adds catalog/generated/proposal. No result before successful terminal audit. Citation syntax is not semantic proof."
+                    },
+                    "status": {
+                      "enum": [
+                        "queued",
+                        "running",
+                        "cancel_pending",
+                        "completed",
+                        "failed",
+                        "cancelled"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "job_id",
+                    "kind",
+                    "language",
+                    "status",
+                    "created_at",
+                    "deadline_at",
+                    "audit_status",
+                    "error",
+                    "result",
+                    "cancel_requested"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authentication required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Role, CSRF, origin, host or password-change restriction"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Method not allowed"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations. Worker saturation may return an empty body."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          }
+        },
+        "summary": "GET /ai/jobs/{job_id}",
+        "x-max-body-bytes": 16384,
+        "x-max-response-bytes": 32768,
+        "x-roles": [
+          "operator",
+          "admin"
+        ]
+      }
+    },
+    "/ai/jobs/{job_id}/cancel": {
+      "post": {
+        "description": "Explicit publication cancellation. Queued cancellation can be confirmed; running cancellation drains the native request and remains pending until physical settlement. Unknown provider settlement blocks new inference durably across restart. This endpoint never stops, unloads or kills the provider; no auto cancellation on browser navigation.",
+        "operationId": "post_ai_jobs_job_id_cancel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-f0-9]{32}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Exact server public origin, scheme + authority; no path.",
+            "in": "header",
+            "name": "Origin",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "audit_status": {
+                      "enum": [
+                        "pending",
+                        "success",
+                        "failed"
+                      ]
+                    },
+                    "cancel_requested": {
+                      "type": "boolean"
+                    },
+                    "cancellation_confirmed": {
+                      "type": "boolean"
+                    },
+                    "cancellation_requested": {
+                      "type": "boolean"
+                    },
+                    "created_at": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "deadline_at": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "error": {
+                      "anyOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "job_id": {
+                      "maxLength": 32,
+                      "minLength": 32,
+                      "pattern": "^[a-f0-9]{32}$",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "enum": [
+                        "decoder_suggest",
+                        "relationship_pair",
+                        "delivery"
+                      ]
+                    },
+                    "language": {
+                      "enum": [
+                        "ko",
+                        "en"
+                      ],
+                      "type": "string"
+                    },
+                    "result": {
+                      "anyOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "type": "object"
+                        }
+                      ],
+                      "description": "Engine-validated bounded result: snapshot, snapshot_digest, source_revision, model; explanation adds interpretation; decoder adds catalog/generated/proposal. No result before successful terminal audit. Citation syntax is not semantic proof."
+                    },
+                    "status": {
+                      "enum": [
+                        "queued",
+                        "running",
+                        "cancel_pending",
+                        "completed",
+                        "failed",
+                        "cancelled"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "job_id",
+                    "kind",
+                    "language",
+                    "status",
+                    "created_at",
+                    "deadline_at",
+                    "audit_status",
+                    "error",
+                    "result",
+                    "cancel_requested",
+                    "cancellation_requested",
+                    "cancellation_confirmed"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authentication required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Role, CSRF, origin, host or password-change restriction"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Method not allowed"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations. Worker saturation may return an empty body."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          }
+        },
+        "security": [
+          {
+            "csrf": [],
+            "session": []
+          }
+        ],
+        "summary": "POST /ai/jobs/{job_id}/cancel",
+        "x-max-body-bytes": 16384,
+        "x-max-response-bytes": 32768,
+        "x-roles": [
+          "operator",
+          "admin"
+        ]
+      }
+    },
+    "/ai/status": {
+      "get": {
+        "description": "Admin/operator-only startup configuration/capacity, no model request. No session touch. active_job identifies only this user AND session, never another session even for admins. Disabled by default.",
+        "operationId": "get_ai_status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "accepting": {
+                      "type": "boolean"
+                    },
+                    "active_job": {
+                      "anyOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "description": "Owned unfinished lifecycle; terminal execution may still await audit. Read the job and require audit_status=success before using a result.",
+                          "properties": {
+                            "job_id": {
+                              "maxLength": 32,
+                              "minLength": 32,
+                              "pattern": "^[a-f0-9]{32}$",
+                              "type": "string"
+                            },
+                            "kind": {
+                              "enum": [
+                                "decoder_suggest",
+                                "relationship_pair",
+                                "delivery"
+                              ]
+                            },
+                            "status": {
+                              "enum": [
+                                "queued",
+                                "running",
+                                "cancel_pending",
+                                "completed",
+                                "failed",
+                                "cancelled"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "job_id",
+                            "kind",
+                            "status"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "provider_state": {
+                      "enum": [
+                        "ready",
+                        "busy",
+                        "unsettled",
+                        "unavailable",
+                        "disabled",
+                        "stopped"
+                      ]
+                    },
+                    "queued": {
+                      "maximum": 2,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "accepting",
+                    "provider_state",
+                    "queued",
+                    "active_job"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authentication required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Role, CSRF, origin, host or password-change restriction"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Method not allowed"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations. Worker saturation may return an empty body."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "error": {
+                          "enum": [
+                            "invalid_request",
+                            "sensitive_input",
+                            "not_found",
+                            "source_not_ready",
+                            "source_unavailable",
+                            "source_revoked",
+                            "too_large",
+                            "verification_failed",
+                            "busy",
+                            "invalid_model_output",
+                            "provider_failed",
+                            "disabled",
+                            "model_unavailable",
+                            "provider_unsettled",
+                            "audit_unavailable",
+                            "privacy_unavailable",
+                            "stopped",
+                            "deadline_exceeded"
+                          ],
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "code",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Closed AI refusal or shared security/framing failure. Never automatically retry mutations."
+          }
+        },
+        "summary": "GET /ai/status",
+        "x-max-body-bytes": 16384,
+        "x-max-response-bytes": 32768,
+        "x-roles": [
+          "operator",
+          "admin"
+        ]
+      }
+    },
     "/analyze": {
       "post": {
         "description": "Analyze supplied TXT locally with built-in decoders. Requires domain and txt (or sample); no DNS lookup.",

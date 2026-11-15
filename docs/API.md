@@ -43,6 +43,8 @@ CORS/익명 접근/장기 API 키/Bearer 인증을 추가하지 않았다. 브�
 viewer는 저장된 정보만, operator는 대상 수정·강제 조회·분석을,
 admin은 전체 설정·디코더·계정·전체 감사 작업을 수행한다. operator의 config 쓰기에는
 `domains`, `revision`만 허용된다. admin이 아닌 사용자는 다른 사람의 job을 조회/취소할 수 없다.
+단, 선택적 로컬 AI job은 admin을 포함해 원래 사용자와 로그인 세션이 모두 같아야 한다.
+AI status/polling은 세션 idle 수명을 늘리지 않는다.
 세션 만료·사용자 비활성화·권한 변경·감사 장애 차단은 기존 UI와 동일하다.
 감사 action/target은 호환성을 위해 `post:/config` 같은 기존 정규화 경로를 사용한다.
 PATCH도 이에 대응하는 POST로 기록된다. 응답 `X-Request-ID`로 요청을 추적한다.
@@ -90,6 +92,31 @@ with TraceDNSClient(os.environ['TRACEDNS_BASE_URL']) as api:
 원래 오류를 유지하면서 stderr에 경고하므로 필요 시 계정의 세션 목록에서 철회한다.
 로컬 개발만 `--allow-loopback-http` 또는 `allow_loopback_http=True`로 HTTP를 허용한다.
 서버가 LAN plaintext 모드여도 이 클라이언트는 원격 HTTP를 허용하지 않는다.
+
+## 선택적 로컬 AI 보조
+
+기본 비활성화된 실험적 기능이다. 시작 설정, 현재 검증 상태, 모델 프로필 및 복구
+절차는 [LOCAL_AI.md](LOCAL_AI.md)를 따른다. 외부 AI 클라이언트가 임의 프롬프트나
+런타임 URL을 보내는 기능이 아니며 원래 판정·점수·관찰 범위를 수정하지 않는다.
+
+| Method | `/api/v1` 아래 경로 | 의미 |
+|---|---|---|
+| GET | `/ai/status` | 로컬 접수 가능 상태, 해당 사용자·세션의 active handle; 추론 없음 |
+| POST | `/ai/jobs` | `decoder_suggest`, `relationship_pair`, `delivery` 중 하나의 명시적 요청; 202는 접수 |
+| GET | `/ai/jobs/{job_id}` | 해당 세션의 상태와 감사 완료 결과 |
+| POST | `/ai/jobs/{job_id}/cancel` | 빈 JSON 객체; 취소 요청과 실제 확인을 구분 |
+
+디코더는 admin, 관계 pair·캐시 진단 설명은 operator/admin이다. 다른 세션이나
+사용자에게는 admin이라도 job을 노출하지 않는다. `created_at`, `deadline_at`은
+Unix 정수 밀리초이며 `completed`와 `audit_status=success`를 모두 확인해야 한다.
+종료 감사가 pending이면 result는 null이고 active handle이 남을 수 있다.
+HTTP 200 job body의 `audit_unavailable`도 실패다. 오류는 고정된 `error`, `code`,
+`request_id` 필드이며 모델/제공자의 원문 오류를 반사하지 않는다.
+
+16 KiB 요청, 8 KiB 모델 투영, 전체 32 KiB job 응답은 서로 다른 한도다. 기본
+120초 기한에는 대기와 검증이 포함된다. 종료가 확인되지 않은 추론은 재시작 후에도
+새 실행을 차단하며 자동 재시도하지 않는다. 전체 이력·MISP 기반 결과 설명은 v1
+범위가 아니다. 자세한 입력과 닫힌 schema는 OpenAPI 및 해당 기능 안내를 참고한다.
 
 ## Polygon RPC 설정 추적
 

@@ -6,12 +6,13 @@ dnspython==2.9.2
 cryptography>=43,<51  # Ed25519 DHT verification and AES-GCM RPC config authentication
 PyNaCl==1.6.2  # libsodium point validation rejects unauthenticating low-order DHT keys
 PyMISP==2.4.198
+jsonschema>=4,<5  # Closed local-AI output validation and API schema regression tests
 
 # Optional packages (useful for local development / testing)
 python-dotenv==1.2.4
 pytest==9.2.0
 pytest-cov==7.0.0  # Execute trace-hook preservation under real coverage in CI
-jsonschema>=4,<5  # API schema regression tests; no longer a PyMISP dependency
+
 PyYAML==6.0.3  # CI workflow regression tests
 coverage[toml]>=7.6,<8
 

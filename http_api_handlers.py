@@ -97,6 +97,8 @@ ALLOWED_STATIC_FILES = {
     "settings.html",
     "dns_frontend.css",
     "dns_frontend.js",
+    "local_ai_frontend.js",
+    "local_ai_frontend.css",
     "view_feedback.js",
     "delivery_diagnostics.js",
     "teams_test.js",
@@ -126,6 +128,8 @@ def attach_api_handlers(
     config_service=None,
     delivery_health=None,
     delivery_diagnostics=None,
+    local_ai_settings=None,
+    local_ai_security_store=None,
 ):
     cache_lock = threading.RLock()
     if max_body_bytes is None:
@@ -150,6 +154,14 @@ def attach_api_handlers(
     )
     from monitor.config_service import get_config_service
     get_config_service(ctx)
+    handler_cls.local_ai = None
+    local_ai_enabled = False
+    if local_ai_settings is not None:
+        from local_ai.engine import AssistantEngine
+        from local_ai.service import LocalAIService
+        handler_cls.local_ai = LocalAIService(
+            local_ai_settings, local_ai_security_store, AssistantEngine(ctx, relationship_jobs))
+        local_ai_enabled = local_ai_settings.get('enabled', False)
     ips_cache = {'version': 0, 'rows': []}
 
     # Expose shared_config on the handler instance for specialized endpoints
@@ -2292,6 +2304,10 @@ def attach_api_handlers(
         """Handle GET requests (simple routing)."""
         parsed = urlparse(self.path)
         qs = parse_qs(parsed.query)
+
+        if parsed.path.startswith('/ai/'):
+            from http_api.local_ai import handle_local_ai
+            return handle_local_ai(ctx, self)
     
         if parsed.path == '/config':
             return self._handle_config()
@@ -2375,6 +2391,9 @@ def attach_api_handlers(
         """Handle POST requests (simple routing)."""
         parsed = urlparse(self.path)
 
+        if parsed.path.startswith('/ai/'):
+            from http_api.local_ai import handle_local_ai
+            return handle_local_ai(ctx, self)
         if parsed.path == '/teams/test':
             from http_api.teams_test import handle_teams_test
             return handle_teams_test(ctx, self)
@@ -2403,6 +2422,16 @@ def attach_api_handlers(
                 return self._send_json({'error': str(exc)}, 503)
             except RelationshipJobCapacityError as exc:
                 return self._send_json({'error': str(exc)}, 429)
+            ai_source_stamp = None
+            if local_ai_enabled:
+                from local_ai.contracts import AIError
+                from local_ai.sources import capture_relationship_stamp, validate_relationship_stamp
+                try:
+                    ai_source_stamp = capture_relationship_stamp(ctx, getattr(self, 'principal', None), data)
+                except AIError:
+                    # Auxiliary AI proof failure cannot disable ordinary analysis.
+                    # Unstamped results remain permanently ineligible for AI.
+                    pass
             misp_context = None
             misp_event_id = data.get('misp_event_id') if isinstance(data, dict) else None
             if misp_event_id not in (None, ''):
@@ -2422,16 +2451,23 @@ def attach_api_handlers(
                 except Exception as exc:
                     return self._send_json({'error': f'failed to fetch MISP event: {exc}'}, 502)
             try:
+                local_dns_context = self._gather_ip_map()
+                if ai_source_stamp is not None:
+                    try:
+                        validate_relationship_stamp(ctx, ai_source_stamp)
+                    except AIError:
+                        ai_source_stamp = None
                 job = _start_ip_relationship_job(
                     data,
                     shared_config,
-                    local_dns_context=self._gather_ip_map(),
+                    local_dns_context=local_dns_context,
                     misp_context=misp_context,
                     principal=getattr(self, 'principal', None),
                     security_store=getattr(self, 'security_store', None),
                     request_id=getattr(self, 'request_id', ''),
                     source_ip=getattr(self, 'source_ip', ''),
                     service=relationship_jobs,
+                    ai_source_stamp=ai_source_stamp,
                 )
             except RelationshipRequestError as exc:
                 return self._send_json(exc.payload, exc.status_code)

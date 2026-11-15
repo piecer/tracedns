@@ -25,6 +25,35 @@ Current, history and MISP failures are independent; partial history coverage is
 not reported as a complete empty result. A Query link is an explicit search
 entry point, not merely cached inspection.
 
+## Optional local AI panels
+
+The disabled-by-default [local assistance](LOCAL_AI.md) has explicit entrypoints
+in Custom Decoders, the selected accepted relationship-pair inspector, and
+Delivery diagnostics. Opening a panel, navigating or changing language performs
+no inference. Run checks local availability before submitting; decoder generation
+is a separate unchecked option. Server roles remain authoritative.
+
+Compact server facts/verdict, AI interpretation and mandatory coverage are
+separate and precede lazy provenance. Full source identifiers, model metadata and
+verification details remain accessible. At most five candidates/facts appear per
+page and only one metadata/evidence/candidate detail is expanded. A component DOM
+bound is not a claim that the entire existing application has fewer than 500 nodes.
+
+The relationship job ID belongs to its exact accepted result, including restoration
+of previous success. Active-request state is not provenance; unstamped copies and
+MISP-backed results cannot acquire an AI entrypoint. Selection, navigation and
+authentication retirement discard the mounted private subtree. A different panel
+does not automatically resume a reported active job.
+
+Decoder apply changes only the draft, preserving its loaded revision. Input/type,
+draft-generation and owner changes invalidate old controls. Save remains explicit;
+a real 409 leaves the draft intact and is not automatically retried. Manual AI
+next checks open the corresponding retained facts, not new queries or actions.
+
+Audit-pending completion is not a usable result. Audit failure stays a local error
+and a global security warning. Disabled, busy, stopped, unsettled and unavailable
+states are distinct; scheduler availability does not certify model readiness.
+
 Registration eligibility is not lookup success. A valid DHT target or RPC
 profile can be registrable even when its current lookup fails. DHT last-confirmed
 signed evidence remains separate from the latest attempt and bounded coverage.

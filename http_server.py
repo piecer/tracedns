@@ -152,6 +152,10 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
     class ConfigHandler(BaseHTTPRequestHandler):
         pass
 
+    with config_lock:
+        local_ai_settings = shared_config.get('local_ai')
+        if type(local_ai_settings) is dict:
+            local_ai_settings = dict(local_ai_settings)
     handler = attach_api_handlers(
         ConfigHandler,
         frontend_html=frontend_html,
@@ -170,9 +174,13 @@ def make_handler(shared_config, config_lock, config_path, history_dir, current_r
         config_service=config_service,
         delivery_health=delivery_health,
         delivery_diagnostics=delivery_diagnostics,
+        local_ai_settings=local_ai_settings,
+        local_ai_security_store=security_store,
     )
     handler.relationship_jobs = relationship_jobs
     handler.background_services = (enrichment, read_model, relationship_jobs)
+    if handler.local_ai is not None:
+        handler.background_services += (handler.local_ai,)
     from security.http import HttpSecurity, secure_handler
     service = HttpSecurity(security_store, public_origin, insecure_http, trusted_proxies,
                            allow_insecure_remote_http)
