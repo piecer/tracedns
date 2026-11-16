@@ -163,21 +163,26 @@ def decoder_schema(decoder_type, language, snapshot_digest):
             or type(snapshot_digest) is not str or not re.fullmatch('[a-f0-9]{64}', snapshot_digest)):
         raise AIError('source_unavailable')
     reasons = ['insufficient_examples', 'unsupported_transformation', 'no_candidate']
-    schema = _closed({
+    metadata = {
         'version': {'type': 'integer', 'const': 1},
         'kind': {'type': 'string', 'const': 'decoder_suggest'},
         'language': {'type': 'string', 'const': language},
         'snapshot_digest': {'type': 'string', 'const': snapshot_digest},
-        'candidates': {'type': 'array', 'maxItems': 3, 'items': _closed({
-            'steps': {'type': 'array', 'minItems': 1, 'maxItems': 12,
-                      'items': generated_step_schema(decoder_type)}})},
-        'insufficient_reason': {'type': ['string', 'null'], 'enum': [None, *reasons]},
-    })
-    schema['oneOf'] = [
-        {'properties': {'candidates': {'minItems': 1}, 'insufficient_reason': {'type': 'null'}}},
-        {'properties': {'candidates': {'maxItems': 0}, 'insufficient_reason': {'type': 'string', 'enum': reasons}}},
-    ]
-    return schema
+    }
+    # Native grammar conversion visits each union branch without inheriting
+    # sibling properties/required. Keep both alternatives independently closed.
+    return {'oneOf': [
+        _closed({**metadata,
+            'candidates': {'type': 'array', 'minItems': 1, 'maxItems': 3, 'items': _closed({
+                'steps': {'type': 'array', 'minItems': 1, 'maxItems': 12,
+                          'items': generated_step_schema(decoder_type)}})},
+            'insufficient_reason': {'type': 'null'}}),
+        _closed({**metadata,
+            # A native array without items skips maxItems; const makes this
+            # alternative empty in both JSON Schema and the native grammar.
+            'candidates': {'type': 'array', 'maxItems': 0, 'const': []},
+            'insufficient_reason': {'type': 'string', 'enum': reasons}}),
+    ]}
 
 
 def validate_decoder(raw, *, decoder_type, language, snapshot_digest):

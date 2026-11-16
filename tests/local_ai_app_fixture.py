@@ -42,7 +42,8 @@ def application(root, monkeypatch, *, enabled=True):
             if stop.is_set():
                 return
         request = json.loads(native_requests[-1]["body"])
-        props = request["format"]["properties"]
+        schema = request["format"]
+        props = schema.get("oneOf", [schema])[0]["properties"]
         value = {key: props[key]["const"] for key in ("version", "kind", "language", "snapshot_digest")}
         if state["native_mode"] == "invalid":
             value = {"PRIVATE_PROVIDER_PROSE": "never display or retry"}

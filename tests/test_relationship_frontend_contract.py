@@ -225,12 +225,21 @@ assert(!partial.includes('NaN'));
 def test_poll_timeout_cancels_once_and_renders_terminal_error_at_runtime():
     analyze_source = FRONTEND_SOURCE[
         FRONTEND_SOURCE.index("async function analyzeIpRelationships"):]
+    # Analysis closes prior evidence; bind its real helper and owned panel state.
+    evidence_lifecycle_source = FRONTEND_SOURCE[
+        FRONTEND_SOURCE.index("const localAIPanels ="):
+        FRONTEND_SOURCE.index("function mountLocalAI(")
+    ] + FRONTEND_SOURCE[
+        FRONTEND_SOURCE.index("let ipRelationshipEvidenceOwner ="):
+        FRONTEND_SOURCE.index("function openIpRelationshipEvidence(")
+    ]
     _run_node(f"""
 const assert = require('assert');
+{evidence_lifecycle_source}
 {analyze_source}
 const elements = new Map();
 function element(id) {{
-  if(!elements.has(id)) elements.set(id, {{ value: '', checked: false, textContent: '', style: {{ display: 'block' }} }});
+  if(!elements.has(id)) elements.set(id, {{ value: '', checked: false, textContent: '', style: {{ display: 'block' }}, replaceChildren(){{ this.children = []; }} }});
   return elements.get(id);
 }}
 element('ipIntelInput').value = '1.1.1.1';
@@ -273,5 +282,8 @@ global.fetchIpRelationshipJobResult = async (_body, _controller, onStatus) => {{
   await new Promise(resolve => setImmediate(resolve));
   assert.strictEqual(cancelCount, 1);
   assert(elements.get('ipRelMeta').textContent.includes('relationship job timed out'));
+  assert.strictEqual(element('ipRelEvidence').hidden, true);
+  assert.deepStrictEqual(element('ipRelEvidence').children, []);
+  assert.strictEqual(ipRelationshipEvidenceOwner, null);
 }})().catch(error => {{ console.error(error); process.exit(1); }});
 """)

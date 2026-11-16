@@ -88,10 +88,15 @@ def generated_step_schema(kind):
     for op in ('base64', 'urlsafe_b64', 'extract_ip_prefix', 'ascii', 'xor_hex', 'xor32_ipv4'):
         if op == 'xor32_ipv4' and kind != 'A':
             continue
-        properties = {'op': {'const': op}}
+        properties: dict[str, dict] = {'op': {'const': op}}
         if op == 'xor_hex':
+            # Native grammar patterns require ^...$ and no lookaround. The
+            # bounded pattern itself permits only complete hex-byte strings;
+            # JSON Schema's search-style $ also needs the non-hex exclusion to
+            # reject a trailing newline. The server still uses re.fullmatch.
             properties['key'] = {'type': 'string', 'minLength': 2, 'maxLength': 128,
-                                 'pattern': r'^(?:[0-9a-fA-F]{2})+(?![\s\S])'}
+                                 'pattern': r'^(?:[0-9a-fA-F]{2}){1,64}$',
+                                 'not': {'pattern': '[^0-9a-fA-F]'}}
         elif op == 'xor32_ipv4':
             properties['key'] = {'type': 'string', 'minLength': 10, 'maxLength': 10,
                                  'pattern': '^0x[0-9a-fA-F]{8}$'}

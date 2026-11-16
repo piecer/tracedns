@@ -225,3 +225,67 @@ def test_generated_candidate_schema_and_validation_are_closed(mutation):
     if type(value['version']) is not float:
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.Draft202012Validator(schema).validate(value)
+
+
+@pytest.mark.parametrize('decoder_type', ['TXT', 'A'])
+@pytest.mark.parametrize('language', ['en', 'ko'])
+def test_native_decoder_union_branches_reject_incomplete_model_output(decoder_type, language):
+    """Native union conversion visits alternatives, not their sibling keywords."""
+    import jsonschema
+    from local_ai.contracts import decoder_schema
+
+    schema = decoder_schema(decoder_type, language, 'a' * 64)
+    # Shape of the retained real-model failure: generic descriptions rather than
+    # bound metadata and closed DSL steps. The whole local schema already rejects
+    # this; its native alternatives must reject it independently as well.
+    invalid = {'candidates': [{'name': 'Base64Decode', 'description': 'Decode data',
+                              'operation': 'base64_decode'}], 'insufficient_reason': None}
+    assert not jsonschema.Draft202012Validator(schema).is_valid(invalid)
+    native_union = {'oneOf': schema['oneOf']}
+    assert not jsonschema.Draft202012Validator(native_union).is_valid(invalid), \
+        'native alternatives must carry the full required metadata and candidate contract'
+
+
+@pytest.mark.parametrize('decoder_type', ['TXT', 'A'])
+@pytest.mark.parametrize('language', ['en', 'ko'])
+def test_native_decoder_alternatives_keep_closed_scope_and_refusal_contract(decoder_type, language):
+    import jsonschema
+    from local_ai.contracts import AIError, decoder_schema, validate_decoder
+
+    schema = decoder_schema(decoder_type, language, 'a' * 64)
+    assert set(schema) == {'oneOf'}, 'no native union constraints may depend on ignored sibling keywords'
+    assert len(schema['oneOf']) == 2
+    fields = {'version', 'kind', 'language', 'snapshot_digest', 'candidates', 'insufficient_reason'}
+    for branch in schema['oneOf']:
+        assert branch['type'] == 'object' and branch['additionalProperties'] is False
+        assert set(branch['required']) == set(branch['properties']) == fields
+        assert branch['properties']['snapshot_digest']['const'] == 'a' * 64
+        assert branch['properties']['language']['const'] == language
+    validator = jsonschema.Draft202012Validator(schema)
+    valid = [proposal(language=language)]
+    valid += [proposal(language=language, candidates=[], insufficient_reason=reason)
+              for reason in ('insufficient_examples', 'unsupported_transformation', 'no_candidate')]
+    for value in valid:
+        assert validator.is_valid(value)
+        assert validate_decoder(json.dumps(value), decoder_type=decoder_type, language=language,
+                                snapshot_digest='a' * 64) == value
+        invalid = [{key: item for key, item in value.items() if key != missing} for missing in fields]
+        invalid += [{**value, 'extra': True}, {**value, 'snapshot_digest': 'b' * 64},
+                    {**value, 'language': 'ko' if language == 'en' else 'en'},
+                    {**value, 'candidates': [] if value['candidates'] else [{'steps': [{'op': 'ascii'}]}]}]
+        for candidate in invalid:
+            assert not validator.is_valid(candidate)
+            with pytest.raises(AIError, match='invalid_model_output'):
+                validate_decoder(json.dumps(candidate), decoder_type=decoder_type, language=language,
+                                 snapshot_digest='a' * 64)
+
+
+@pytest.mark.parametrize('decoder_type', ['TXT', 'A'])
+def test_native_refusal_array_has_an_operative_empty_constraint(decoder_type):
+    from local_ai.contracts import decoder_schema
+
+    empty = decoder_schema(decoder_type, 'en', 'a' * 64)['oneOf'][1]['properties']['candidates']
+    # llama.cpp applies array bounds only on its items/prefixItems path; a bare
+    # type=array/maxItems=0 otherwise falls through to an unconstrained array.
+    assert empty.get('const') == [] or ('items' in empty and empty.get('maxItems') == 0), \
+        'native refusal must encode the empty array, not merely a skipped maxItems'

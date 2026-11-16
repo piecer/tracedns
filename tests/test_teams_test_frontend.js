@@ -12,6 +12,7 @@ assert(source.includes('window.TraceTeamsTest.bind(() => alertSettingsReady ? al
 const tick = () => new Promise(setImmediate);
 function setup(role='admin') {
   const elements = new Map(), calls = [], timers = new Map(); let next = 0;
+  const windowEvents = new EventTarget();
   const node = id => {
     if(!elements.has(id)) elements.set(id, {hidden:true, disabled:true, textContent:'', value:'PRIVATE-DRAFT', dataset:{},
       classList:{add(){},remove(){}}, querySelectorAll:()=>[], addEventListener(name,fn){this[name]=fn;}, setAttribute(){}, removeAttribute(){}});
@@ -21,6 +22,9 @@ function setup(role='admin') {
     response_bytes:0,response_limit:4096,attribute_count:null,attribute_limit:null,tls_kind:null,tls_verify:true}};
   let code = 200;
   const context = vm.createContext({console, URL, Request, Response, Headers, AbortController, DOMException,
+    addEventListener:windowEvents.addEventListener.bind(windowEvents),
+    removeEventListener:windowEvents.removeEventListener.bind(windowEvents),
+    dispatchEvent:windowEvents.dispatchEvent.bind(windowEvents),
     document:{getElementById:node,querySelectorAll:()=>[],addEventListener(){},readyState:'loading'},
     location:{href:'http://localhost/',origin:'http://localhost',pathname:'/',replace(){}},
     setTimeout:(fn,ms)=>{timers.set(++next,{fn,ms});return next;},clearTimeout:id=>timers.delete(id),
@@ -139,5 +143,17 @@ function setup(role='admin') {
   const huge={...fresh.body,diagnostic:{...fresh.body.diagnostic,response_bytes:2**63}};
   fresh.setResult(huge,200);await fresh.node('teamsTestBtn').click();
   assert.match(fresh.node('teamsTestStatus').textContent,/accepted/i,'rounded int64 diagnostic must not erase valid acceptance');
+  // The copied production prefix must register a working pagehide listener,
+  // not merely tolerate an addEventListener no-op in the window fixture.
+  const disposed = [];
+  fresh.context.TraceLocalAI = {mount:(_container, options)=>({dispose(){disposed.push(options.kind);}})};
+  fresh.context.mountLocalAI({}, {kind:'relationship_pair'});
+  fresh.context.mountLocalAI({}, {kind:'delivery'});
+  fresh.context.dispatchEvent(new Event('pagehide'));
+  assert.deepEqual(disposed, ['relationship_pair', 'delivery']);
+  assert.equal(vm.runInContext('localAIPanels.size',fresh.context),0);
+  fresh.context.dispatchEvent(new Event('pagehide'));
+  assert.equal(disposed.length,2,'pagehide disposes each mounted owner only once');
+  assert.equal(fresh.timers.size,0,'pagehide regression leaves no lifetime timers');
   console.log('Teams test button: wiring, roles, CSRF, outcomes, timeout and no retry passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});

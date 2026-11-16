@@ -6,7 +6,7 @@ import threading
 from types import MappingProxyType
 
 from local_ai.contracts import AIError, decoder_schema, explanation_schema, load_request, validate_decoder, validate_explanation
-from local_ai.decoder import DecoderError, _bounded_json, evaluate_catalog, evaluate_generated
+from local_ai.decoder import DecoderError, _bounded_json, evaluate_catalog, evaluate_generated, generated_step_schema
 from local_ai.provider import NativeReply, ProviderError
 from local_ai.sources import capture_decoder, capture_delivery, capture_pair, check_deadline, principal_identity, secret_free
 
@@ -19,7 +19,11 @@ INSTRUCTIONS = (
     'Do not invent facts, change verdicts or scores, infer attribution, or claim independent origins. '
     'Preserve counterevidence, historical freshness and incomplete coverage. '
     'Delivery failures can be historical despite later success; separate backlog, stalled work and lookup coverage. '
-    'Next checks are manual inspections only, not actions or commands.'
+    'Next checks are manual inspections only, not actions or commands. '
+    'Fit the complete JSON object within the fixed output budget: use at most one item per section '
+    '(summary, counterpoints, limitations, next_checks), with each text at most 40 characters '
+    'and at most two evidence IDs per item. Keep the key caveat, not an exhaustive fact list. '
+    'Do not repeat timestamps, long identifiers or metadata in prose. Return compact JSON without indentation.'
 )
 
 
@@ -76,6 +80,29 @@ def prompt(snapshot, schema):
         'return no candidates and the applicable insufficient_reason. Bind the exact snapshot_digest.'
         if snapshot.get('kind') == 'decoder_suggest' else INSTRUCTIONS
     )
+    if snapshot.get('kind') == 'decoder_suggest':
+        # Grammar constrains shape, not the existing interpreter's value types.
+        # These fixed instructions contain neither holdout data nor verifier feedback.
+        operations = {
+            'base64': {'input': 'text', 'output': 'bytes', 'meaning': 'standard base64 decode'},
+            'urlsafe_b64': {'input': 'text', 'output': 'bytes', 'meaning': 'URL-safe base64 decode'},
+            'xor_hex': {'input': 'bytes or ASCII text', 'output': 'bytes', 'meaning': 'XOR with repeating hex key'},
+            'ascii': {'input': 'bytes or text', 'output': 'text', 'meaning': 'decode bytes as ASCII; retain text'},
+            'extract_ip_prefix': {'input': 'bytes or text', 'output': 'text', 'meaning': 'extract leading IPv4 address'},
+            'xor32_ipv4': {'input': 'IPv4 text or exactly 4 bytes', 'output': 'text',
+                           'meaning': 'XOR big-endian IPv4 with 0x-prefixed 8-hex-digit key'},
+        }
+        allowed = [choice['properties']['op']['const']
+                   for choice in generated_step_schema(snapshot['decoder_type'])['oneOf']]
+        semantics = {'initial_type': 'text', 'operations': {op: operations[op] for op in allowed},
+                     'final_output': {'text': 'IPv4 address', 'bytes': 'exactly 4 raw IPv4 octets'},
+                     'ascii_ipv4_bytes_need': ['ascii', 'extract_ip_prefix']}
+        instructions += (
+            ' Propose distinct complete pipelines in execution order, not partial transforms. '
+            'Bytes containing ASCII IPv4 text need a final ascii OR extract_ip_prefix step; '
+            'there is no implicit bytes-to-text conversion.'
+            '\nDecoder DSL semantics: ' + json.dumps(semantics, separators=(',', ':'))
+        )
     messages = [{'role': 'system', 'content': instructions},
                 {'role': 'user', 'content': bounded_json(snapshot, 8192).decode('utf-8')}]
     bounded_json({'messages': messages, 'schema': schema}, MAX_PROMPT_BYTES)

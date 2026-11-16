@@ -393,6 +393,32 @@ def test_generated_schema_does_not_accept_trailing_newline(kind):
     assert not jsonschema.Draft202012Validator(decoder.generated_step_schema(kind)).is_valid(step)
 
 
+@pytest.mark.parametrize('kind', ['TXT', 'A'])
+def test_generated_hex_key_uses_native_pattern_with_exact_validation_parity(kind):
+    import itertools
+    import re
+    import jsonschema
+    decoder = api()
+    rule = next(choice['properties']['key'] for choice in decoder.generated_step_schema(kind)['oneOf']
+                if choice['properties']['op']['const'] == 'xor_hex')
+    pattern = rule['pattern']
+    assert pattern.startswith('^') and pattern.endswith('$'), 'native pattern converter requires ^...$'
+    assert not any(token in pattern for token in ('(?=', '(?!', '(?<')), 'native patterns do not support lookaround'
+    validator = jsonschema.Draft202012Validator(rule)
+    keys = [''.join(chars) for length in range(5) for chars in itertools.product('0Ag\n', repeat=length)]
+    keys += ['aB' * 63, 'aB' * 64, 'aB' * 65, 'a' * 127,
+             'aa\r', 'aa\r\n', 'aa\u2028', 'aa\u2029', 'aB' * 64 + '\n']
+    for key in keys:
+        expected = 2 <= len(key) <= 128 and len(key) % 2 == 0 and all(c in '0123456789abcdefABCDEF' for c in key)
+        assert bool(re.fullmatch(pattern, key)) == expected, repr(key)
+        assert validator.is_valid(key) == expected, repr(key)
+        if expected:
+            assert decoder.validate_generated_steps(kind, [{'op': 'xor_hex', 'key': key}]) == [{'op': 'xor_hex', 'key': key}]
+        else:
+            with pytest.raises(decoder.DecoderError, match='invalid_model_output'):
+                decoder.validate_generated_steps(kind, [{'op': 'xor_hex', 'key': key}])
+
+
 def test_real_catalog_and_generated_maximum_evaluation_counts():
     import time
     import a_decoder
