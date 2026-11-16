@@ -75,7 +75,16 @@ def _run_node(functions: list[str], body: str) -> None:
         functions = ["buildIpRelationshipResultModel", *functions]
     if "wireIpRelationshipProductControls" in functions:
         functions = ["setIpIntelResultState", *functions]
+    if any(name in functions for name in ("markIpRelationshipResultsStale", "setIpRelView")) and "closeIpRelationshipEvidence" not in functions:
+        functions = ["closeIpRelationshipEvidence", *functions]
+    if "closeIpRelationshipEvidence" in functions and "retireLocalAI" not in functions:
+        functions = ["retireLocalAI", *functions]
     bindings = "global.window={};global.ipIntelMispController=null;global.ipIntelMispSeq=0;global.viewFeedbackOwner=()=>null;global.feedbackCurrent=()=>true;global.feedbackFailure=()=>{};global.cancelIpIntelInputReads=()=>{};\n"
+    # Keep the real helpers and their lexical owners together, as on the page.
+    if "retireLocalAI" in functions:
+        bindings += SOURCE[SOURCE.index("const localAIPanels ="):SOURCE.index("function retireLocalAI(")]
+    if "closeIpRelationshipEvidence" in functions:
+        bindings += SOURCE[SOURCE.index("let ipRelationshipEvidenceOwner ="):SOURCE.index("function closeIpRelationshipEvidence(")]
     script = bindings + "\n".join(_function_source(name) for name in functions) + "\n" + body
     completed = subprocess.run(["node", "-e", script], text=True, capture_output=True)
     assert completed.returncode == 0, completed.stderr
@@ -408,7 +417,6 @@ function node(id) {
 const elements = {};
 global.document = {getElementById: node, querySelector:node};
 global.window = {IP_REL_CACHE:null};
-global.ipRelationshipEvidenceOwner = null;
 global.renderIpRelGraphFromCache = () => {};
 global.renderIpRelMapFromCache = () => {};
 window.IP_REL_LAST_SUCCESS = {status:'ok'};
@@ -448,7 +456,7 @@ const assert = require('assert');
 function node(id){
   return elements[id] ||= {
     id, textContent:'', disabled:false, hidden:false, dataset:{},
-    setAttribute(){}
+    setAttribute(){}, replaceChildren(){this.children=[];}
   };
 }
 const elements = {};
@@ -461,6 +469,32 @@ assert(node('ipRelRunStatus').textContent.includes('previous run'));
 assert.strictEqual(node('ipRelFilterInput').disabled, false);
 assert.strictEqual(node('exportIpRelationshipBtn').disabled, false);
 assert.strictEqual(node('ipRelQualityBanner').dataset.state, 'stale');
+""")
+
+
+def test_evidence_lifecycle_bindings_retire_only_the_owned_panel():
+    _run_node(["mountLocalAI", "closeIpRelationshipEvidence"], r"""
+const assert = require('assert');
+const disposed = [];
+const root = {hidden:false, children:['prior evidence'], replaceChildren(){this.children=[];}};
+global.document = {getElementById:id=>id === 'ipRelEvidence' ? root : null};
+window.TraceLocalAI = {mount:(_container, options)=>({dispose(){disposed.push(options.kind);}})};
+mountLocalAI({}, {kind:'relationship_pair'});
+mountLocalAI({}, {kind:'delivery'});
+let focuses = 0;
+ipRelationshipEvidenceOwner = {button:{isConnected:true, focus(){focuses++;}}};
+closeIpRelationshipEvidence(false);
+assert.deepStrictEqual(disposed, ['relationship_pair']);
+assert.deepStrictEqual([...localAIPanels.keys()], ['delivery']);
+assert.strictEqual(ipRelationshipEvidenceOwner, null);
+assert.strictEqual(root.hidden, true);
+assert.deepStrictEqual(root.children, []);
+assert.strictEqual(focuses, 0);
+closeIpRelationshipEvidence();
+assert.deepStrictEqual(disposed, ['relationship_pair']);
+retireLocalAI();
+assert.deepStrictEqual(disposed, ['relationship_pair', 'delivery']);
+assert.strictEqual(localAIPanels.size, 0);
 """)
 
 
