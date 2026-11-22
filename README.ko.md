@@ -391,6 +391,7 @@ Settings는 각 모니터링 대상을 검색 가능한 카드로 표시합니�
   `{"name":"replace-with-your-target.invalid","type":"TXT","txt_decode":"ipv6_last4_xor_6b9e3f2a"}`.
   자리표시자는 직접 모니터링하기로 선택한 대상으로 바꾸세요.
 - A 도메인: `a_decode`(예: `xor32_ipv4`)와 선택적 `a_xor_key`(16진수·정수·점을 구분자로 쓰는 바이트 형식).
+- `ipv4_1423`은 키 없이 IPv4 옥텟을 `a.b.c.d`에서 `a.d.b.c`로 재배열합니다.
 
 </details>
 

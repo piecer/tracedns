@@ -693,7 +693,7 @@ function formatJsonObjectCompact(value){
 
 function syncDomainVerifyDecoderOptions(){
   const txtFallback = ['cafebabe_xor_base64','plain_base64','btea_variant','xor_ipstring_base64_fixedkey','ROT13_XOR0x30'];
-  const aFallback = ['none','xor32_ipv4','2byte_swap'];
+  const aFallback = ['none','xor32_ipv4','2byte_swap','ipv4_1423'];
   const ensFallback = ['ipv6_5to8_xor', 'ipv6_last4_xor32', 'ROL3210_decode'];
   const txtNames = buildDecoderNameList(
     (window.DECODERS && window.DECODERS.length) ? window.DECODERS : txtFallback,
@@ -3634,7 +3634,7 @@ function addDomainRow(obj, metadata){
   const tdADecode = document.createElement('td');
   const selADecode = document.createElement('select');
   selADecode.className = 'a-decode';
-  const FALLBACK_A_DECODERS = ['none', 'xor32_ipv4', '2byte_swap'];
+  const FALLBACK_A_DECODERS = ['none', 'xor32_ipv4', '2byte_swap', 'ipv4_1423'];
   const rawADecs = (window.A_DECODERS && window.A_DECODERS.length) ? window.A_DECODERS.slice() : FALLBACK_A_DECODERS.slice();
   const aDecs = Array.from(new Set(rawADecs.filter(Boolean)));
   // Keep 'none' as explicit first/default option to avoid alphabetical auto-selection confusion.

@@ -388,6 +388,7 @@ before registering it. The UI can save, edit and delete these definitions.
   `{"name":"replace-with-your-target.invalid","type":"TXT","txt_decode":"ipv6_last4_xor_6b9e3f2a"}`.
   Replace the placeholder with a target you explicitly intend to monitor.
 - A domains: `a_decode` (e.g. `xor32_ipv4`) and optional `a_xor_key` (hex/int/dotted-byte format)
+- Select `ipv4_1423` to reorder IPv4 octets from `a.b.c.d` to `a.d.b.c` without a key.
 
 </details>
 

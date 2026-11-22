@@ -125,6 +125,21 @@ def decode_a_2byte_swap(a_values, **kwargs):
     return sorted(out)
 
 
+@a_decode_register("ipv4_1423")
+def decode_a_ipv4_1423(a_values, **kwargs):
+    """Reorder IPv4 octets from 1.2.3.4 to 1.4.2.3."""
+    out = set()
+    for value in a_values or []:
+        try:
+            ip = ipaddress.IPv4Address(str(value).strip())
+        except ipaddress.AddressValueError:
+            continue
+
+        first, second, third, fourth = ip.packed
+        out.add(f"{first}.{fourth}.{second}.{third}")
+    return sorted(out)
+
+
 def decode_a_hidden_ips(a_values, method="none", **kwargs):
     """
     Run selected A-record post-processing method.
