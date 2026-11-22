@@ -133,10 +133,10 @@ function json(res, data, status=200) {
   res.writeHead(status, {'Content-Type':'application/json'});res.end(JSON.stringify(data));
 }
 const ready = {enabled:true,accepting:true,provider_state:'ready',queued:0,active_job:null};
-function explanation(kind, language='en') {
-  const snapshot=copy(fixtures.snapshots[kind]), digest=fixtures.digests[kind];
+function explanation(kind, language='en', source=kind) {
+  const snapshot=copy(fixtures.snapshots[source]), digest=fixtures.digests[source];
   const text=language==='ko'?'모델 설명: 관찰 범위에 주의하세요.':'MODEL fixture: <img src=x onerror=alert(1)> [unsafe](https://example.invalid)';
-  return {snapshot,snapshot_digest:digest,source_revision:7,model:{model:'fixture-local',model_digest:'c'.repeat(64),eval_count:'9223372036854775807'},
+  return {snapshot,snapshot_digest:digest,source_revision:7,facts_summary:copy(fixtures.facts_summary[source][language]),model:{model:'fixture-local',model_digest:'c'.repeat(64),eval_count:'9223372036854775807'},
     interpretation:{version:1,kind,language,snapshot_digest:digest,summary:[{text,evidence_ids:['e1']}],counterpoints:[{text:'Controlled counterpoint',evidence_ids:['e2']}],limitations:[],next_checks:[{code:kind==='delivery'?'inspect_delivery_progress':'inspect_pair_coverage',evidence_ids:['e3']}]}};
 }
 function job(kind, language='en', overrides={}) {
@@ -154,6 +154,16 @@ for (const kind of ['relationship_pair','delivery']) for(const language of ['en'
     await page.keyboard.press('Enter');
     await expect(page.locator('[data-ai="interpretation"]')).toContainText(result.interpretation.summary[0].text);
     await expect(page.locator('[data-ai="facts"]')).not.toContainText('MODEL fixture');
+    const serverSummary=page.locator('[data-ai="server-summary"]');
+    for(const section of ['summary','counterpoints','limitations'])for(const claim of result.facts_summary[section]) {
+      await expect(serverSummary.locator(`[data-claim-code="${claim.code}"]`)).toContainText(claim.text);
+    }
+    await expect(serverSummary).toHaveAttribute('lang',language);
+    await expect(page.locator('[data-ai="interpretation"]')).toHaveAttribute('lang',language);
+    assert(await page.evaluate(()=>{
+      const summary=document.querySelector('[data-ai="server-summary"]'),ai=document.querySelector('[data-ai="interpretation"]'),warnings=document.querySelector('[data-ai="warnings"]');
+      return !!(summary.compareDocumentPosition(ai)&Node.DOCUMENT_POSITION_FOLLOWING) && !!(warnings.compareDocumentPosition(ai)&Node.DOCUMENT_POSITION_FOLLOWING);
+    }),'server summary and limitations precede separate unverified AI prose');
     await expect(page.locator('[data-ai="warnings"]')).toContainText(kind==='delivery'?'snapshots_not_atomic':'coverage_incomplete');
     await page.locator('[data-ai="provenance"] summary').click();
     await expect(page.locator('[data-ai="provenance"]')).toContainText(result.snapshot_digest);
@@ -274,8 +284,9 @@ test('busy-other-source-no-resume',async browser=>withPanel(browser,async(page,s
   assert.equal(await page.locator('[data-ai="interpretation"]').count(),0);
 }));
 
-function decoderResult(language='en',generate=true) {
-  return {snapshot:copy(fixtures.decoder.snapshots.normal),snapshot_digest:'e'.repeat(64),source_revision:19,model:generate?{model:'fixture-local',model_digest:'c'.repeat(64)}:null,catalog:copy(fixtures.decoder.catalog),generated:generate?copy(fixtures.decoder.generated):null,proposal:generate?{version:1,kind:'decoder_suggest',language,snapshot_digest:'e'.repeat(64),candidates:copy(fixtures.decoder.proposal),insufficient_reason:null}:null};
+function decoderResult(language='en',generate=true,source='normal') {
+  const presentation=fixtures.decoder.presentation[source][language],digest=presentation.snapshot_digest;
+  return {snapshot:copy(fixtures.decoder.snapshots[source]),snapshot_digest:digest,source_revision:19,model:generate?{model:'fixture-local',model_digest:'c'.repeat(64)}:null,model_input:generate?copy(presentation.model_input):null,catalog:copy(fixtures.decoder.catalog),generated:generate?copy(fixtures.decoder.generated):null,proposal:generate?{version:1,kind:'decoder_suggest',language,snapshot_digest:digest,candidates:copy(fixtures.decoder.proposal),insufficient_reason:null}:null};
 }
 function decoderJob(language='en',generate=true,result=decoderResult(language,generate)) {
   return {...job('delivery',language),kind:'decoder_suggest',result};
@@ -525,7 +536,7 @@ test('decoder-catalog-draft-and-extras',async browser=>withPanel(browser,async(p
   const application=(await page.evaluate(()=>fixture.applied))[0];assert.deepEqual(application.candidate,custom);assert.equal(application.result.source_revision,19);
   assert.equal(state.requests[1].body.generate,false);assert.equal(state.requests.length,2);
   await page.evaluate(()=>controller.dispose());
-  const extra=decoderResult();extra.snapshot=copy(fixtures.decoder.snapshots.extras);extra.catalog=fixtures.decoder.extras_catalog;extra.generated=fixtures.decoder.extras;extra.proposal.candidates=[{steps:[{op:'ascii'}]}];
+  const extra=decoderResult('en',true,'extras');extra.catalog=fixtures.decoder.extras_catalog;extra.generated=fixtures.decoder.extras;extra.proposal.candidates=[{steps:[{op:'ascii'}]}];
   state.reply=(req,res)=>json(res,req.url==='/ai/status'?ready:decoderJob('en',true,extra));
   await mounted(page,'decoder_suggest');await fillSamples(page,fixtures.decoder.extras_samples);await page.getByLabel('Generate new candidates (uses local model)',{exact:true}).check();
   await page.getByRole('button',{name:'Run',exact:true}).click();await expect(page.locator('[data-ai="candidate-list"]')).toBeVisible();
@@ -535,10 +546,12 @@ test('decoder-catalog-draft-and-extras',async browser=>withPanel(browser,async(p
 }));
 
 test('decoder-A-and-invalid-steps',async browser=>withPanel(browser,async(page,state)=>{
-  const result=decoderResult();result.snapshot=copy(fixtures.decoder.snapshots.a);result.catalog=fixtures.decoder.a.catalog;result.generated=fixtures.decoder.a.generated;result.proposal.candidates=fixtures.decoder.a.proposal;
+  const result=decoderResult('en',true,'a');result.catalog=fixtures.decoder.a.catalog;result.generated=fixtures.decoder.a.generated;result.proposal.candidates=fixtures.decoder.a.proposal;
   state.reply=(req,res)=>json(res,req.url==='/ai/status'?ready:decoderJob('en',true,result));
   await mounted(page,'decoder_suggest');await page.evaluate(()=>{fixture.base.decoder_type='A';});await fillSamples(page,fixtures.decoder.a.samples);await page.getByLabel('Generate new candidates (uses local model)',{exact:true}).check();
   await page.getByRole('button',{name:'Run',exact:true}).click();await expect(page.locator('[data-ai="candidate-list"]')).toBeVisible();
+  assert(result.catalog.candidates.some(c=>c.name==='ipv4_1423'&&c.source==='builtin'&&c.steps===null),'producer preserves builtin-only ipv4_1423');
+  await openCandidate(page,'ipv4_1423');await expect(page.getByRole('button',{name:'Apply to draft',exact:true})).toBeDisabled();
   await openCandidate(page,'generated_1');await page.getByRole('button',{name:'Apply to draft',exact:true}).click();
   assert.equal((await page.evaluate(()=>fixture.applied)).length,1);assert.equal(state.requests[1].body.decoder_type,'A');
   await page.evaluate(()=>controller.dispose());
@@ -547,6 +560,13 @@ test('decoder-A-and-invalid-steps',async browser=>withPanel(browser,async(page,s
   await mounted(page,'decoder_suggest');await fillSamples(page,fixtures.decoder.samples.slice(0,2));await page.getByLabel('Generate new candidates (uses local model)',{exact:true}).check();
   await page.getByRole('button',{name:'Run',exact:true}).click();await expect(page.locator('[data-ai="status"]')).toContainText('Unsupported or invalid response');
   assert.equal(await page.locator('[data-ai="candidate-list"]').count(),0,'never repair irrelevant generated keys');
+  const forbidden=copy(result);forbidden.proposal.candidates[0].steps=[{op:'ipv4_1423'}];forbidden.generated.candidates[0].steps=[{op:'ipv4_1423'}];
+  state.reply=(req,res)=>json(res,req.url==='/ai/status'?ready:decoderJob('en',true,forbidden));
+  await mounted(page,'decoder_suggest');await page.evaluate(()=>{fixture.base.decoder_type='A';});await fillSamples(page,fixtures.decoder.a.samples);
+  await page.getByLabel('Generate new candidates (uses local model)',{exact:true}).check();
+  await page.getByRole('button',{name:'Run',exact:true}).click();
+  await expect(page.locator('[data-ai="status"]')).toContainText('Unsupported or invalid response');
+  assert.equal(await page.locator('[data-ai="candidate-list"]').count(),0,'builtin-only operation must not enter generated DSL');
 }));
 
 test('six-editor-complete-catalog-details',async browser=>withPanel(browser,async(page,state)=>{
@@ -577,7 +597,7 @@ test('six-editor-complete-catalog-details',async browser=>withPanel(browser,asyn
 }));
 
 test('max-evidence-and-claims',async browser=>withPanel(browser,async(page,state)=>{
-  const result=explanation('relationship_pair');result.snapshot=fixtures.snapshots.maximum_pair;result.snapshot_digest=fixtures.digests.maximum_pair;result.interpretation.snapshot_digest=result.snapshot_digest;
+  const result=explanation('relationship_pair','en','maximum_pair');
   for(const [key,count] of [['summary',3],['counterpoints',4],['limitations',4]])result.interpretation[key]=Array.from({length:count},()=>({text:'Bounded model fixture '.padEnd(512,'x'),evidence_ids:result.snapshot.facts.slice(0,4).map(f=>f.id)}));
   result.interpretation.next_checks=Array.from({length:3},()=>({code:'inspect_pair_evidence',evidence_ids:['e1']}));
   state.reply=(req,res)=>json(res,req.url==='/ai/status'?ready:job('relationship_pair','en',{result}));
@@ -594,7 +614,7 @@ test('max-evidence-and-claims',async browser=>withPanel(browser,async(page,state
 }));
 
 test('delivery-history-and-later-success',async browser=>withPanel(browser,async(page,state)=>{
-  const result=explanation('delivery');result.snapshot=fixtures.snapshots.delivery_history;result.snapshot_digest=fixtures.digests.delivery_history;result.interpretation.snapshot_digest=result.snapshot_digest;
+  const result=explanation('delivery','en','delivery_history');
   state.reply=(req,res)=>json(res,req.url==='/ai/status'?ready:job('delivery','en',{result}));
   await mounted(page);await page.getByRole('button',{name:'Run',exact:true}).click();await expect(page.locator('[data-ai="interpretation"]')).toBeVisible();
   const channel=result.snapshot.facts.find(f=>f.key==='diagnostics_misp');
@@ -894,6 +914,86 @@ test('distinct-source-create404-retains-history',async browser=>withPanel(browse
   assert.equal(creates,4,'one accepted source and three explicit distinct-selector refusals');
   assert.equal(state.requests.filter(r=>r.path.endsWith('/cancel')).length,0);
 },true));
+
+test('presentation-malformed-atomic',async browser=>withPanel(browser,async(page,state)=>{
+  for(const [kind,mutate] of [
+    ['delivery',r=>{delete r.facts_summary;}],['delivery',r=>{r.facts_summary=null;}],
+    ['delivery',r=>{r.facts_summary.summary[0].evidence_ids=['e2'];}],
+    ['delivery',r=>{r.facts_summary.limitations.pop();}],['delivery',r=>{r.model=null;}],
+    ['decoder_suggest',r=>{delete r.model_input;}],['decoder_suggest',r=>{r.model_input=null;}],
+    ['decoder_suggest',r=>{r.model_input.view.examples[0].extra='PRIVATE';}],
+    ['decoder_suggest',r=>{r.model_input.coverage.omitted_utf8_bytes++;}],['decoder_suggest',r=>{r.model=null;}]
+  ]){
+    const result=kind==='delivery'?explanation(kind):decoderResult();mutate(result);
+    state.reply=(req,res)=>json(res,req.url==='/ai/status'?ready:job(kind==='delivery'?kind:'delivery','en',{kind,result}));
+    await mounted(page,kind);
+    if(kind==='decoder_suggest'){
+      await fillSamples(page,fixtures.decoder.samples.slice(0,2));
+      await page.getByLabel('Generate new candidates (uses local model)',{exact:true}).check();
+    }
+    await page.getByRole('button',{name:'Run',exact:true}).click();
+    await expect(page.locator('[data-ai="status"]')).toContainText('Unsupported or invalid response');
+    await expect(page.locator('[data-ai="results"]')).toBeEmpty();
+    await expect(page.locator('#panel')).not.toContainText('PRIVATE');
+    assert.equal((await page.evaluate(()=>fixture.applied)).length,0);
+  }
+}));
+
+for(const name of ['excerpt','unicode'])test(`model-coverage-${name}`,async browser=>withPanel(browser,async(page,state)=>{
+  const {request,result}=fixtures.decoder.projected[name], input=result.model_input;
+  state.reply=(req,res)=>json(res,req.url==='/ai/status'?ready:decoderJob('en',true,result));
+  await mounted(page,'decoder_suggest');await fillSamples(page,request.samples);
+  await page.getByLabel('Generate new candidates (uses local model)',{exact:true}).check();
+  await page.getByRole('button',{name:'Run',exact:true}).click();
+  await expect(page.locator('[data-ai="candidate-list"]')).toBeVisible();
+  const coverage=page.locator('[data-ai="model-coverage"]');
+  await expect(coverage).toContainText(`${input.coverage.shown_utf8_bytes} / ${input.coverage.original_utf8_bytes}`);
+  await expect(coverage).toContainText(`${input.coverage.omitted_utf8_bytes}`);
+  await expect(coverage).toContainText('Separate prefix/suffix excerpts');
+  await expect(coverage).toContainText('Full originals and validation samples');
+  assert.equal(await page.locator('[data-ai="results"] pre').count(),0,'no eagerly expanded raw data');
+  await page.setViewportSize({width:360,height:800});
+  await page.locator('.local-ai > h3').evaluate(node=>node.scrollIntoView({block:'start'}));
+  await expect(coverage).toBeInViewport({ratio:1});
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+  const initial=await bounded(page,'model coverage initial');
+  await page.locator('[data-ai="provenance"] summary').click();
+  const shown=JSON.parse(await page.locator('[data-ai="provenance"] pre').textContent());
+  assert.deepEqual(shown.model_input,input,'exact producer model view including labels and excerpt boundaries');
+  await expect(page.locator('[data-ai="provenance"]')).toContainText('Server-recorded commitment');
+  await expect(page.locator('[data-ai="provenance"]')).toContainText('not browser verification of dispatch');
+  await expect(page.locator('[data-ai="provenance"]')).not.toContainText('HOLDOUT NEVER SHOWN');
+  await bounded(page,'model coverage expanded');
+  await page.locator('[data-ai="provenance"] summary').click();
+  await expect(page.locator('[data-ai="provenance"] details > *'),'collapsed disclosure mounts summary only after its native toggle').toHaveCount(1);
+  assert.equal(await bounded(page,'model coverage collapsed'),initial);
+  const original=await coverage.textContent();
+  await page.getByLabel('Language',{exact:true}).selectOption('ko');
+  assert.equal(await coverage.textContent(),original,'retained coverage is captured language');
+  await expect(coverage).toHaveAttribute('lang','en');
+  assert.equal(state.requests.length,2);
+  await page.screenshot({path:path.join(output,`coverage-${name}-narrow.png`),fullPage:true});
+}));
+
+test('facts-language-and-citations-retained',async browser=>withPanel(browser,async(page,state)=>{
+  const result=explanation('delivery','en','delivery_history');
+  state.reply=(req,res)=>json(res,req.url==='/ai/status'?ready:job('delivery','en',{result}));
+  await mounted(page);await page.getByRole('button',{name:'Run',exact:true}).click();
+  const summary=page.locator('[data-ai="server-summary"]');
+  await expect(summary).toContainText('Failed receipt not proven repaired');
+  await expect(summary).toContainText('not atomic and not live health');
+  const claim=result.facts_summary.summary[0], first=summary.locator(`[data-claim-code="${claim.code}"] button`).first();
+  await first.click();
+  await expect(page.locator('[data-ai="fact-detail"]')).toContainText(result.snapshot.facts.find(f=>f.id===claim.evidence_ids[0]).key);
+  const captured=await summary.textContent(), ai=await page.locator('[data-ai="interpretation"]').textContent();
+  await page.getByLabel('Language',{exact:true}).selectOption('ko');
+  assert.equal(await summary.textContent(),captured);
+  assert.equal(await page.locator('[data-ai="interpretation"]').textContent(),ai);
+  await expect(summary).toHaveAttribute('lang','en');
+  await expect(page.locator('[data-ai="interpretation"]')).toHaveAttribute('lang','en');
+  await expect(summary.locator('button').first()).toBeDisabled();
+  assert.equal(state.requests.length,2);
+}));
 
 (async()=>{
   fs.mkdirSync(output,{recursive:true});

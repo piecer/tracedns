@@ -6,9 +6,12 @@ from pathlib import Path
 import shutil
 import subprocess
 
+from local_ai_presentation_fixture import build_fixtures, decoder_result, sample
+
 ROOT = Path(__file__).resolve().parents[1]
 OWNED = ("local_ai_frontend.js", "local_ai_frontend.css",
-         "tests/local_ai_panel_browser.js", "tests/test_local_ai_panel.py")
+         "tests/local_ai_panel_browser.js", "tests/test_local_ai_panel.py",
+         "tests/local_ai_presentation_fixture.py", "tests/test_local_ai_presentation_contract.py")
 
 
 def evidence_fixtures(output, monkeypatch):
@@ -58,6 +61,8 @@ def evidence_fixtures(output, monkeypatch):
     digests = {key: hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
                separators=(",", ":")).encode()).hexdigest() for key, value in snapshots.items()}
     dependencies = ("local_ai/evidence.py", "local_ai/decoder.py", "local_ai/decoder_worker.py",
+        "local_ai/decoder_input.py", "local_ai/facts_summary.py", "local_ai/contracts.py",
+        "local_ai/sources.py", "tests/local_ai_presentation_fixture.py", "tests/test_local_ai_sources.py",
         "http_api/relationship_handlers.py", "http_api/delivery_diagnostics.py", "http_api/delivery_health.py",
         "monitor/delivery_store.py", "monitor/delivery_runtime.py", "tests/test_local_ai_evidence.py",
         "tests/test_stage3_core_runtime.py", "tests/test_delivery_store_atomic.py", "tests/test_delivery_store_claims.py")
@@ -66,9 +71,11 @@ def evidence_fixtures(output, monkeypatch):
         "maximum_pair": "controlled complete signal inventory through real _build_pair_assessment and evidence.project_pair",
         "delivery": "real cache producers and real store failed/acked transitions; no adapters run",
         "decoder": "fresh real verifier subprocesses, not hand-authored reports",
-        "model_and_jobs": "controlled component transport fixtures, not native inference or backend acceptance"}
+        "model_and_jobs": "controlled component transport fixtures, not native inference or backend acceptance",
+        "presentation": "build_summary and build_model_input from exact caller source snapshots; controlled checked message fixture, not runtime custody"}
     (output / "producer-provenance.json").write_text(json.dumps(provenance, indent=2))
-    return {"snapshots": snapshots, "digests": digests}
+    return {"snapshots": snapshots, "digests": digests,
+            **build_fixtures({"snapshots": snapshots})}
 
 
 def decoder_fixtures():
@@ -119,6 +126,13 @@ def decoder_fixtures():
             result['snapshots'][name] = json.loads(encoded)
         finally:
             lease.dispose()
+    result['presentation'] = build_fixtures({'decoder_snapshots': result['snapshots']})['decoder']
+    result['projected'] = {}
+    for name, texts in [('excerpt', [f'192.0.2.{i}|'.ljust(1800, chr(64 + i)) for i in range(1, 5)]),
+                        ('unicode', ['ok', '한🙂e\u0301' * 130, 'A' * 1600])]:
+        rows = [sample(value) for value in texts] + [sample('HOLDOUT NEVER SHOWN', 'validation')]
+        request, produced = decoder_result(rows)
+        result['projected'][name] = {'request': request, 'result': produced}
     return result
 
 

@@ -14,7 +14,9 @@ CASES = ["delivery", "decoder", "pair", "refusal", "manual-check", "result-order
          "unavailable", "stopped", "unsettled", "disabled", "audit-pending", "audit-failed",
          "cancel", "auth-retirement", "decoder-fences", "decoder-A", "decoder-ko", "delayed-create",
          "provider-failed", "source-exclusions", "source-retirement-after-success",
-         "failed-rerun-retains-history", "same-source-eviction-create-404"]
+         "failed-rerun-retains-history", "same-source-eviction-create-404", "decoder-max-excerpt",
+         "review-manual-preview-save", "review-delivery-missing", "review-delivery-wrong-citation",
+         "review-decoder-coverage", "review-decoder-null-model"]
 
 
 def source_manifest():

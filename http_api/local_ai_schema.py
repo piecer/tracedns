@@ -1,5 +1,11 @@
 """Documented local-AI wire grammar; task validators also enforce byte budgets."""
 from local_ai.contracts import ERROR_STATUS
+from local_ai.decoder_input import (
+    MAX_INPUT_METADATA_BYTES, MAX_LABEL_BYTES, MAX_MESSAGES_SCHEMA_BYTES,
+    MAX_MODEL_DATA_BYTES, MAX_MODEL_INPUT_BYTES, MAX_SOURCE_BYTES,
+    MAX_VIEW_METADATA_BYTES, POLICY,
+)
+from local_ai.facts_summary import MAX_CLAIM_BYTES, MAX_SUMMARY_BYTES, SUMMARY_CODES
 
 
 def closed(properties):
@@ -17,6 +23,96 @@ SAMPLE = closed({'data': {'type': 'string', 'maxLength': 2048, 'description': 'R
                  'expected_ips': {'type': 'array', 'minItems': 1, 'maxItems': 8, 'uniqueItems': True, 'items': IP},
                  'usage': {'type': 'string', 'enum': ['example', 'validation']},
                  'complete_expected': {'type': 'boolean'}})
+# OpenAPI 3.1 uses JSON Schema 2020-12. x-max-* byte annotations describe
+# producer/consumer checks, not extra validation performed by JSON Schema.
+SHA256 = {'type': 'string', 'pattern': '^[a-f0-9]{64}$', 'minLength': 64, 'maxLength': 64}
+VERSION = {'type': 'integer', 'const': 1}
+EXAMPLE_FIELDS = {key: SAMPLE['properties'][key] for key in ('expected_ips', 'complete_expected')}
+EXAMPLE_FIELDS['usage'] = {'type': 'string', 'const': 'example'}
+MODEL_EXCERPT = closed({
+    'original_utf8_bytes': {'type': 'integer', 'minimum': 1, 'maximum': 2048},
+    'prefix': {'type': 'string', 'maxLength': 768, 'x-max-utf8-bytes': 768},
+    'suffix': {'type': 'string', 'maxLength': 256, 'x-max-utf8-bytes': 256},
+    'omitted_utf8_bytes': {'type': 'integer', 'minimum': 1, 'maximum': 2048},
+})
+MODEL_EXAMPLE = {'oneOf': [
+    closed({**EXAMPLE_FIELDS, 'data': {'type': 'string', 'maxLength': MAX_MODEL_DATA_BYTES,
+                                     'x-max-utf8-bytes': MAX_MODEL_DATA_BYTES}}),
+    closed({**EXAMPLE_FIELDS, 'excerpt': MODEL_EXCERPT}),
+]}
+MODEL_VIEW = closed({
+    'version': VERSION, 'kind': {'type': 'string', 'const': 'decoder_suggest'},
+    'decoder_type': {'type': 'string', 'enum': ['TXT', 'A']},
+    'examples': {'type': 'array', 'minItems': 1, 'maxItems': 6, 'items': MODEL_EXAMPLE},
+})
+MODEL_VIEW.update({
+    'x-max-encoded-bytes': MAX_SOURCE_BYTES,
+    'x-max-labels-bytes': MAX_LABEL_BYTES,
+    'x-max-metadata-bytes': MAX_VIEW_METADATA_BYTES,
+    'description': 'Original example order and labels; complete rows verbatim. Excerpt prefix/suffix are separate, '
+                   'never concatenated or complete samples. Total shown raw UTF-8 data <=1024 bytes. '
+                   'Labels are metered as the array of expected_ips arrays; metadata blanks data/segments and labels. '
+                   'Canonical allocation, byte sums and equality to the original examples require runtime validation.',
+})
+MODEL_INPUT_SCHEMA = closed({
+    'version': VERSION, 'policy': {'type': 'string', 'const': POLICY},
+    'source_snapshot_digest': SHA256, 'view': MODEL_VIEW,
+    'coverage': closed({
+        'original_utf8_bytes': {'type': 'integer', 'minimum': 0, 'maximum': MAX_SOURCE_BYTES},
+        'shown_utf8_bytes': {'type': 'integer', 'minimum': 0, 'maximum': MAX_MODEL_DATA_BYTES},
+        'omitted_utf8_bytes': {'type': 'integer', 'minimum': 0, 'maximum': MAX_SOURCE_BYTES},
+        'complete_examples': {'type': 'integer', 'minimum': 0, 'maximum': 6},
+        'excerpted_examples': {'type': 'integer', 'minimum': 0, 'maximum': 6},
+    }),
+    'messages_schema_bytes': {'type': 'integer', 'minimum': 1, 'maximum': MAX_MESSAGES_SCHEMA_BYTES},
+    'messages_schema_digest': SHA256,
+})
+MODEL_INPUT_SCHEMA.update({
+    'x-max-encoded-bytes': MAX_MODEL_INPUT_BYTES,
+    'x-max-metadata-bytes': MAX_INPUT_METADATA_BYTES,
+    'description': 'Server-recorded commitment to the exact privacy-checked canonical UTF-8 JSON '
+                   '{messages,schema}, sorted keys, compact separators, ensure_ascii=False, allow_nan=False. '
+                   'Not HTTP framing, provider options, runtime custody, model attention, tokens or latency proof. '
+                   'source_snapshot_digest binds the unchanged original snapshot, not the excerpted view. '
+                   'Metadata meters the sidecar with the view data/segments and labels blanked. '
+                   'Digest equality and byte budgets require runtime checks; x-max-* are annotations only.',
+})
+
+# JSON Schema searches patterns; unlike $, this portable end assertion cannot
+# match before a final line terminator (and does not require Python-only anchors).
+EVIDENCE_ID = {'type': 'string', 'pattern': r'^e[1-9][0-9]{0,2}(?![\s\S])', 'minLength': 2, 'maxLength': 4}
+
+
+def _summary_section(codes):
+    if not codes:
+        return {'type': 'array', 'maxItems': 0, 'const': []}
+    return {
+        'type': 'array', 'minItems': len(codes), 'maxItems': len(codes), 'items': False,
+        'prefixItems': [closed({
+            'code': {'type': 'string', 'const': code},
+            'text': {'type': 'string', 'minLength': 1, 'maxLength': MAX_CLAIM_BYTES,
+                     'x-max-utf8-bytes': MAX_CLAIM_BYTES},
+            'evidence_ids': {'type': 'array', 'minItems': 1, 'maxItems': 3, 'uniqueItems': True,
+                             'items': EVIDENCE_ID},
+        }) for code in codes],
+    }
+
+
+FACTS_SUMMARIES = {kind: closed({
+    'version': VERSION, 'kind': {'type': 'string', 'const': kind}, 'language': LANGUAGE,
+    'snapshot_digest': SHA256,
+    **{section: _summary_section(codes) for section, codes in sections.items()},
+}) for kind, sections in SUMMARY_CODES.items()}
+FACTS_SUMMARY_SCHEMA = {
+    'oneOf': list(FACTS_SUMMARIES.values()), 'x-max-encoded-bytes': MAX_SUMMARY_BYTES,
+    'description': 'Deterministic server facts from the exact original snapshot; separate from unchanged '
+                   'free-prose interpretation.version=1. Each section has mandatory codes in producer order. '
+                   'Claims have 1..512 UTF-8 bytes; x-max-* byte annotations require runtime enforcement. '
+                   'Kind, language and snapshot digest must match the enclosing job/result. Each evidence ID '
+                   'must cite the specific source fact for its code, not merely match the ID syntax. '
+                   'Cross-field binding and fact semantics require runtime validation, not JSON Schema alone.',
+}
+
 REQUEST_SCHEMA = {'oneOf': [
     closed({'kind': {'const': 'delivery'}, 'language': LANGUAGE}),
     closed({'kind': {'const': 'relationship_pair'}, 'language': LANGUAGE,
@@ -34,6 +130,68 @@ STATUS_SCHEMA = closed({'enabled': {'type': 'boolean'}, 'accepting': {'type': 'b
                         'provider_state': {'enum': ['ready', 'busy', 'unsettled', 'unavailable', 'disabled', 'stopped']},
                         'queued': {'type': 'integer', 'minimum': 0, 'maximum': 2},
                         'active_job': {'anyOf': [{'type': 'null'}, ACTIVE_JOB]}})
+# The retained payloads remain governed by their task validators. These public
+# schemas close the result envelope and the new sidecars; they do not replace
+# the bound model-output schemas in local_ai.contracts or verifier semantics.
+RETAINED_OBJECT = {'type': 'object', 'description': 'Retained task-validated payload; existing contract unchanged.'}
+RESULT_COMMON = {
+    'snapshot_digest': SHA256,
+    'source_revision': {'type': 'integer', 'minimum': 0},
+    'model': RETAINED_OBJECT,
+}
+DECODER_SNAPSHOT = closed({
+    'version': VERSION, 'kind': {'type': 'string', 'const': 'decoder_suggest'},
+    'decoder_type': {'type': 'string', 'enum': ['TXT', 'A']},
+    'examples': {'type': 'array', 'minItems': 1, 'maxItems': 6,
+                 'items': closed({**EXAMPLE_FIELDS, 'data': SAMPLE['properties']['data']})},
+})
+DECODER_SNAPSHOT.update({'x-max-encoded-bytes': MAX_SOURCE_BYTES,
+                         'description': 'Unchanged original example snapshot, never excerpted. Holdouts are not included.'})
+DECODER_RESULT_SCHEMA = closed({
+    **RESULT_COMMON, 'snapshot': DECODER_SNAPSHOT,
+    'catalog': RETAINED_OBJECT,
+    'model': {'anyOf': [{'type': 'null'}, RETAINED_OBJECT]},
+    'generated': {'anyOf': [{'type': 'null'}, RETAINED_OBJECT]},
+    'proposal': {'anyOf': [{'type': 'null'}, RETAINED_OBJECT]},
+    'model_input': {'anyOf': [{'type': 'null'}, MODEL_INPUT_SCHEMA]},
+})
+DECODER_RESULT_SCHEMA['allOf'] = [{
+    'if': {'properties': {'model': {'type': 'null'}}},
+    'then': {'properties': {key: {'type': 'null'} for key in ('generated', 'proposal', 'model_input')}},
+    'else': {'properties': {key: {'type': 'object'} for key in ('generated', 'proposal', 'model_input')}},
+}, *[{
+    'if': {'properties': {'snapshot': {'properties': {'decoder_type': {'const': kind}}}}},
+    'then': {'properties': {'model_input': {'properties': {'view': {'properties': {'decoder_type': {'const': kind}}}}}}},
+} for kind in ('TXT', 'A')]]
+DECODER_RESULT_SCHEMA['description'] = (
+    'model_input is required: null for generate=false; populated for generate=true, including an abstaining proposal. '
+    'Catalog-only model/generated/proposal are all null. Generated results retain the full original snapshot, '
+    'catalog, generated verification report, original v1 proposal and model metadata.'
+)
+EXPLANATION_RESULTS = {kind: closed({
+    **RESULT_COMMON,
+    'snapshot': closed({
+        'version': VERSION, 'kind': {'type': 'string', 'const': kind}, 'source': RETAINED_OBJECT,
+        'facts': {'type': 'array', 'minItems': 1, 'maxItems': 64, 'items': closed({
+            'id': EVIDENCE_ID, 'key': {'type': 'string'},
+            'value': {'description': 'Original task-specific projected fact; validated by the evidence producer.'},
+        })},
+        'warnings': {'type': 'array', 'items': {'type': 'string'}},
+    }),
+    'interpretation': {**RETAINED_OBJECT, 'properties': {
+        'version': VERSION, 'kind': {'type': 'string', 'const': kind},
+        'language': LANGUAGE, 'snapshot_digest': SHA256,
+    }, 'required': ['version', 'kind', 'language', 'snapshot_digest'],
+        'description': 'Unchanged free-prose model v1 output, not the deterministic facts summary. '
+                       'The existing bound explanation validator checks its complete shape and citations.'},
+    'facts_summary': {**FACTS_SUMMARIES[kind], 'x-max-encoded-bytes': MAX_SUMMARY_BYTES,
+                      'description': FACTS_SUMMARY_SCHEMA['description']},
+}) for kind in SUMMARY_CODES}
+RESULT_SCHEMA = {'oneOf': [DECODER_RESULT_SCHEMA, *EXPLANATION_RESULTS.values()],
+                 'description': 'Closed result alternatives; required sidecars cannot be omitted by older producers. '
+                                'Original snapshots, revision, model metadata and v1 model outputs are retained. '
+                                'Digest equality, byte budgets and semantic consistency also require task/consumer validation.'}
+
 JOB_FIELDS = {
     'job_id': JOB_ID, 'kind': {'enum': KINDS}, 'language': LANGUAGE,
     'status': {'enum': STATES},
@@ -41,13 +199,30 @@ JOB_FIELDS = {
     'deadline_at': {'type': 'integer', 'minimum': 0},
     'audit_status': {'enum': ['pending', 'success', 'failed']},
     'error': {'anyOf': [{'type': 'null'}, {'type': 'string', 'enum': list(ERROR_STATUS)}]},
-    'result': {'anyOf': [{'type': 'null'}, {'type': 'object'}],
-               'description': 'Engine-validated bounded result: snapshot, snapshot_digest, source_revision, model; explanation adds interpretation; decoder adds catalog/generated/proposal. No result before successful terminal audit. Citation syntax is not semantic proof.'},
+    'result': {'anyOf': [{'type': 'null'}, RESULT_SCHEMA],
+               'description': 'No result before completed execution and successful terminal audit; failures stay null. '
+                              'Citation syntax is not semantic proof.'},
     'cancel_requested': {'type': 'boolean'},
 }
-JOB_SCHEMA = closed(JOB_FIELDS)
-CANCEL_SCHEMA = closed({**JOB_FIELDS, 'cancellation_requested': {'type': 'boolean'},
-                        'cancellation_confirmed': {'type': 'boolean'}})
+JOB_BINDINGS = [{
+    'if': {'properties': {'status': {'const': 'completed'}, 'audit_status': {'const': 'success'},
+                          'error': {'type': 'null'}}},
+    'else': {'properties': {'result': {'type': 'null'}}},
+}, *[{
+    'if': {'properties': {'kind': {'const': kind}}},
+    'then': {'properties': {'result': {'properties': {
+        'snapshot': {'properties': {'kind': {'const': kind}}},
+    }}}},
+} for kind in KINDS], *[{
+    'if': {'properties': {'language': {'const': language}}},
+    'then': {'properties': {'result': {'properties': {
+        key: {'properties': {'language': {'const': language}}}
+        for key in ('proposal', 'interpretation', 'facts_summary')
+    }}}},
+} for language in LANGUAGE['enum']]]
+JOB_SCHEMA = {**closed(JOB_FIELDS), 'allOf': JOB_BINDINGS}
+CANCEL_SCHEMA = {**closed({**JOB_FIELDS, 'cancellation_requested': {'type': 'boolean'},
+                          'cancellation_confirmed': {'type': 'boolean'}}), 'allOf': JOB_BINDINGS}
 ERROR_SCHEMA = closed({'error': {'type': 'string', 'enum': list(ERROR_STATUS)},
                        'code': {'type': 'string', 'enum': list(ERROR_STATUS)},
                        'request_id': {'type': 'string'}})

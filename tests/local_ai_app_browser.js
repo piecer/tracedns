@@ -7,6 +7,7 @@ const {chromium, expect} = require(process.env.UI_PLAYWRIGHT_MODULE || '@playwri
 const [origin, control, output, selection] = process.argv.slice(2);
 const observations = [], requests = [], responses = [], errors = [];
 const cases = {};
+let runResponseStart=0;
 const panel = page => page.locator('.local-ai');
 const state = async () => (await fetch(control)).json();
 const configure = async (action, mode) => (await fetch(control, {
@@ -44,9 +45,35 @@ async function deliveryOpen(page) {
 async function completed(page, language='en') {
   await expect(panel(page).locator('[data-ai="status"]')).toHaveText(
     language==='ko'?'완료 — 감사 기록이 확인된 결과입니다.':'Completed; audited result.',{timeout:12000});
+  const request=JSON.parse(requests.filter(r=>r.path==='/ai/jobs'&&r.method==='POST').at(-1).body);
+  const accepted=()=>{
+    const current=responses.slice(runResponseStart), id=current.filter(r=>r.path==='/ai/jobs').map(r=>JSON.parse(r.body)).at(-1)?.job_id;
+    return current.map(r=>JSON.parse(r.body)).filter(r=>id&&r.job_id===id&&r.status==='completed'&&r.audit_status==='success'&&r.result&&r.kind===request.kind&&r.language===language).at(-1)?.result;
+  };
+  await expect.poll(()=>!!accepted()).toBe(true);
+  const result=accepted();
+  if(request.kind==='decoder_suggest'){
+    await expect(panel(page).locator('[data-ai="model-coverage"]')).toHaveAttribute('lang',language);
+    if(request.generate){
+      assert(result.model && result.model_input,'actual generated response carries model identity and input provenance');
+      const c=result.model_input.coverage;
+      await expect(panel(page).locator('[data-ai="model-coverage"]')).toContainText(`${c.shown_utf8_bytes} / ${c.original_utf8_bytes}`);
+    }else {assert.equal(result.model,null);assert.equal(result.model_input,null);}
+  }else {
+    assert(result.model && result.facts_summary,'actual explanation carries model identity and separate server facts');
+    const summary=panel(page).locator('[data-ai="server-summary"]');
+    await expect(summary).toHaveAttribute('lang',language);
+    await expect(summary.locator('.local-ai-claim p')).toHaveText(['summary','counterpoints','limitations'].flatMap(key=>result.facts_summary[key].map(c=>c.text)));
+    assert(await panel(page).evaluate(node=>{
+      const summary=node.querySelector('[data-ai="server-summary"]'),warnings=node.querySelector('[data-ai="warnings"]'),ai=node.querySelector('[data-ai="interpretation"]');
+      return !!(summary.compareDocumentPosition(ai)&Node.DOCUMENT_POSITION_FOLLOWING) && !!(warnings.compareDocumentPosition(ai)&Node.DOCUMENT_POSITION_FOLLOWING);
+    }),'deterministic facts and limitations precede AI prose on the actual app');
+  }
+  return result;
 }
 async function run(page, language='en') {
   await panel(page).getByLabel(/^(Language|언어)$/).selectOption(language);
+  runResponseStart=responses.length;
   await panel(page).getByRole('button',{name:language==='ko'?'실행':'Run',exact:true}).click();
 }
 cases.delivery = async page => {
@@ -122,13 +149,18 @@ cases.decoder = async page => {
   assert.equal(writer.status,200);
   const before=await state();
   await run(page);
-  await completed(page);
+  const accepted=await completed(page);
   const reached=await candidate(page,'generated_1');
   assert(reached.length>5,'later candidate pages must be exercised');
   await expect(panel(page).locator('[data-ai="candidate-detail"]')).toContainText('198.51.100.17');
   await measure(page,'decoder verified candidate');
   await page.screenshot({path:path.join(output,'decoder-verified.png'),fullPage:true});
   await panel(page).locator('[data-ai="candidate-detail"]').screenshot({path:path.join(output,'decoder-holdout.png')});
+  await panel(page).locator('[data-ai="provenance"] summary').click();
+  assert.deepEqual(JSON.parse(await panel(page).locator('[data-ai="provenance"] pre').textContent()).model_input,accepted.model_input);
+  await panel(page).locator('[data-ai="provenance"] summary').click();
+  await expect(panel(page).locator('[data-ai="provenance"] pre')).toHaveCount(0);
+  await candidate(page,'generated_1');
   const catalogReads=requests.filter(r=>r.path==='/decoders').length;
   await panel(page).getByRole('button',{name:'Apply to draft',exact:true}).click();
   await expect(page.locator('#custom_steps')).toHaveValue(JSON.stringify([{op:'base64'},{op:'ascii'}],null,2));
@@ -138,7 +170,13 @@ cases.decoder = async page => {
   assert.deepEqual(after.config,before.config,'apply is not a write');
   assert.equal(after.http.filter(r=>r.path==='/decoders/custom/preview').length,0);
   const native=after.native.find(r=>r.path==='/api/chat');
-  const messages=JSON.stringify(JSON.parse(native.body).messages);
+  const sent=JSON.parse(native.body);
+  const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])])):value;
+  const checked=Buffer.from(JSON.stringify(canonical({messages:sent.messages,schema:sent.format})),'utf8');
+  assert.equal(accepted.model_input.messages_schema_bytes,checked.length);
+  assert.equal(accepted.model_input.messages_schema_digest,require('node:crypto').createHash('sha256').update(checked).digest('hex'));
+  assert.deepEqual(accepted.model_input.view,JSON.parse(sent.messages[1].content));
+  const messages=JSON.stringify(sent.messages);
   assert(!messages.includes('198.51.100.17')&&!messages.includes('MTk4LjUxLjEwMC4xNw=='),'holdout never enters prompt');
   const draft=await page.locator('#custom_steps').inputValue();
   await page.locator('#registerCustom').click();
@@ -148,6 +186,122 @@ cases.decoder = async page => {
   assert.deepEqual((await state()).config,before.config);
   assert.equal((await state()).http.filter(r=>r.path==='/decoders/custom' && r.method==='POST').length,2,'one explicit concurrent save + one refused save; no retry');
 };
+cases['decoder-max-excerpt'] = async page => {
+  await decoderOpen(page);
+  const rows=Array.from({length:4},(_,i)=>{
+    const ip=`192.0.2.${i+1}`;
+    return {data:Buffer.from(ip+' '.repeat(1536-ip.length)).toString('base64'),
+      expected_ips:[ip],usage:'example',complete_expected:true};
+  });
+  const snapshot={version:1,kind:'decoder_suggest',decoder_type:'TXT',examples:rows};
+  const excess=Buffer.byteLength(JSON.stringify(snapshot))-8192;
+  assert(excess>0 && excess%4===0);
+  const last=rows.at(-1),decodedLength=(last.data.length-excess)/4*3,ip=last.expected_ips[0];
+  last.data=Buffer.from(ip+' '.repeat(decodedLength-ip.length)).toString('base64');
+  assert.equal(Buffer.byteLength(JSON.stringify(snapshot)),8192);
+  for(let i=0;i<rows.length;i++){
+    if(i)await panel(page).getByRole('button',{name:'Add sample',exact:true}).click();
+    const row=panel(page).locator('[data-ai="sample"]').nth(i);
+    await row.getByLabel('Raw data',{exact:true}).fill(rows[i].data);
+    await row.getByLabel('Expected IPv4 (comma or space separated)',{exact:true}).fill(rows[i].expected_ips[0]);
+  }
+  await panel(page).getByRole('button',{name:'Add sample',exact:true}).click();
+  const holdout=panel(page).locator('[data-ai="sample"]').nth(4);
+  await holdout.getByLabel('Raw data',{exact:true}).fill('MTk4LjUxLjEwMC4xNw==');
+  await holdout.getByLabel('Expected IPv4 (comma or space separated)',{exact:true}).fill('198.51.100.17');
+  await holdout.getByLabel('Usage',{exact:true}).selectOption('validation');
+  await panel(page).getByLabel('Generate new candidates (uses local model)',{exact:true}).check();
+  await run(page);
+  const accepted=await completed(page), input=accepted.model_input;
+  assert.deepEqual(accepted.snapshot,snapshot);
+  assert.equal(input.coverage.shown_utf8_bytes,1024);
+  assert.equal(input.coverage.excerpted_examples,4);
+  assert(input.coverage.omitted_utf8_bytes>0);
+  assert.equal(accepted.generated.candidates[0].examples.passed,4);
+  assert.equal(accepted.generated.candidates[0].validation.passed,1);
+  await expect(panel(page).locator('[data-ai="model-coverage"]')).toContainText('omitted middle');
+  const chats=(await state()).native.filter(r=>r.path==='/api/chat');
+  assert.equal(chats.length,1);
+  const sent=JSON.parse(chats[0].body);
+  assert.deepEqual(JSON.parse(sent.messages[1].content),input.view);
+  assert(!JSON.stringify(sent.messages).includes('198.51.100.17'));
+  assert(!JSON.stringify(sent.messages).includes('MTk4LjUxLjEwMC4xNw=='));
+  await panel(page).locator('[data-ai="provenance"] summary').click();
+  assert.deepEqual(JSON.parse(await panel(page).locator('[data-ai="provenance"] pre').textContent()).model_input,input);
+  await panel(page).locator('[data-ai="provenance"] summary').click();
+  await expect(panel(page).locator('[data-ai="provenance"] details > *')).toHaveCount(1);
+  await measure(page,'actual app maximum original and bounded model view');
+  await page.screenshot({path:path.join(output,'decoder-max-excerpt.png'),fullPage:true});
+};
+// Persistent actual-app regressions promoted from independent review.
+cases['review-manual-preview-save'] = async page => {
+  await decoderOpen(page);await decoderSamples(page);
+  const before=await state();
+  await run(page);const accepted=await completed(page);
+  const expected=accepted.generated.candidates[0].steps;
+  await candidate(page,'generated_1');
+  await panel(page).getByRole('button',{name:'Apply to draft',exact:true}).click();
+  await expect(page.locator('#custom_steps')).toHaveValue(JSON.stringify(expected,null,2));
+  assert.deepEqual((await state()).config,before.config);
+  assert.equal(requests.filter(r=>r.path==='/decoders/custom/preview'||(r.path==='/decoders/custom'&&r.method==='POST')).length,0);
+  const previewWait=page.waitForResponse(r=>new URL(r.url()).pathname==='/decoders/custom/preview');
+  await page.locator('#previewCustom').click();
+  const preview=await previewWait;assert.equal(preview.status(),200);
+  const previewData=await preview.json();
+  await expect(page.locator('#customPreviewResult')).toContainText('192.0.2.1');
+  assert.deepEqual((await state()).config,before.config,'explicit Preview is not Save');
+  const saveWait=page.waitForResponse(r=>new URL(r.url()).pathname==='/decoders/custom'&&r.request().method()==='POST');
+  await page.locator('#registerCustom').click();
+  const save=await saveWait;assert.equal(save.status(),200);
+  const saved=await save.json();assert.equal(saved.status,'ok');
+  await expect(page.locator('#customPreviewResult')).toContainText('Registered: draft_new [TXT]');
+  const reread=await page.context().request.get(origin+'/decoders',{timeout:5000,failOnStatusCode:false});
+  assert.equal(reread.status(),200);const catalog=await reread.json();
+  assert.equal(catalog.revision,before.config.config_revision+1);
+  assert.deepEqual(catalog.custom.find(row=>row.name==='draft_new').steps,expected);
+  const after=await state();
+  assert.deepEqual(after.config.custom_decoders.find(row=>row.name==='draft_new').steps,expected);
+  assert.equal(after.config.config_revision,catalog.revision);
+  assert.equal(requests.filter(r=>r.path==='/decoders/custom/preview').length,1);
+  assert.equal(requests.filter(r=>r.path==='/decoders/custom'&&r.method==='POST').length,1);
+  assert.equal(after.native.filter(r=>r.path==='/api/chat').length,1);
+  observations.push({label:'review manual apply-preview-save',preview:previewData,save:saved,readback:catalog,expectedSteps:expected});
+};
+
+for(const fault of ['delivery-missing','delivery-wrong-citation','decoder-coverage','decoder-null-model']){
+  cases['review-'+fault]=async page=>{
+    const isDecoder=fault.startsWith('decoder');
+    if(isDecoder){await decoderOpen(page);await decoderSamples(page);}else await deliveryOpen(page);
+    const altered=[];
+    await page.route(origin+'/ai/jobs**',async route=>{
+      const real=await route.fetch({timeout:15000});
+      const original=await real.json();
+      if(original.status!=='completed'||original.audit_status!=='success'||!original.result){await route.fulfill({response:real});return;}
+      const mutated=JSON.parse(JSON.stringify(original));
+      if(fault==='delivery-missing')delete mutated.result.facts_summary;
+      if(fault==='delivery-wrong-citation'){
+        const claim=mutated.result.facts_summary.summary[0];
+        claim.evidence_ids=[mutated.result.snapshot.facts.find(f=>!claim.evidence_ids.includes(f.id)).id];
+      }
+      if(fault==='decoder-coverage')mutated.result.model_input.coverage.omitted_utf8_bytes++;
+      if(fault==='decoder-null-model')mutated.result.model=null;
+      altered.push({original,mutated});
+      await route.fulfill({response:real,json:mutated});
+    });
+    await run(page);
+    await expect(panel(page).locator('[data-ai="status"]')).toHaveText('Unsupported or invalid response. No result accepted.',{timeout:12000});
+    await expect(panel(page).locator('[data-ai="results"]')).toBeEmpty();
+    await expect(panel(page).getByRole('button',{name:'Run',exact:true})).toBeEnabled();
+    assert.equal(altered.length,1,'one real audited producer result must reach mutation');
+    assert.equal(requests.filter(r=>r.path==='/ai/jobs'&&r.method==='POST').length,1);
+    assert.equal((await state()).native.filter(r=>r.path==='/api/chat').length,1);
+    assert.equal(requests.filter(r=>r.path==='/decoders/custom/preview'||(r.path==='/decoders/custom'&&r.method==='POST')).length,0);
+    const realRead=await page.context().request.get(origin+'/ai/jobs/'+altered[0].original.job_id,{timeout:5000,failOnStatusCode:false});
+    assert.equal(realRead.status(),200);const persisted=await realRead.json();
+    assert.deepEqual(persisted.result,altered[0].original.result,'mutation is transport-only, not changed producer state');
+    observations.push({label:'review transport mutation',fault,...altered[0],persistedResultMatches:true});
+  };
+}
 async function relationship(page) {
   await page.locator('#menuIpIntel').click();
   await page.locator('.ipintel-enrichment-settings > summary').click();
@@ -238,8 +392,10 @@ cases['result-order'] = async page => {
   await page.setViewportSize({width:360,height:800});
   await deliveryOpen(page);await run(page);await completed(page);
   await panel(page).getByRole('heading',{name:'Local AI assistance',exact:true}).evaluate(el=>el.scrollIntoView({block:'start'}));
-  const summary=panel(page).locator('[data-ai="interpretation"]');
+  const summary=panel(page).locator('[data-ai="server-summary"]');
   await expect(summary).toBeInViewport();
+  await expect(summary.locator('[data-claim-code="delivery_overview"]')).toBeInViewport();
+  await expect(panel(page).locator('[data-ai="interpretation"]')).toBeVisible();
   assert.equal(await panel(page).locator('[data-ai="provenance"] pre').count(),0,'raw metadata is lazy, not a leading wall');
   await expect(panel(page).locator('[data-ai="warnings"]')).toBeVisible();
   const before=await measure(page,'result-first narrow');

@@ -23,6 +23,8 @@
   Object.assign(text.ko,{unsettled:'제공자 추론 종료 여부를 알 수 없습니다. 새 추론이 차단되었습니다. 관리자에게 문의하세요. 자동 재시도는 없습니다.',stopped:'로컬 도움이 중지되었습니다. 새 작업을 만들지 않았습니다. 관리자에게 문의하세요.'});
   Object.assign(text.en,{samples:'Decoder samples',sample:'Sample',data:'Raw data',expected:'Expected IPv4 (comma or space separated)',usage:'Usage',example:'Example',validation:'Validation (not sent to model)',complete:'Complete expected set',add:'Add sample',remove:'Remove sample',generate:'Generate new candidates (uses local model)',inputError:'Provide 1–6 distinct samples, at least one example, and 1–8 canonical expected IPv4 addresses per sample (raw data ≤2 KiB).',candidates:'Verified candidates',apply:'Apply to draft',draftOnly:'Draft only — Preview and revision-checked Save remain separate.',candidateWarning:'Candidate, not proof. Distinct inputs do not establish independent observations. Built-ins use defaults only.',noValidation:'No validation samples were supplied.',steps:'Decoder steps',examples:'Example results',validationResults:'Validation results',recommendation:'Recommendation only — built-in or verification did not qualify for draft application.',applied:'Applied to editor draft only.',catalogOnly:'Catalog recommendation only; no model requested.',insufficient:'No generated candidate; insufficient evidence or unsupported transformation.'});
   Object.assign(text.ko,{samples:'디코더 샘플',sample:'샘플',data:'원시 데이터',expected:'예상 IPv4 (쉼표 또는 공백 구분)',usage:'용도',example:'예제',validation:'검증 (모델에 전송하지 않음)',complete:'예상 목록이 완전함',add:'샘플 추가',remove:'샘플 삭제',generate:'새 후보 생성 (로컬 모델 사용)',inputError:'서로 다른 샘플 1–6개, 예제 최소 1개와 각 샘플의 정규 IPv4 주소 1–8개를 입력하세요 (원시 데이터 ≤2 KiB).',candidates:'검증된 후보',apply:'초안에 적용',draftOnly:'초안만 변경합니다. 미리보기와 리비전 확인 저장은 별도입니다.',candidateWarning:'후보이지 증명은 아닙니다. 다른 입력은 독립 관찰을 입증하지 않습니다. 내장 디코더는 기본값만 사용합니다.',noValidation:'검증용 샘플을 제공하지 않았습니다.',steps:'디코더 단계',examples:'예제 결과',validationResults:'검증 결과',recommendation:'추천 전용 — 내장 디코더이거나 초안 적용 검증을 통과하지 못했습니다.',applied:'편집기 초안에만 적용했습니다.',catalogOnly:'카탈로그 추천만 수행했습니다. 모델을 요청하지 않았습니다.',insufficient:'생성된 후보가 없습니다. 근거가 부족하거나 지원하지 않는 변환입니다.'});
+  Object.assign(text.en,{serverSummary:'Server facts summary — deterministic, not AI',serverLimitations:'Server limitations',modelCoverage:'Model raw-data coverage',shownBytes:'shown UTF-8 bytes',omittedBytes:'omitted bytes',completeExamples:'complete examples',excerptedExamples:'excerpted examples',excerptWarning:'Separate prefix/suffix excerpts; the omitted middle was not shown to the model. Excerpts are not complete samples.',fullVerification:'Full originals and validation samples remain the verifier input; validation samples are not sent to the model.',allShown:'All example raw data was shown to the model.',commitment:'Server-recorded commitment to canonical messages + schema bytes; not browser verification of dispatch, HTTP/options, model attention, tokens or latency.'});
+  Object.assign(text.ko,{serverSummary:'서버 사실 요약 — 결정적 결과, AI 아님',serverLimitations:'서버 한계',modelCoverage:'모델 원시 데이터 범위',shownBytes:'표시 UTF-8 바이트',omittedBytes:'생략 바이트',completeExamples:'전체 예제',excerptedExamples:'발췌 예제',excerptWarning:'접두사·접미사는 별도 발췌입니다. 생략된 중간 부분은 모델에 표시하지 않았으며 발췌는 전체 샘플이 아닙니다.',fullVerification:'전체 원본과 검증 샘플은 검증기의 입력으로 유지합니다. 검증 샘플은 모델에 전송하지 않습니다.',allShown:'모든 예제 원시 데이터를 모델에 표시했습니다.',commitment:'정규 메시지 + 스키마 바이트에 대한 서버 기록입니다. 브라우저가 전송, HTTP/옵션, 모델 주의, 토큰 또는 지연 시간을 검증한 것이 아닙니다.'});
   const warningText = {
     origin_independence_unknown:['Source categories do not prove independent origins.','소스 분류는 독립 출처를 증명하지 않습니다.'],
     not_attribution:['Relationship evidence is not attribution or proof of compromise.','관계 근거는 공격자 귀속 또는 침해의 증거가 아닙니다.'],
@@ -38,7 +40,19 @@
   const errorCodes = ['invalid_request','sensitive_input','not_found','source_not_ready','source_unavailable','source_revoked','too_large','verification_failed','busy','invalid_model_output','provider_failed','disabled','model_unavailable','provider_unsettled','audit_unavailable','privacy_unavailable','stopped','deadline_exceeded'];
   const bytes = value => new TextEncoder().encode(value).length;
   const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-  const exact = (value, keys) => object(value) && Object.keys(value).length === keys.length && keys.every(k=>Object.hasOwn(value,k));
+  // Accept native JSON prototypes across realms, not custom chains that can
+  // inherit a serialization hook. Null-prototype records remain data-only.
+  function nativePrototype(value, constructor, nullable=false) {
+    const proto=Object.getPrototypeOf(value);
+    if(proto===null)return nullable;
+    const own=Object.getOwnPropertyDescriptor(proto,'constructor');
+    return !!own && Object.hasOwn(own,'value') && typeof own.value==='function' &&
+      Function.prototype.toString.call(own.value)===Function.prototype.toString.call(constructor) &&
+      Object.getOwnPropertyDescriptor(own.value,'prototype')?.value===proto;
+  }
+  const record = value => object(value) && nativePrototype(value,Object,true);
+  const dataProperty = (value,key) => {const d=Object.getOwnPropertyDescriptor(value,key);return !!d && d.enumerable && Object.hasOwn(d,'value');};
+  const exact = (value, keys) => record(value) && Reflect.ownKeys(value).length === keys.length && keys.every(k=>dataProperty(value,k));
   const integer = n => Number.isSafeInteger(n) && n >= 0;
   const string = (value, limit) => typeof value === 'string' && value.length <= limit && bytes(value) <= limit;
   const hex = (value,n) => typeof value === 'string' && new RegExp(`^[a-f0-9]{${n}}$`).test(value);
@@ -46,10 +60,13 @@
   const clone = value => JSON.parse(JSON.stringify(value));
   function validJSON(value, depth=0) {
     if (depth>16) return false;
-    if (value===null || typeof value==='boolean' || typeof value==='string') return true;
+    if (value===null || typeof value==='boolean') return true;
+    if (typeof value==='string')return unicode(value);
     if (typeof value==='number') return Number.isFinite(value);
-    if (Array.isArray(value)) return value.length<=256 && value.every(v=>validJSON(v,depth+1));
-    return object(value) && Object.keys(value).length<=128 && Object.entries(value).every(([key,v])=>key!=='__proto__' && validJSON(v,depth+1));
+    if (Array.isArray(value)) return nativePrototype(value,Array) && value.length<=256 && Reflect.ownKeys(value).length===value.length+1 && Array.from({length:value.length},(_,i)=>i).every(i=>dataProperty(value,String(i)) && validJSON(value[i],depth+1));
+    if(!record(value))return false;
+    const keys=Reflect.ownKeys(value);
+    return keys.length<=128 && keys.every(key=>typeof key==='string' && key!=='__proto__' && key!=='toJSON' && dataProperty(value,key) && validJSON(value[key],depth+1));
   }
   function fail(code='invalid') { const error = new Error('Local AI request refused.'); error.code=code; throw error; }
   function el(tag, value, className) {
@@ -145,12 +162,46 @@
       return validSummary(candidate.examples,request.samples,'example') && validSummary(candidate.validation,request.samples,'validation');
     });
   }
+  const sameJSON = (a,b) => {
+    if(a===b)return true;
+    if(Array.isArray(a))return Array.isArray(b) && a.length===b.length && a.every((v,i)=>sameJSON(v,b[i]));
+    return object(a) && exact(b,Object.keys(a)) && Object.keys(a).every(key=>sameJSON(a[key],b[key]));
+  };
+  function validModelInput(input, snapshot, digest) {
+    if(!exact(input,['version','policy','source_snapshot_digest','view','coverage','messages_schema_bytes','messages_schema_digest']) || input.version!==1 || input.policy!=='decoder_examples_utf8_v1' || input.source_snapshot_digest!==digest || !integer(input.messages_schema_bytes) || input.messages_schema_bytes<1 || input.messages_schema_bytes>16384 || !hex(input.messages_schema_digest,64) || bytes(JSON.stringify(input))>10240)return false;
+    // Reproduce only the deterministic example projection, not message custody.
+    // Browser validation does not prove dispatch, HTTP framing or model attention.
+    const rows=snapshot.examples;
+    if(!rows.length || rows.length>6 || rows.some(row=>!unicode(row.data) || !string(row.data,2048)))return false;
+    const sizes=rows.map(row=>bytes(row.data)), quotas=sizes.map(()=>0);
+    const original=sizes.reduce((a,b)=>a+b,0);
+    let remaining=Math.min(original,1024);
+    while(remaining)for(let i=0;i<sizes.length && remaining;i++)if(quotas[i]<sizes[i]){quotas[i]++;remaining--;}
+    const view=clone(snapshot);let shown=0,complete=0;
+    for(let i=0;i<rows.length;i++) {
+      const row=view.examples[i], quota=quotas[i];
+      if(sizes[i]<=quota){shown+=sizes[i];complete++;continue;}
+      const scalars=Array.from(rows[i].data);
+      const segment=(items,limit)=>{let used=0,parts=[];for(const part of items){const size=bytes(part);if(used+size>limit)break;used+=size;parts.push(part);}return parts;};
+      const prefix=segment(scalars,Math.ceil(3*quota/4)).join('');
+      const suffix=segment([...scalars].reverse(),Math.floor(quota/4)).reverse().join('');
+      const count=bytes(prefix)+bytes(suffix);shown+=count;
+      delete row.data;
+      row.excerpt={original_utf8_bytes:sizes[i],prefix,suffix,omitted_utf8_bytes:sizes[i]-count};
+    }
+    const coverage={original_utf8_bytes:original,shown_utf8_bytes:shown,omitted_utf8_bytes:original-shown,complete_examples:complete,excerpted_examples:rows.length-complete};
+    if(!sameJSON(view,input.view) || !sameJSON(coverage,input.coverage) || bytes(JSON.stringify(view))>8192 || bytes(JSON.stringify(view.examples.map(row=>row.expected_ips)))>1024)return false;
+    const blank=clone(view);
+    for(const row of blank.examples){row.expected_ips=[];if(Object.hasOwn(row,'data'))row.data='';else row.excerpt.prefix=row.excerpt.suffix='';}
+    return bytes(JSON.stringify(blank))<=1024 && bytes(JSON.stringify({...input,view:blank}))<=2048;
+  }
   function validDecoderResult(result, request) {
-    if(!exact(result,['snapshot','snapshot_digest','source_revision','model','catalog','generated','proposal']) || !hex(result.snapshot_digest,64) || !integer(result.source_revision) || !validJSON(result) || bytes(JSON.stringify(result))>32768 || !validDecoderSnapshot(result.snapshot,request) || bytes(JSON.stringify(result.snapshot))>8192 || !validModel(result.model) || !validReport(result.catalog,request,'catalog'))return false;
-    if(!request.generate)return result.proposal===null && result.generated===null && result.model===null;
+    if(!exact(result,['snapshot','snapshot_digest','source_revision','model','catalog','generated','proposal','model_input']) || !hex(result.snapshot_digest,64) || !integer(result.source_revision) || !validJSON(result) || bytes(JSON.stringify(result))>32768 || !validDecoderSnapshot(result.snapshot,request) || bytes(JSON.stringify(result.snapshot))>8192 || !validModel(result.model) || !validReport(result.catalog,request,'catalog'))return false;
+    if(!request.generate)return result.proposal===null && result.generated===null && result.model===null && result.model_input===null;
+    if(result.model===null || !validModelInput(result.model_input,result.snapshot,result.snapshot_digest))return false;
     const proposal=result.proposal;
     if(!exact(proposal,['version','kind','language','snapshot_digest','candidates','insufficient_reason']) || proposal.version!==1 || proposal.kind!=='decoder_suggest' || proposal.language!==request.language || proposal.snapshot_digest!==result.snapshot_digest || !Array.isArray(proposal.candidates) || proposal.candidates.length>3 || proposal.candidates.some(c=>!exact(c,['steps']) || !validSteps(c.steps,request.decoder_type,true)))return false;
-    if(!proposal.candidates.length)return ['insufficient_examples','unsupported_transformation','no_candidate'].includes(proposal.insufficient_reason) && (result.generated===null || (validReport(result.generated,request,'generated') && !result.generated.candidates.length));
+    if(!proposal.candidates.length)return ['insufficient_examples','unsupported_transformation','no_candidate'].includes(proposal.insufficient_reason) && validReport(result.generated,request,'generated') && !result.generated.candidates.length;
     return proposal.insufficient_reason===null && validReport(result.generated,request,'generated') && result.generated.candidates.length===proposal.candidates.length && result.generated.candidates.every((c,i)=>JSON.stringify(c.steps)===JSON.stringify(proposal.candidates[i].steps));
   }
   function validDecoderSnapshot(snapshot, request) {
@@ -169,9 +220,40 @@
     const clean=s=>s.passed===s.tested && s.missing_expected===0 && s.unexpected_outputs===0 && s.unverified_extra_outputs===0;
     return ['custom','generated'].includes(candidate.source) && Array.isArray(candidate.steps) && candidate.steps.length>0 && candidate.examples.tested>0 && clean(candidate.examples) && clean(candidate.validation);
   }
+  // Fixed server code/citation registry, independent of the model's free prose.
+  const summaryCodes={
+    relationship_pair:{summary:['pair_assessment','pair_signals'],counterpoints:[],limitations:['pair_scope','pair_coverage','pair_attribution']},
+    delivery:{summary:['delivery_overview','delivery_teams','delivery_misp'],counterpoints:['delivery_recovery'],limitations:['delivery_snapshot_scope','delivery_capture_times','delivery_coverage','delivery_lookup']}
+  };
+  const summaryFacts={
+    pair_assessment:['pair_assessment'],pair_scope:['analysis_window'],pair_coverage:['quality'],pair_attribution:['pair_assessment'],
+    delivery_overview:['progress_summary','progress_worker','diagnostics_summary'],
+    delivery_teams:['progress_channels','diagnostics_teams'],delivery_misp:['progress_channels','diagnostics_misp'],
+    delivery_recovery:['progress_recovery'],delivery_snapshot_scope:['diagnostics_summary','progress_summary'],
+    delivery_capture_times:['diagnostics_summary','progress_summary'],delivery_coverage:['diagnostics_summary','progress_summary'],delivery_lookup:['progress_lookup']
+  };
+  // Reject unpaired UTF-16 surrogates rather than silently UTF-8 replacing them.
+  const unicode = value => typeof value==='string' && !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value);
+  function validFactsSummary(summary, snapshot, request, digest) {
+    if(!exact(summary,['version','kind','language','snapshot_digest','summary','counterpoints','limitations']) || summary.version!==1 || summary.kind!==request.kind || summary.language!==request.language || summary.snapshot_digest!==digest || bytes(JSON.stringify(summary))>6144)return false;
+    const facts=new Map(snapshot.facts.map(f=>[f.key,f]));
+    const required=request.kind==='delivery'?factKeys.delivery:['pair_assessment','family_scores','analysis_window','quality'];
+    if(required.some(key=>!facts.has(key)))return false;
+    const top=snapshot.facts.filter(f=>f.key.startsWith('evidence_')).sort((a,b)=>Number(b.value.weight)-Number(a.value.weight) || (a.value.type<b.value.type?-1:a.value.type>b.value.type?1:0)).slice(0,3).map(f=>f.key);
+    for(const [section,codes] of Object.entries(summaryCodes[request.kind])) {
+      if(!Array.isArray(summary[section]) || summary[section].length!==codes.length)return false;
+      for(let i=0;i<codes.length;i++) {
+        const claim=summary[section][i], code=codes[i];
+        if(!exact(claim,['code','text','evidence_ids']) || claim.code!==code || !string(claim.text,512) || !claim.text.length || !unicode(claim.text))return false;
+        const keys=code==='pair_signals'?(top.length?top:['pair_assessment']):summaryFacts[code];
+        if(!Array.isArray(claim.evidence_ids) || claim.evidence_ids.length!==keys.length || !keys.every((key,j)=>facts.has(key) && claim.evidence_ids[j]===facts.get(key).id))return false;
+      }
+    }
+    return true;
+  }
   function validResult(result, request) {
     if(request.kind==='decoder_suggest')return validDecoderResult(result,request);
-    if(!exact(result,['snapshot','snapshot_digest','source_revision','model','interpretation']) || !hex(result.snapshot_digest,64) || !integer(result.source_revision) || !validJSON(result) || bytes(JSON.stringify(result))>32768)return false;
+    if(!exact(result,['snapshot','snapshot_digest','source_revision','model','interpretation','facts_summary']) || !hex(result.snapshot_digest,64) || !integer(result.source_revision) || !validJSON(result) || bytes(JSON.stringify(result))>32768)return false;
     const snapshot=result.snapshot, interpretation=result.interpretation, kind=request.kind;
     if(!exact(snapshot,['version','kind','source','facts','warnings']) || snapshot.version!==1 || snapshot.kind!==kind || !object(snapshot.source) || bytes(JSON.stringify(snapshot))>8192 || !Array.isArray(snapshot.facts) || !snapshot.facts.length || snapshot.facts.length>64 || !Array.isArray(snapshot.warnings) || snapshot.warnings.some(w=>!warningCodes.includes(w)))return false;
     const ids=new Set(), keys=new Set();
@@ -186,7 +268,7 @@
       if(!Array.isArray(interpretation[key]) || interpretation[key].length<min || interpretation[key].length>max || interpretation[key].some(c=>!exact(c,['text','evidence_ids']) || !string(c.text,512) || !c.text.length || !citations(c.evidence_ids)))return false;
     }
     if(!Array.isArray(interpretation.next_checks) || interpretation.next_checks.length>3 || interpretation.next_checks.some(c=>!exact(c,['code','evidence_ids']) || !checks[kind]?.includes(c.code) || !citations(c.evidence_ids)))return false;
-    return validModel(result.model);
+    return result.model!==null && validModel(result.model) && validFactsSummary(result.facts_summary,snapshot,request,result.snapshot_digest);
   }
   function validModel(model) {
     if(model!==null) {
@@ -200,7 +282,7 @@
     return true;
   }
   function validEnvelope(job, request) {
-    return exact(job,['job_id','kind','language','status','created_at','deadline_at','audit_status','error','result','cancel_requested']) && hex(job.job_id,32) && job.kind===request.kind && job.language===request.language && ['queued','running','cancel_pending','completed','failed','cancelled'].includes(job.status) && ['pending','success','failed'].includes(job.audit_status) && integer(job.created_at) && integer(job.deadline_at) && job.deadline_at>=job.created_at && typeof job.cancel_requested==='boolean' && (job.error===null || errorCodes.includes(job.error)) && bytes(JSON.stringify(job))<=32768;
+    return exact(job,['job_id','kind','language','status','created_at','deadline_at','audit_status','error','result','cancel_requested']) && hex(job.job_id,32) && job.kind===request.kind && job.language===request.language && ['queued','running','cancel_pending','completed','failed','cancelled'].includes(job.status) && ['pending','success','failed'].includes(job.audit_status) && integer(job.created_at) && integer(job.deadline_at) && job.deadline_at>=job.created_at && typeof job.cancel_requested==='boolean' && (job.error===null || errorCodes.includes(job.error)) && validJSON(job) && bytes(JSON.stringify(job))<=32768;
   }
   function mount(container, options) {
     const kind=options?.kind;
@@ -425,22 +507,34 @@
     }
     function provenanceDetail(value, owner, onOpen){
       const provenance=region('provenance'), disclosure=el('details'), body=el('div');
-      disclosure.append(el('summary',t().provenance),body);
+      disclosure.append(el('summary',t().provenance));
+      const empty=()=>{body.replaceChildren();body.remove();};
       const toggle=()=>{
-        body.replaceChildren();
-        if(disclosure.open && !disposed){onOpen();body.append(el('pre',JSON.stringify(value,null,2)));}
+        empty();
+        if(disclosure.open && !disposed){
+          onOpen();
+          if(value.model_input)body.append(el('p',text[owner.request.language].commitment));
+          body.append(el('pre',JSON.stringify(value,null,2)));disclosure.append(body);
+        }
       };
       disclosure.addEventListener('toggle',toggle,{signal:resultView.signal});
       clearProvenance=()=>{
-        disclosure.open=false;body.replaceChildren();value=null;onOpen=null;
+        disclosure.open=false;empty();value=null;onOpen=null;
       };
       if(!current(owner))provenance.append(el('p',t().stale,'local-ai-warning'));
       provenance.append(disclosure);
-      return {node:provenance,close:()=>{disclosure.open=false;body.replaceChildren();}};
+      return {node:provenance,close:()=>{disclosure.open=false;empty();}};
     }
     function renderDecoder(saved) {
-      const {result,owner}=saved, content=document.createDocumentFragment();
-      const provenance=provenanceDetail({snapshot_digest:result.snapshot_digest,source_revision:result.source_revision,created_at:owner.created,decoder_type:owner.request.decoder_type,language:owner.request.language,model:result.model,
+      const {result,owner}=saved, content=document.createDocumentFragment(), captured=text[owner.request.language];
+      const modelCoverage=region('model-coverage');modelCoverage.lang=owner.request.language;
+      modelCoverage.append(el('h4',captured.modelCoverage));
+      if(result.model_input){
+        const c=result.model_input.coverage;
+        modelCoverage.append(el('p',`${c.shown_utf8_bytes} / ${c.original_utf8_bytes} ${captured.shownBytes} · ${c.omitted_utf8_bytes} ${captured.omittedBytes}. ${c.complete_examples} ${captured.completeExamples} · ${c.excerpted_examples} ${captured.excerptedExamples}.`),
+          el('p',c.excerpted_examples?captured.excerptWarning:captured.allShown,c.excerpted_examples?'local-ai-warning':undefined),el('p',captured.fullVerification));
+      }else modelCoverage.append(el('p',captured.catalogOnly));
+      const provenance=provenanceDetail({snapshot_digest:result.snapshot_digest,source_revision:result.source_revision,created_at:owner.created,decoder_type:owner.request.decoder_type,language:owner.request.language,model:result.model,model_input:result.model_input,
         verification:{complete:result.catalog.complete,distinct_inputs:result.catalog.distinct_inputs,example_count:result.catalog.example_count,validation_count:result.catalog.validation_count,catalog_evaluations:result.catalog.evaluations,generated_evaluations:result.generated?.evaluations || 0,ranking_basis:result.catalog.ranking_basis}},owner,()=>{detail.replaceChildren();detailOwner=null;});
       const warnings=region('warnings');warnings.append(el('h4',t().warnings),el('p',t().candidateWarning));
       if(!result.catalog.validation_count)warnings.append(el('p',t().noValidation));
@@ -476,7 +570,7 @@
         }
         previous.disabled=page===0;next.disabled=(page+1)*5>=candidates.length;count.textContent=`${page+1} / ${Math.max(1,Math.ceil(candidates.length/5))}`;
       }
-      paging.append(previous,count,next);paint();content.append(facts,warnings,el('h4',t().candidates),list,paging,detail,provenance.node);results.replaceChildren(content);
+      paging.append(previous,count,next);paint();content.append(modelCoverage,facts,warnings,el('h4',t().candidates),list,paging,detail,provenance.node);results.replaceChildren(content);
     }
     function renderResult(saved) {
       clearResultView();
@@ -487,13 +581,16 @@
       for(const code of result.snapshot.warnings)warnings.append(el('p',(warningText[code]?.[language==='ko'?1:0] || (language==='ko'?'생산자 범위 제한':'Producer coverage limit'))+' · '+code));
       const facts=region('facts'), list=region('fact-list','div'), detail=region('fact-detail'), paging=el('div',undefined,'local-ai-controls');
       facts.append(el('h4',t().facts));
-      const overview=region('verdict');overview.append(el('h4',t().facts));
-      const verdict=result.snapshot.facts.find(f=>f.key==='pair_assessment');
-      if(verdict)overview.append(el('p',`${verdict.value.verdict} · relationship_strength: ${verdict.value.relationship_strength} · botnet_evidence_score: ${verdict.value.botnet_evidence_score}`));
-      else {
-        const diagnostic=result.snapshot.facts.find(f=>f.key==='diagnostics_summary');
-        const progress=result.snapshot.facts.find(f=>f.key==='progress_summary');
-        overview.append(el('p',`${language==='ko'?'진단 범위':'Diagnostic coverage'}: ${diagnostic?.value.coverage || 'unknown'} · ${language==='ko'?'진행 상태':'Progress'}: ${progress?.value.status || 'unknown'}`));
+      const captured=text[owner.request.language], overview=region('server-summary');
+      overview.lang=owner.request.language;overview.append(el('h4',captured.serverSummary));
+      for(const section of ['summary','counterpoints','limitations']) {
+        if(!result.facts_summary[section].length)continue;
+        if(section!=='summary')overview.append(el('h5',section==='limitations'?captured.serverLimitations:captured.counterpoints));
+        for(const claim of result.facts_summary[section]){
+          const row=el('div',undefined,'local-ai-claim');row.dataset.claimCode=claim.code;row.append(el('p',claim.text));
+          for(const id of claim.evidence_ids){const b=resultButton(id,()=>openFact(result.snapshot.facts.find(f=>f.id===id)));b.disabled=!current(owner);row.append(b);}
+          overview.append(row);
+        }
       }
       let page=0;const count=el('span');
       const previous=resultButton(t().previous,()=>{if(!current(owner))return;page--;paintFacts();previous.focus();});previous.dataset.ai='facts-previous';
@@ -510,10 +607,10 @@
         previous.disabled=page===0;next.disabled=(page+1)*5>=result.snapshot.facts.length;count.textContent=`${page+1} / ${Math.ceil(result.snapshot.facts.length/5)}`;
       }
       paging.append(previous,count,next);facts.append(list,paging,detail);paintFacts();
-      const interpretation=region('interpretation');interpretation.append(el('h4',t().interpretation),el('p',t().citation));
+      const interpretation=region('interpretation');interpretation.lang=owner.request.language;interpretation.append(el('h4',captured.interpretation),el('p',captured.citation));
       for(const key of ['summary','counterpoints','limitations']) {
         if(!result.interpretation[key].length)continue;
-        interpretation.append(el('h5',t()[key]));
+        interpretation.append(el('h5',captured[key]));
         for(const claim of result.interpretation[key]) {
           const row=el('div',undefined,'local-ai-claim');row.append(el('p',claim.text));
           for(const id of claim.evidence_ids){const b=resultButton(id,()=>openFact(result.snapshot.facts.find(f=>f.id===id)));b.disabled=!current(owner);row.append(b);}
@@ -529,7 +626,7 @@
         });
         b.disabled=!current(owner) || !target;actions.append(b);
       }
-      content.append(overview,interpretation,warnings,facts,actions,provenance.node);
+      content.append(overview,warnings,interpretation,facts,actions,provenance.node);
       results.replaceChildren(content);
     }
     function dispose() {
