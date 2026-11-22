@@ -262,7 +262,11 @@ def test_generation_snapshot_exact_and_plus_one_bytes_are_not_truncated():
         seen.append(json.loads(messages[1]['content']))
         return empty_proposal_reply(messages, schema)
     result = json.loads(task.run(deadline, reply))
-    assert seen == [snapshot] and result['snapshot'] == snapshot
+    from local_ai.decoder_input import project_examples
+    assert seen == [project_examples(snapshot)] and result['snapshot'] == snapshot
+    assert result['model_input']['view'] == seen[0]
+    assert result['model_input']['coverage']['shown_utf8_bytes'] == 1024
+    assert len(json.dumps(result['snapshot'], separators=(',', ':')).encode()) == 8192
     task.dispose()
     rows[-1]['data'] += 'x'
     with pytest.raises(AIError) as refused:

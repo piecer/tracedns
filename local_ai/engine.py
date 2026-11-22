@@ -7,6 +7,8 @@ from types import MappingProxyType
 
 from local_ai.contracts import AIError, decoder_schema, explanation_schema, load_request, validate_decoder, validate_explanation
 from local_ai.decoder import DecoderError, _bounded_json, evaluate_catalog, evaluate_generated, generated_step_schema
+from local_ai.decoder_input import build_model_input, project_examples
+from local_ai.facts_summary import build_summary
 from local_ai.provider import NativeReply, ProviderError
 from local_ai.sources import capture_decoder, capture_delivery, capture_pair, check_deadline, principal_identity, secret_free
 
@@ -81,6 +83,13 @@ def prompt(snapshot, schema):
         if snapshot.get('kind') == 'decoder_suggest' else INSTRUCTIONS
     )
     if snapshot.get('kind') == 'decoder_suggest':
+        if any(type(row) is dict and 'excerpt' in row for row in snapshot.get('examples', [])):
+            instructions += (
+                ' In excerpt rows, prefix and suffix are separate retained parts of one original sample, '
+                'not adjacent text. The omitted middle was not sent. Expected IP labels describe the '
+                'complete original sample. Do not concatenate fragments or treat them as complete samples. '
+                'If these excerpts are insufficient, return no candidates.'
+            )
         # Grammar constrains shape, not the existing interpreter's value types.
         # These fixed instructions contain neither holdout data nor verifier feedback.
         operations = {
@@ -190,13 +199,17 @@ class PreparedTask:
     def _decoder(self, ctx, payload, deadline, generate):
         report = evaluate_catalog(payload['decoder_type'], payload['catalog'], payload['samples'], deadline)
         self.check(deadline)
-        result = {'catalog': report, 'generated': None, 'proposal': None, 'model': None}
+        result = {'catalog': report, 'generated': None, 'proposal': None, 'model': None, 'model_input': None}
         if not payload['generate']:
             return result
         kind, language, digest = payload['decoder_type'], payload['language'], payload['snapshot_digest']
         schema = decoder_schema(kind, language, digest)
-        messages = prompt(payload['snapshot'], schema)
-        secret_free(ctx, {'messages': messages, 'schema': schema}, deadline, max_bytes=MAX_PROMPT_BYTES)
+        # Projection is model-only: capture already checked every original row,
+        # and both verifiers continue to receive the complete private samples.
+        messages = prompt(project_examples(payload['snapshot']), schema)
+        checked_bundle = secret_free(ctx, {'messages': messages, 'schema': schema}, deadline,
+                                     max_bytes=MAX_PROMPT_BYTES)
+        result['model_input'] = build_model_input(payload['snapshot'], digest, messages, schema, checked_bundle)
         self.check(deadline)
         reply = generate_once(generate, messages, schema, deadline)
         self.check(deadline)
@@ -214,6 +227,8 @@ class PreparedTask:
         snapshot = payload['snapshot']
         digest = payload['snapshot_digest']
         kind, language = payload['kind'], payload['language']
+        facts_summary = build_summary(snapshot, language, digest)
+        self.check(deadline)
         ids = [fact['id'] for fact in snapshot['facts']]
         schema = explanation_schema(kind, language, digest, ids)
         messages = prompt(snapshot, schema)
@@ -226,7 +241,7 @@ class PreparedTask:
         interpretation = validate_explanation(reply.content, kind=kind, language=language,
                                               snapshot_digest=digest, evidence_ids=ids)
         self.check(deadline)
-        return {'model': metadata,
+        return {'model': metadata, 'facts_summary': facts_summary,
                 'interpretation': interpretation}
 
 
