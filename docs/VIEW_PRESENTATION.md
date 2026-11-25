@@ -25,13 +25,29 @@ Current, history and MISP failures are independent; partial history coverage is
 not reported as a complete empty result. A Query link is an explicit search
 entry point, not merely cached inspection.
 
-## Optional local AI panels
+## Optional AI panels and provider settings
 
-The disabled-by-default [local assistance](LOCAL_AI.md) has explicit entrypoints
+The disabled-by-default [AI assistance](LOCAL_AI.md) has explicit entrypoints
 in Custom Decoders, the selected accepted relationship-pair inspector, and
 Delivery diagnostics. Opening a panel, navigating or changing language performs
 no inference. Run checks local availability before submitting; decoder generation
 is a separate unchecked option. Server roles remain authoritative.
+
+Admins use Settings → AI provider (`#settings-ai`) to choose native Ollama or
+OpenAI-compatible, edit Base URL/model and a replacement outbound Bearer key.
+The credential form stays inert before authentication and a valid settings read;
+saved keys are never shown. AI drafts retain their own loaded global revision,
+independently of domain/alert/decoder drafts. Explicit Load reconciles conflicts
+or uncertain saves rather than silently rebasing or retrying. Later key edits
+survive an older POST completion; logout/role/page retirement clears secret edits.
+Save retires mounted AI panels but is not a model call or connectivity test.
+Applied, draining, unsettled and unavailable settings states remain distinct.
+The key authenticates server-to-provider requests, not the user's web login.
+
+Compatible result provenance keeps requested/reported model identities separate,
+omits unobserved counters and contains no invented native digest/timing. Provider
+authentication/request/rate-limit failures have fixed explanatory messages, not
+raw remote prose; provider authentication failure does not log the user out.
 
 Compact server facts/verdict, AI interpretation and mandatory coverage are
 separate and precede lazy provenance. Full source identifiers, model metadata and

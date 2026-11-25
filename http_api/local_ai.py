@@ -61,6 +61,9 @@ def _send(ctx, handler, payload, status, service):
 
 def handle_local_ai(ctx, handler):
     parsed = urlsplit(handler.path)
+    if parsed.path == '/ai/settings':
+        from .ai_settings import handle_ai_settings
+        return handle_ai_settings(ctx, handler)
     service = getattr(handler, 'local_ai', None)
     try:
         if parsed.query:

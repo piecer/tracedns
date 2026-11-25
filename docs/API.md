@@ -25,7 +25,7 @@ JSON Patch(RFC 6902) 문서가 아니며 `domains` 배열 자체는 전체 교�
 `docs/security/deployment.md`의 계정 bootstrap 및 HTTPS reverse proxy 절차를 따른다.
 프록시는 공개 Host를 유지하고 `/api/v1` 접두사를 제거하지 않아야 한다.
 TLS는 프록시에서 종료한다. 내장 HTTP 서버 포트만 인터넷에 공개하지 않는다.
-CORS/익명 접근/장기 API 키/Bearer 인증을 추가하지 않았다. 브라우저 외부 프로그램도
+CORS/익명 접근/장기 API 키/TraceDNS 로그인용 Bearer 인증을 추가하지 않았다. 브라우저 외부 프로그램도
 기존의 세션 쿠키와 CSRF를 사용하며 클라이언트가 절차를 자동화한다.
 
 직접 구현할 때의 순서(아래 경로는 모두 `/api/v1` 기준):
@@ -93,18 +93,37 @@ with TraceDNSClient(os.environ['TRACEDNS_BASE_URL']) as api:
 로컬 개발만 `--allow-loopback-http` 또는 `allow_loopback_http=True`로 HTTP를 허용한다.
 서버가 LAN plaintext 모드여도 이 클라이언트는 원격 HTTP를 허용하지 않는다.
 
-## 선택적 로컬 AI 보조
+## 선택적 AI 보조
 
-기본 비활성화된 실험적 기능이다. 시작 설정, 현재 검증 상태, 모델 프로필 및 복구
-절차는 [LOCAL_AI.md](LOCAL_AI.md)를 따른다. 외부 AI 클라이언트가 임의 프롬프트나
-런타임 URL을 보내는 기능이 아니며 원래 판정·점수·관찰 범위를 수정하지 않는다.
+기본 비활성화된 실험적 기능이다. 네이티브 Ollama와 OpenAI-compatible을 지원하며
+관리자는 AI provider 설정 UI에서 URL·모델·발신 Bearer 키를 저장할 수 있다.
+현재 검증 상태, 프로필·개인정보 제한 및 복구는 [LOCAL_AI.md](LOCAL_AI.md)를 따른다.
+Job 요청은 임의 프롬프트·모델·URL override를 받지 않으며 원래 판정·점수·관찰 범위를
+수정하지 않는다. 발신 Bearer는 위의 웹 세션/CSRF 인증과 별개다.
 
 | Method | `/api/v1` 아래 경로 | 의미 |
 |---|---|---|
+| GET / POST | `/ai/settings` | admin 전용 공개 설정 조회 / 글로벌 revision CAS를 통한 실시간 저장 |
 | GET | `/ai/status` | 로컬 접수 가능 상태, 해당 사용자·세션의 active handle; 추론 없음 |
 | POST | `/ai/jobs` | `decoder_suggest`, `relationship_pair`, `delivery` 중 하나의 명시적 요청; 202는 접수 |
 | GET | `/ai/jobs/{job_id}` | 해당 세션의 상태와 감사 완료 결과 |
 | POST | `/ai/jobs/{job_id}/cancel` | 빈 JSON 객체; 취소 요청과 실제 확인을 구분 |
+
+설정 요청은 `revision`, 비어 있지 않은 `settings`, 선택적 `clear_fields:["api_key"]`를
+사용한다. 키는 write-only이며 응답에는 `configured.api_key`만 있다. 빈 키 유지와
+제공자·정확한 Base URL·정책 변경의 명시적 교체/삭제 규칙을 지켜야 한다.
+400은 잘못된 요청, 409 `config_revision_conflict`는 오래된 리비전이다. 정상 응답도
+`runtime.applied=false`이면 저장과 로컬 적용이 다르다. 저장은 연결 검사·추론이 아니며
+실패하거나 잃어버린 응답을 rollback으로 단정하거나 POST를 자동 재시도하지 않는다.
+설정 요청/응답은 각 16 KiB로 제한한다. 기존 `/settings`는 알림 설정 전용으로 유지한다.
+
+저장 콜백 오류 뒤에는 재쓰기 없이 정확한 파일 바이트로 결과를 확인한다. 새 후보와
+일치하면 커밋된 리비전을 적용하고, 이전 바이트가 그대로면 `config_save_failed`를
+반환한다. 결과를 증명할 수 없으면 503 `config_storage_unavailable`로 설정 GET과
+이후 설정 변경을 거절하며 이전 AI의 접수·결과 공개를 차단한다. 이는 rollback이나
+전원 장애 내구성 보장이 아니다. 파일을 오프라인으로 점검한 뒤 소유자를 재구성해야
+하며, 재시작도 제공자 격리를 해제하지 않는다. 정리 콜백의 지속 실패는 설정 저장으로
+초기화되지 않고 runtime unavailable 및 미완료 shutdown으로 남는다.
 
 디코더는 admin, 관계 pair·캐시 진단 설명은 operator/admin이다. 다른 세션이나
 사용자에게는 admin이라도 job을 노출하지 않는다. `created_at`, `deadline_at`은

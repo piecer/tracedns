@@ -99,7 +99,7 @@ async function bounded(page,label) {
 
 test('mount',async browser=>withPanel(browser,async(page,state)=>{
   await mounted(page);
-  await expect(page.getByRole('heading',{name:'Local AI assistance',exact:true})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'AI assistance',exact:true})).toBeVisible();
   await expect(page.getByRole('button',{name:'Run',exact:true})).toBeEnabled();
   await page.getByLabel('Language', {exact:true}).selectOption('ko');
   await expect(page.getByRole('button',{name:'실행',exact:true})).toBeVisible();
@@ -311,7 +311,7 @@ for(const language of ['en','ko']) test(`decoder-${language}`,async browser=>wit
   await expect(page.locator('[data-ai="sample"]').getByLabel('Expected IPv4 (comma or space separated)',{exact:true})).toHaveValue('');
   if(language==='ko')await page.getByLabel('Language',{exact:true}).selectOption('ko');
   await fillSamples(page,fixtures.decoder.samples.slice(0,2),language);
-  const generate=page.getByLabel(language==='ko'?'새 후보 생성 (로컬 모델 사용)':'Generate new candidates (uses local model)',{exact:true});
+  const generate=page.getByLabel(language==='ko'?'새 후보 생성 (설정된 모델 사용)':'Generate new candidates (uses configured model)',{exact:true});
   await expect(generate).not.toBeChecked();await generate.check();
   assert.equal(state.requests.length,0,'edits and generation selection never fetch');
   await page.getByRole('button',{name:language==='ko'?'실행':'Run',exact:true}).click();
@@ -397,7 +397,7 @@ test('late-cancel-failure-preserves-primary',async browser=>withPanel(browser,as
 test('decoder-unknown-model-contract',async browser=>withPanel(browser,async(page,state)=>{
   const result=decoderResult();result.model.extra='PRIVATE unexpected model metadata';
   state.reply=(req,res)=>json(res,req.url==='/ai/status'?ready:decoderJob('en',true,result));
-  await mounted(page,'decoder_suggest');await fillSamples(page,fixtures.decoder.samples.slice(0,2));await page.getByLabel('Generate new candidates (uses local model)',{exact:true}).check();
+  await mounted(page,'decoder_suggest');await fillSamples(page,fixtures.decoder.samples.slice(0,2));await page.getByLabel('Generate new candidates (uses configured model)',{exact:true}).check();
   await page.getByRole('button',{name:'Run',exact:true}).click();
   await expect(page.locator('[data-ai="status"]')).toContainText('Unsupported or invalid response');
   assert.equal(await page.locator('[data-ai="candidate-list"]').count(),0);await expect(page.locator('#panel')).not.toContainText('PRIVATE');
@@ -428,7 +428,7 @@ test('decoder-snapshot-closed-producer-shape',async browser=>withPanel(browser,a
   state.reply=(req,res)=>json(res,req.url==='/ai/status'?ready:decoderJob('en',true,result));
   async function runSnapshot(){
     await mounted(page,'decoder_suggest');await fillSamples(page,fixtures.decoder.samples.slice(0,2));
-    await page.getByLabel('Generate new candidates (uses local model)',{exact:true}).check();
+    await page.getByLabel('Generate new candidates (uses configured model)',{exact:true}).check();
     await page.getByRole('button',{name:'Run',exact:true}).click();
   }
   await runSnapshot();await expect(page.locator('[data-ai="candidate-list"]')).toBeVisible();
@@ -538,7 +538,7 @@ test('decoder-catalog-draft-and-extras',async browser=>withPanel(browser,async(p
   await page.evaluate(()=>controller.dispose());
   const extra=decoderResult('en',true,'extras');extra.catalog=fixtures.decoder.extras_catalog;extra.generated=fixtures.decoder.extras;extra.proposal.candidates=[{steps:[{op:'ascii'}]}];
   state.reply=(req,res)=>json(res,req.url==='/ai/status'?ready:decoderJob('en',true,extra));
-  await mounted(page,'decoder_suggest');await fillSamples(page,fixtures.decoder.extras_samples);await page.getByLabel('Generate new candidates (uses local model)',{exact:true}).check();
+  await mounted(page,'decoder_suggest');await fillSamples(page,fixtures.decoder.extras_samples);await page.getByLabel('Generate new candidates (uses configured model)',{exact:true}).check();
   await page.getByRole('button',{name:'Run',exact:true}).click();await expect(page.locator('[data-ai="candidate-list"]')).toBeVisible();
   await openCandidate(page,'generated_1');await expect(page.locator('[data-ai="candidate-detail"]')).toContainText('192.0.2.11');
   await expect(page.getByRole('button',{name:'Apply to draft',exact:true})).toBeDisabled();
@@ -548,7 +548,7 @@ test('decoder-catalog-draft-and-extras',async browser=>withPanel(browser,async(p
 test('decoder-A-and-invalid-steps',async browser=>withPanel(browser,async(page,state)=>{
   const result=decoderResult('en',true,'a');result.catalog=fixtures.decoder.a.catalog;result.generated=fixtures.decoder.a.generated;result.proposal.candidates=fixtures.decoder.a.proposal;
   state.reply=(req,res)=>json(res,req.url==='/ai/status'?ready:decoderJob('en',true,result));
-  await mounted(page,'decoder_suggest');await page.evaluate(()=>{fixture.base.decoder_type='A';});await fillSamples(page,fixtures.decoder.a.samples);await page.getByLabel('Generate new candidates (uses local model)',{exact:true}).check();
+  await mounted(page,'decoder_suggest');await page.evaluate(()=>{fixture.base.decoder_type='A';});await fillSamples(page,fixtures.decoder.a.samples);await page.getByLabel('Generate new candidates (uses configured model)',{exact:true}).check();
   await page.getByRole('button',{name:'Run',exact:true}).click();await expect(page.locator('[data-ai="candidate-list"]')).toBeVisible();
   assert(result.catalog.candidates.some(c=>c.name==='ipv4_1423'&&c.source==='builtin'&&c.steps===null),'producer preserves builtin-only ipv4_1423');
   await openCandidate(page,'ipv4_1423');await expect(page.getByRole('button',{name:'Apply to draft',exact:true})).toBeDisabled();
@@ -557,13 +557,13 @@ test('decoder-A-and-invalid-steps',async browser=>withPanel(browser,async(page,s
   await page.evaluate(()=>controller.dispose());
   const invalid=decoderResult();invalid.proposal.candidates[0].steps[0].key='00';invalid.generated.candidates[0].steps[0].key='00';
   state.reply=(req,res)=>json(res,req.url==='/ai/status'?ready:decoderJob('en',true,invalid));
-  await mounted(page,'decoder_suggest');await fillSamples(page,fixtures.decoder.samples.slice(0,2));await page.getByLabel('Generate new candidates (uses local model)',{exact:true}).check();
+  await mounted(page,'decoder_suggest');await fillSamples(page,fixtures.decoder.samples.slice(0,2));await page.getByLabel('Generate new candidates (uses configured model)',{exact:true}).check();
   await page.getByRole('button',{name:'Run',exact:true}).click();await expect(page.locator('[data-ai="status"]')).toContainText('Unsupported or invalid response');
   assert.equal(await page.locator('[data-ai="candidate-list"]').count(),0,'never repair irrelevant generated keys');
   const forbidden=copy(result);forbidden.proposal.candidates[0].steps=[{op:'ipv4_1423'}];forbidden.generated.candidates[0].steps=[{op:'ipv4_1423'}];
   state.reply=(req,res)=>json(res,req.url==='/ai/status'?ready:decoderJob('en',true,forbidden));
   await mounted(page,'decoder_suggest');await page.evaluate(()=>{fixture.base.decoder_type='A';});await fillSamples(page,fixtures.decoder.a.samples);
-  await page.getByLabel('Generate new candidates (uses local model)',{exact:true}).check();
+  await page.getByLabel('Generate new candidates (uses configured model)',{exact:true}).check();
   await page.getByRole('button',{name:'Run',exact:true}).click();
   await expect(page.locator('[data-ai="status"]')).toContainText('Unsupported or invalid response');
   assert.equal(await page.locator('[data-ai="candidate-list"]').count(),0,'builtin-only operation must not enter generated DSL');
@@ -929,7 +929,7 @@ test('presentation-malformed-atomic',async browser=>withPanel(browser,async(page
     await mounted(page,kind);
     if(kind==='decoder_suggest'){
       await fillSamples(page,fixtures.decoder.samples.slice(0,2));
-      await page.getByLabel('Generate new candidates (uses local model)',{exact:true}).check();
+      await page.getByLabel('Generate new candidates (uses configured model)',{exact:true}).check();
     }
     await page.getByRole('button',{name:'Run',exact:true}).click();
     await expect(page.locator('[data-ai="status"]')).toContainText('Unsupported or invalid response');
@@ -943,7 +943,7 @@ for(const name of ['excerpt','unicode'])test(`model-coverage-${name}`,async brow
   const {request,result}=fixtures.decoder.projected[name], input=result.model_input;
   state.reply=(req,res)=>json(res,req.url==='/ai/status'?ready:decoderJob('en',true,result));
   await mounted(page,'decoder_suggest');await fillSamples(page,request.samples);
-  await page.getByLabel('Generate new candidates (uses local model)',{exact:true}).check();
+  await page.getByLabel('Generate new candidates (uses configured model)',{exact:true}).check();
   await page.getByRole('button',{name:'Run',exact:true}).click();
   await expect(page.locator('[data-ai="candidate-list"]')).toBeVisible();
   const coverage=page.locator('[data-ai="model-coverage"]');

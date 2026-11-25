@@ -1,15 +1,15 @@
-# Optional local AI assistance / 선택적 로컬 AI 보조
+# Optional AI assistance / 선택적 AI 보조
 
 > Experimental, disabled by default. Controlled-protocol tests do not replace
 > actual model, full-page and final canonical acceptance. Require the verification
 > report for the exact revision and qualify your runtime before deployment;
-> this operating guide is not itself an acceptance certificate. This usability
-> change has **not verified actual-model latency or usefulness**.
+> this operating guide is not itself an acceptance certificate. Provider/UI
+> support has **not verified actual-model latency or usefulness**.
 >
 > 실험적 기능이며 기본값은 비활성화입니다. 통제된 응답의 테스트를 실제 모델·전체
 > 화면·최종 검증으로 간주하지 마세요. 배포 전 정확한 리비전의 검증 보고서와
 > 사용할 런타임의 적합성을 확인하세요. 이 운영 안내 자체가 수용 증명은 아닙니다.
-> 이번 사용성 변경으로 실제 모델의 지연 시간이나 유용성을 검증하지 않았습니다.
+> 제공자·UI 지원으로 실제 모델의 지연 시간이나 유용성을 검증한 것은 아닙니다.
 
 TraceDNS keeps its deterministic analysis. AI proposes constrained decoder steps
 or explains one selected, authorized snapshot; it cannot change verdicts, scores,
@@ -35,7 +35,20 @@ before capture, at dispatch, before publication and on retrieval. Background
 sweeps retire revoked or expired references without requiring another browser
 poll. Already transmitted input and already displayed text cannot be recalled.
 
-## Startup configuration
+## Provider configuration and live settings
+
+Two explicit profiles are available: native `ollama` and
+`openai_compatible` Chat Completions. Existing Ollama behavior is retained;
+compatible providers do not inherit its local-model/digest/CPU claims.
+
+An administrator can open **Settings → AI provider** (`#settings-ai`) to Load,
+edit and Save the provider, Base URL, model and server-outbound Bearer key.
+The persistent service owner exists even when startup settings are absent or
+disabled, so ordinary configuration changes need no TraceDNS restart. Save
+performs no connectivity test, discovery or inference. Local runtime `ready`
+is not evidence of provider reachability or model quality. Explicit AI actions
+may transmit selected, secret-checked evidence to the configured destination;
+holdouts remain excluded. Review the destination's retention policy yourself.
 
 Omitting `local_ai`, or the following configuration, keeps inference disabled:
 
@@ -59,15 +72,20 @@ For an explicitly qualified local installation, the startup object is:
 The placeholder intentionally fails validation. Obtain the exact full digest from
 the runtime owner and its local model catalog; do not copy a digest from this
 repository or use only a short prefix. Model name and digest must identify the
-same installed model. These settings are startup-only, not browser-supplied
-options or a live Settings update. Coordinate any restart with the deployment
-owner; this guide does not authorize interrupting an existing service.
+same installed model. The legacy startup `origin` spelling remains supported;
+the UI and settings API use `provider=ollama` and `base_url`. Do not combine
+`origin` with `base_url` or send `origin` in the settings API. The job request
+cannot override its provider. Coordinate any operational restart with the
+deployment owner; this guide does not authorize interrupting an existing service.
 
-The initial adapter accepts the native Ollama chat/catalog protocol, local GGUF
+### Native Ollama profile
+
+The native adapter accepts the Ollama chat/catalog protocol, local GGUF
 format and the `qwen35` family/profile. It rejects cloud markers and digest drift.
 It performs no downloads, model pulls, fallback, runtime stop/unload or model
-replacement. Other providers, model families and custom templates are not
-qualified by this implementation.
+replacement. Other native model families and custom templates are not
+qualified by this adapter. Use the separate compatible profile for its protocol;
+selecting it does not qualify a model's semantic behavior.
 
 The origin must be an explicit loopback HTTP origin with a port: a numeric
 loopback address, or the literal `localhost` mapped directly to `127.0.0.1`
@@ -89,6 +107,108 @@ verification. A slow runtime is refused; deadlines are not automatically raised.
 a model-availability, semantic-quality or connectivity probe. Startup, panel
 opening and status reads do not perform inference; the native catalog is checked
 when an explicit generation is dispatched.
+
+### OpenAI-compatible profile
+
+This bounded profile requires nonstreaming Chat Completions and
+`response_format={"type":"json_object"}`. It appends output-schema guidance to
+the existing system message **before** privacy checking, byte admission and
+the canonical commitment; the two-message structure and original verifier stay
+authoritative. It does not assume portable strict JSON-Schema support. A service
+calling itself compatible may still refuse the selected model/options or return
+an unsupported response; failures are not converted into successful summaries.
+
+The Base URL is an exact base prefix, such as `https://gateway.example.test/v1`,
+not an already-appended `/chat/completions` URL. `public_https` requires HTTPS,
+verified certificates/hostname and only globally routable DNS answers or numeric
+addresses. `loopback` explicitly permits HTTP/HTTPS loopback literals or
+`localhost`; self-signed TLS is not accepted. Private LAN destinations, embedded
+credentials, query/fragment, ambiguous/encoded path components, redirects and
+environment proxies are refused. Every DNS answer is vetted before one numeric
+address is dialed. A timed-out lookup retains its one shared physical slot until
+the worker actually exits; changing settings does not create a replacement slot.
+
+There is one POST, with server-only `Authorization: Bearer …` when a key is
+configured, `stream=false`, `n=1`, `store=false` and a 512-token output limit.
+Select `max_completion_tokens` or `max_tokens` explicitly for your provider.
+There is no automatic token-field fallback, temperature setting, model listing,
+retry or model download. `store=false` is a request flag, **not** a guarantee of
+the remote service's retention behavior. CPU/thread/context settings above are
+native-only. The original job deadline and all validation/privacy limits remain.
+
+### Settings API, keys and revisions
+
+Admin-only `GET/POST /ai/settings` and `/api/v1/ai/settings` share the existing
+web session, Origin, CSRF and audit controls. Outbound Bearer is **not** a new
+TraceDNS login mechanism. `/settings` remains the alert-integrations route.
+GET returns `revision`, public `settings` and `runtime`; it never returns the
+key, only `configured.api_key`. POST uses a closed, nonempty `settings` patch
+and the exact global revision loaded from GET. For example (replace all
+placeholders and use your freshly read revision; this does not qualify a provider):
+
+```json
+{
+  "revision": 0,
+  "settings": {
+    "enabled": true,
+    "provider": "openai_compatible",
+    "base_url": "https://gateway.example.test/v1",
+    "model": "REPLACE_WITH_MODEL_ID",
+    "endpoint_policy": "public_https",
+    "token_limit_field": "max_completion_tokens",
+    "api_key": "REPLACE_WITH_PROVIDER_KEY"
+  }
+}
+```
+
+- Omitted or blank key keeps the existing key only for the same provider, exact
+  Base URL and endpoint policy. Changing that destination requires explicit
+  replacement or top-level `clear_fields:["api_key"]`; equivalent-looking URL
+  spellings are not silently normalized. A model/token-option change alone does
+  not change the destination binding. Enabled public HTTPS requires a key;
+  explicit loopback may be anonymous. Ollama does not accept a Bearer key.
+- Missing/malformed revisions fail with 400; stale revisions return
+  `config_revision_conflict` (409) and the current revision. Never silently rebase
+  a draft or retry a mutation. AI and unrelated settings editors retain separate
+  loaded revisions. Explicit Load discards/reconciles the old AI draft.
+- Success includes `status=ok`, the new revision, public settings, runtime and
+  closed warnings: `ai_runtime_apply_failed`, `ai_previous_call_draining`,
+  `ai_provider_unsettled`. `runtime.applied=false` distinguishes a committed
+  configuration from failed local application. Runtime states are `disabled`,
+  `ready`, `draining`, `unsettled`, `unavailable`, `stopped`; none prove connectivity.
+  A failed or lost acknowledgement is not proof of rollback: read back with GET.
+- A writer exception is reconciled once, under the same serialized owner, without
+  repeating the write. Exact candidate bytes establish the committed revision;
+  unchanged pre-write bytes (including known absence) preserve the old revision
+  and `config_save_failed`. An unprovable outcome returns
+  `config_storage_unavailable` (503): settings GET and later configuration writes
+  are refused, and old AI admission/publication is fenced. Readback is limited to
+  regular non-symlink files of at most 8 MiB; unsupported shapes or read errors
+  are not rollback proof. This is local file visibility, not crash durability or
+  coordination with arbitrary external writers. Investigate the file offline
+  before reconstructing the owner; no automatic retry or in-process fence reset
+  is provided. Restart never clears the durable provider interlock.
+- Retired jobs keep their original queued-finalization and task/lease ownership
+  until cleanup acknowledges. One failing callback does not skip siblings.
+  Cleanup/finalizer attempts are bounded to two per job, not renewed by Save;
+  persistent failure keeps runtime unavailable and shutdown incomplete even
+  when no worker remains. Terminal-audit failure retains the existing sticky
+  audit failure policy, with no duplicate audit retry. A successful later Save
+  can apply settings after one-shot cleanup recovery, but cannot release a
+  still-running provider/DNS owner or clear durable quarantine.
+- The success receipt is secret-checked against its own committed configuration
+  and waits for completion audit. Audit unavailability fails closed. The owner
+  fences new admission before releasing the configuration lock even if its
+  post-replace publication callback fails. No old generation may publish through
+  a configuration change, and physical work/quarantine is not reset by Save.
+- The inert credential form has no native key field name. Every actual POST
+  outcome clears only the submitted key-edit generation; later key edits survive.
+  Logout/role loss/page retirement clear all secret edits and invalidate owners.
+  Keys never enter generic draft signatures or local/session storage.
+- Keys are stored server-side in the existing configuration file. Atomic replace
+  uses an owner-only file and file fsync; this is **not encryption** or a claim of
+  complete power-loss durability. Protect the config and backups. Public receipts,
+  job results and audit records must not contain credential values.
 
 ## Decoder workflow
 
@@ -250,6 +370,7 @@ Both legacy and `/api/v1` routes reach the same service:
 
 | Method | Path | Meaning |
 |---|---|---|
+| GET / POST | `/ai/settings` | Admin-only secret-free reads / revision-checked live configuration |
 | GET | `/ai/status` | Local availability and only this session's active handle; no inference |
 | POST | `/ai/jobs` | Explicit bounded request; HTTP 202 is admission, not success |
 | GET | `/ai/jobs/{job_id}` | Owned state/result; polling does not refresh the session |
@@ -270,8 +391,9 @@ Example requests:
 ```
 
 The relationship ID above is illustrative, not an existing job. Supply an actual
-completed eligible job and its exact selected pair. Client-supplied facts, model
-selection, endpoint and prompt overrides are not accepted.
+completed eligible job and its exact selected pair. Job requests do not accept
+client-supplied facts, model selection, endpoint or prompt overrides; provider
+configuration belongs to the separate admin-only settings route.
 
 A job includes `job_id`, `kind`, `language`, `status`, `created_at`, `deadline_at`,
 `audit_status`, `error`, `result` and `cancel_requested`. Times are Unix integer
@@ -292,6 +414,14 @@ are all null. Explanation results instead require `interpretation` and
 missing, extra, malformed or foreign-kind fields are not a legacy fallback.
 The same schema applies to create, read and cancel job responses.
 
+`model` has separate closed native and compatible alternatives. Native retains
+its observed model/digest and native counters. Compatible metadata requires
+`provider=openai_compatible`, `requested_model`, `reported_model`, `finish_reason`
+and `response_format=json_object`. Optional observed `prompt_tokens`,
+`completion_tokens`, `total_tokens` are decimal int64 strings; missing counters
+are omitted, not fabricated as zero. No native digest or timing is synthesized.
+Requested/reported identity and counters are provenance, not execution attestation.
+
 OpenAPI 3.1 / JSON Schema 2020-12 represents closed keys, scalar limits,
 null/populated alternatives and mandatory ordered summary codes. It does **not**
 replace the existing closed task/browser validators for retained catalog,
@@ -308,7 +438,8 @@ silently widen a closed consumer or automatically resubmit generation. Retained
 source ownership, authorization, generation/callback retirement and manual-only
 draft/Save checks still apply.
 
-The schema source is `http_api/local_ai_schema.py`. Regenerate the checked-in
+The schema sources are `http_api/local_ai_schema.py` and
+`http_api/ai_settings_schema.py`. Regenerate the checked-in
 reference using the project procedure (from the repository root):
 
 ```bash
@@ -332,6 +463,7 @@ provider/parser exception prose or automatically replay a failed POST.
 | Boundary | Hard limit |
 |---|---|
 | HTTP input | 16 KiB; duplicate/unsupported framing refused before body read |
+| AI settings receipt / Base URL / model / replacement key | 16 KiB / 1024 ASCII characters / 256 ASCII characters / 4096 visible ASCII characters |
 | Samples | 6 rows; each raw value 2 KiB UTF-8; 1–8 canonical IPv4 addresses per row; at least one example; no duplicate raw input |
 | Selected catalog | 32 total names; 32 KiB encoded definitions; no arbitrary prefix search |
 | Original generation snapshot / model view | 8 KiB encoded each; oversized originals refused before excerpting |
@@ -340,7 +472,7 @@ provider/parser exception prose or automatically replay a failed POST.
 | `model_input` sidecar / metadata | 10240 / 2048 encoded bytes; metadata uses that blanked view |
 | Checked canonical messages and schema | 16384 bytes (16 KiB); excludes HTTP/options |
 | `facts_summary` / claim text | 6144 encoded bytes per summary; 1–512 UTF-8 bytes per claim |
-| Provider request/native response | 64 KiB each; framing separately bounded to 16 KiB |
+| Provider request/response | 64 KiB each; framing separately bounded to 16 KiB |
 | Model content | 16 KiB; generated JSON/schema validated separately |
 | Verifier | 64 KiB stdin/stdout, 4 KiB observed stderr; catalog/generated phases each at most 5 seconds within original deadline |
 | Provider work | One physical worker, two queued jobs, at most three concurrent preparations, one unfinished job per user |
@@ -358,7 +490,7 @@ AI retention is not an additional persistent history or prompt database.
 ## Cancellation, quarantine and recovery
 
 A queued cancellation can be confirmed before inference. For running work,
-cancellation suppresses publication but drains the original native request; it
+cancellation suppresses publication but drains the original provider request; it
 does not promise that the model stopped. Browser detachment is not authority to
 kill a provider or to resume the job under another source.
 
@@ -368,6 +500,15 @@ schema or content size is rejected. Timeout, partial/malformed/oversized native
 envelopes and failed settlement auditing leave durable uncertainty. There is no
 automatic replacement inference. Closing the local service can truthfully report
 retained workers instead of pretending they disappeared.
+
+For compatible responses, only a complete bounded supported completion or a
+typed complete rejection can settle the exact job. Rejections 400/404/422 map to
+`provider_request_rejected`, 401/403 to `provider_auth_failed`, and 429 to
+`provider_rate_limited`, with audited `http_rejected` settlement. A job GET may
+still be HTTP 200 with `status=failed`, a fixed `error` and `result=null`.
+Provider authentication failure is not TraceDNS logout. Incomplete/late/timeout,
+5xx and unsupported/uncertain responses do not authorize replacement inference.
+No provider response body or exception prose is reflected to the user.
 
 The security database keeps the `llm.provider` interlock through audit pruning
 and restart. `llm.lifecycle` is a separate intent/terminal stream with fixed
@@ -393,10 +534,27 @@ does not stop, unload or inspect a runtime and does not authorize killing borrow
 processes. There is no HTTP recovery endpoint. Never clear the interlock merely
 to retry an uncertain request.
 
+For a hosted compatible service, closing the client socket, clearing its key or
+changing the endpoint is not proof that remote execution stopped. If the provider
+owner cannot authoritatively establish termination, keep the interlock blocked;
+do not assert `--confirm-provider-stopped` merely to resume work.
+
 ## 한국어 요약
 
-- 기본 비활성화이며 관리자가 시작 설정으로 로컬 런타임과 정확한 모델 digest를
-  지정합니다. 루프백 주소만으로 클라우드 미사용이 증명되지는 않습니다.
+- 기본 비활성화입니다. 관리자는 Settings의 AI provider(`#settings-ai`)에서 네이티브
+  Ollama 또는 OpenAI-compatible을 선택하고 URL·모델·서버 발신 Bearer 키를 저장할 수
+  있습니다. 정상 적용은 TraceDNS 재시작이 필요 없으며 저장 자체는 연결 검사·추론을
+  하지 않습니다. Ollama는 기존 정확한 digest와 로컬 프로필을 유지합니다.
+  루프백 주소만으로 클라우드 미사용이 증명되지는 않습니다.
+- `/ai/settings` 및 `/api/v1/ai/settings`는 admin 전용 GET/POST입니다. Bearer는 제공자
+  발신 인증이며 웹 로그인·세션·CSRF를 대체하지 않습니다. 공개 HTTPS는 검증된 TLS와
+  전역 라우팅 주소만, 명시적 loopback은 루프백만 허용합니다. 사설 LAN·프록시·리다이렉트·
+  자동 토큰 옵션 fallback은 없습니다. `store=false`도 외부 서비스의 무보존 보장은 아닙니다.
+- 빈 키는 동일한 제공자·정확한 URL·정책에서만 유지됩니다. 대상 변경은 새 키 또는
+  `clear_fields`가 필요합니다. 저장된 키는 화면에 반환하지 않고 서버 설정 파일에
+  보관하므로 파일·백업을 보호하세요. 암호화 저장을 보장하지 않습니다. 리비전 충돌·
+  저장 결과 미확인은 명시적 Load로 확인하고 자동 재시도하지 마세요. 저장 후에도
+  `runtime.applied=false`일 수 있으며, 설정 변경으로 이전 추론의 격리를 해제하지 않습니다.
 - 디코더는 `admin`, 관계 pair·전달 진단 설명은 `operator`/`admin` 권한이 필요합니다.
   관리자도 다른 사용자나 다른 로그인 세션의 AI 작업을 가져올 수 없습니다.
 - 예제와 검증용 입력은 분리합니다. 검증 데이터와 정답·평가 결과는 모델에 보내지

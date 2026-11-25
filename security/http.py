@@ -204,7 +204,7 @@ class HttpSecurity:
                     raise SecurityError('Invalid resend request', 400) from None
             if audited:
                 self.event(handler, action, 'started', target=audit_target,
-                           details={'fields': sorted(set(data) - {'password', 'token'}),
+                           details={'fields': [] if path == '/ai/settings' else sorted(set(data) - {'password', 'token'}),
                                     'resend_id': data.get('request_id') if path in RESEND_PATHS else None})
             original(handler)
             if path in RESEND_PATHS and hasattr(handler, '_resend_response'):
@@ -213,10 +213,17 @@ class HttpSecurity:
                 self.event(handler, action, payload['status'], target=audit_target, status=code,
                            details={'resend_id': payload['request_id']})
                 send_result(handler, payload, code)
+            elif path == '/ai/settings' and hasattr(handler, '_ai_settings_response'):
+                from http_api.local_ai import _write
+                wire = handler._ai_settings_response
+                self.event(handler, action, 'success', target=path, status=200)
+                _write(handler, wire, 200)
             elif audited:
                 self.event(handler, action, 'success' if handler._security_status < 400 else 'failure',
                            target=path, status=handler._security_status)
         except SecurityError as exc:
+            if path == '/ai/settings' and getattr(handler, '_ai_settings_committed', False):
+                handler.local_ai.latch_audit_failure()
             if exc.status in (401, 403) and self.store is not None:
                 try:
                     self.event(handler, 'access.denied', 'denied', target=path, status=exc.status)
@@ -226,6 +233,8 @@ class HttpSecurity:
                 handler._security_unavailable = exc.status == 503
                 send_json(handler, {'error': str(exc), 'request_id': handler.request_id}, exc.status)
         except Exception:
+            if path == '/ai/settings' and getattr(handler, '_ai_settings_committed', False):
+                handler.local_ai.latch_audit_failure()
             LOGGER.error('Request failed; request_id=%s', handler.request_id)
             if not getattr(handler, '_headers_sent', False):
                 handler._security_unavailable = True

@@ -153,15 +153,12 @@ def attach_api_handlers(
         delivery_diagnostics=delivery_diagnostics,
     )
     from monitor.config_service import get_config_service
-    get_config_service(ctx)
-    handler_cls.local_ai = None
-    local_ai_enabled = False
-    if local_ai_settings is not None:
-        from local_ai.engine import AssistantEngine
-        from local_ai.service import LocalAIService
-        handler_cls.local_ai = LocalAIService(
-            local_ai_settings, local_ai_security_store, AssistantEngine(ctx, relationship_jobs))
-        local_ai_enabled = local_ai_settings.get('enabled', False)
+    config_owner = get_config_service(ctx)
+    from local_ai.engine import AssistantEngine
+    from local_ai.service import LocalAIService
+    handler_cls.local_ai = LocalAIService(
+        local_ai_settings, local_ai_security_store, AssistantEngine(ctx, relationship_jobs))
+    config_owner.local_ai = handler_cls.local_ai
     ips_cache = {'version': 0, 'rows': []}
 
     # Expose shared_config on the handler instance for specialized endpoints
@@ -2423,7 +2420,7 @@ def attach_api_handlers(
             except RelationshipJobCapacityError as exc:
                 return self._send_json({'error': str(exc)}, 429)
             ai_source_stamp = None
-            if local_ai_enabled:
+            if handler_cls.local_ai.source_admission_enabled():
                 from local_ai.contracts import AIError
                 from local_ai.sources import capture_relationship_stamp, validate_relationship_stamp
                 try:
