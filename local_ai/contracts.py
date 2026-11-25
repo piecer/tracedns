@@ -17,6 +17,7 @@ ERROR_STATUS = {
     'source_not_ready': 409, 'source_unavailable': 409, 'source_revoked': 409,
     'too_large': 413, 'verification_failed': 422, 'busy': 429,
     'invalid_model_output': 502, 'provider_failed': 502,
+    'provider_request_rejected': 502, 'provider_auth_failed': 502, 'provider_rate_limited': 503,
     'disabled': 503, 'model_unavailable': 503, 'provider_unsettled': 503,
     'audit_unavailable': 503, 'privacy_unavailable': 503, 'stopped': 503,
     'deadline_exceeded': 504,

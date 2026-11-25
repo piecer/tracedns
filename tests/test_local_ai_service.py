@@ -1291,7 +1291,7 @@ def account(tmp_path):
     return store, actor
 
 
-@pytest.mark.parametrize('settings', [None, [], {'enabled': 1}, {'enabled': True},
+@pytest.mark.parametrize('settings', [[], {'enabled': 1}, {'enabled': True},
     {**SETTINGS, 'endpoint': 'http://127.0.0.1:9'},
     {**SETTINGS, 'origin': 'http://example.com:80'},
     {**SETTINGS, 'model_digest': 'a' * 63},

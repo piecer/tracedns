@@ -55,6 +55,8 @@ def allowed(role, method, path, qs=None, body=None):
         return role in ('admin', 'operator')
     if role != 'admin':
         return False
+    if path == '/ai/settings' and method in ('GET', 'POST'):
+        return True
     if path in ('/settings', '/settings.html', '/accounts.html') and method == 'GET':
         return True
     if path in ('/settings', '/teams/test', '/delivery-resend/preview', '/delivery-resend') and method == 'POST':

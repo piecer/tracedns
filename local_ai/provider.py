@@ -195,6 +195,10 @@ class NativeReply:
     content_error: str | None = None
 
 
+# Exact type identity preserves the engine's native receipt admission.
+ProviderReply = NativeReply
+
+
 class _Reader:
     """One socket, bounded HTTP/1 framing, no makefile read-ahead or redirects."""
 
@@ -254,10 +258,13 @@ class _Reader:
                 return bytes(result)
             result.extend(data)
 
-    def response(self):
+    def response(self, *, _rejection_statuses=()):
+        # Native callers retain the exact 2xx/body-only behavior. Compatible
+        # callers may opt into complete framing for their closed rejection set.
         status = re.fullmatch(rb"HTTP/1\.[01] ([0-9]{3})(?: [\x20-\x7e]*)?", self.line())
-        if status is None or not 200 <= int(status[1]) < 300:
+        if status is None or not (200 <= int(status[1]) < 300 or int(status[1]) in _rejection_statuses):
             raise ProviderError("provider_failed")
+        self.status = int(status[1])
         headers = {}
         while line := self.line():
             name, separator, value = line.partition(b":")
@@ -270,7 +277,10 @@ class _Reader:
                 raise ProviderError("provider_failed")
             headers[name.lower()] = value.strip().lower()
         if (
-            headers.get(b"content-type") not in {b"application/json", b"application/json; charset=utf-8"}
+            (
+                self.status not in _rejection_statuses
+                and headers.get(b"content-type") not in {b"application/json", b"application/json; charset=utf-8"}
+            )
             or headers.get(b"content-encoding", b"identity") != b"identity"
         ):
             raise ProviderError("provider_failed")

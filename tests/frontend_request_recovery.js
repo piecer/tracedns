@@ -11,6 +11,12 @@ async function drain(){ for(let i=0;i<50;i++) await Promise.resolve(); }
 function environment(transport){
   let now=0, next=0;
   const timers = new Map(), elements = new Map(), listeners = new Map();
+  // Like the browser, retain every listener for an event. Adding an independent
+  // settings owner must not replace the refresh owner's visibility callback.
+  const listen = (event, fn) => {
+    const previous = listeners.get(event);
+    listeners.set(event, (...args) => { if(previous) previous(...args); fn(...args); });
+  };
   const node = id => {
     if(!elements.has(id)) elements.set(id, {style:{},dataset:{},textContent:'',innerHTML:'retained',value:'',checked:false,
       children:[], setAttribute(){}, removeAttribute(){}, prepend(el){elements.set(el.id,el);},
@@ -28,8 +34,8 @@ function environment(transport){
     console, Date:class extends Date {static now(){return now;}},
     location:{href:'http://localhost/dns_frontend.html',origin:'http://localhost',pathname:'/dns_frontend.html',replace:p=>redirects.push(p)},
     document:{hidden:false,getElementById:node,querySelector:node,querySelectorAll:()=>[],createElement:()=>node(Symbol()),body:node('body'),
-      addEventListener:(event,fn)=>listeners.set(event,fn)},
-    addEventListener:(event,fn)=>listeners.set('window:'+event,fn),setInterval:()=>0,
+      addEventListener:listen},
+    addEventListener:(event,fn)=>listen('window:'+event,fn),setInterval:()=>0,
     setTimeout:(fn,ms)=>{timers.set(++next,{fn,at:now+ms});return next;},clearTimeout:id=>timers.delete(id),
     fetch:transport,
   });

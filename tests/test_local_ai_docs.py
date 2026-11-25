@@ -60,3 +60,28 @@ def test_bilingual_readmes_preserve_identical_executable_examples():
     assert english and english == korean
     for name in ('README.md', 'README.ko.md'):
         assert 'docs/LOCAL_AI.md' in (ROOT / name).read_text()
+
+
+def test_documented_compatible_settings_patch_is_pure_and_key_is_write_only(monkeypatch):
+    import socket
+    import jsonschema
+    from http_api.ai_settings_schema import REQUEST_SCHEMA
+    from local_ai.provider_settings import merge_settings, public_settings
+    monkeypatch.setattr(socket, 'socket', lambda *a, **k: pytest.fail('documentation caused network I/O'))
+    requests = [v for v in examples() if 'settings' in v]
+    assert len(requests) == 1
+    request = requests[0]
+    jsonschema.Draft202012Validator(REQUEST_SCHEMA).validate(request)
+    settings = merge_settings(None, request['settings'])
+    assert settings['provider'] == 'openai_compatible'
+    assert settings['endpoint_policy'] == 'public_https'
+    assert settings['token_limit_field'] == 'max_completion_tokens'
+    public = public_settings(settings)
+    assert public['configured']['api_key'] is True and 'api_key' not in public
+    assert settings['api_key'] not in json.dumps(public)
+    guide = (ROOT / 'docs/LOCAL_AI.md').read_text()
+    for token in ('/ai/settings', '#settings-ai', 'clear_fields', 'config_revision_conflict',
+                  'provider_auth_failed', 'provider_request_rejected', 'provider_rate_limited',
+                  'requested_model', 'reported_model', 'store=false'):
+        assert token in guide
+    assert 'settings are startup-only' not in guide

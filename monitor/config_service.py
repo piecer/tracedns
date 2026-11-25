@@ -92,15 +92,35 @@ class ConfigService:
         self.history_dir = history_dir
         self._writer = threading.Lock()
         self.delivery_runtime = None
+        self._storage_unknown = threading.Event()
+        self.local_ai = None
+
+    @property
+    def local_ai(self):
+        return self._local_ai
+
+    @local_ai.setter
+    def local_ai(self, owner):
+        # One shared monotonic fence, also checked at final AI publication.
+        # No fallible reconciliation/publication callback is needed to revoke.
+        if owner is not None:
+            owner._configuration_unknown = self._storage_unknown
+        self._local_ai = owner
+
+    def _require_storage(self):
+        if self._storage_unknown.is_set():
+            raise ConfigError('config_storage_unavailable', 503, code='config_storage_unavailable')
 
     def snapshot(self):
         with self.config_lock:
+            self._require_storage()
             config = persistent(self.shared_config)
             config['config_revision'] = self.shared_config.get('_config_revision', config.get('config_revision', 0))
             return config
 
     def catalog(self):
         with self.config_lock:
+            self._require_storage()
             config = persistent(self.shared_config)
             config['config_revision'] = self.shared_config.get('_config_revision', config.get('config_revision', 0))
             return catalog(config, decoder_registry.snapshot_registry())
@@ -259,11 +279,24 @@ class ConfigService:
         ) if reapplied & keys or any(effective(previous, key) != effective(merged, key) for key in keys))
 
     def commit(self, command, data, *, expected_revision):
+        if command == 'ai_settings':
+            if (type(data) is not dict or data.keys() - {'revision', 'settings', 'clear_fields'}
+                    or not {'revision', 'settings'} <= data.keys()
+                    or type(expected_revision) is not int or not 0 <= expected_revision <= 9007199254740991
+                    or type(data['revision']) is not int or data['revision'] != expected_revision):
+                raise ConfigError('invalid_request', code='invalid_request')
+            if not self.config_path:
+                raise ConfigError('config_storage_unavailable', 503, code='config_storage_unavailable')
         with self._writer:
             with self.config_lock:
+                self._require_storage()
                 revision = self.shared_config.get('_config_revision', self.shared_config.get('config_revision', 0))
+                if type(revision) is not int or not 0 <= revision <= 9007199254740991:
+                    raise ConfigError('config_revision_exhausted', 503, code='config_revision_exhausted')
                 if type(expected_revision) is not int or expected_revision != revision:
                     raise ConfigError('config revision conflict', 409, revision=revision)
+                if revision == 9007199254740991:
+                    raise ConfigError('config_revision_exhausted', 503, code='config_revision_exhausted')
                 candidate = persistent(self.shared_config)
                 removed = []
                 repair_channels = ()
@@ -271,6 +304,12 @@ class ConfigService:
                     removed = self._config_candidate(candidate, data)
                 elif command == 'settings':
                     repair_channels = self._settings_candidate(candidate, data)
+                elif command == 'ai_settings':
+                    if self.local_ai is not None:
+                        self.local_ai.check_configuration_admission()
+                    from local_ai.provider_settings import merge_settings
+                    candidate['local_ai'] = merge_settings(candidate.get('local_ai'), data['settings'],
+                                                           data.get('clear_fields', ()))
                 else:
                     self._decoder_candidate(candidate, command, data)
                 view = prepare_decoders(candidate)
@@ -288,15 +327,51 @@ class ConfigService:
                     except ValueError:
                         raise ConfigError('target history cleanup pending') from None
                 if self.config_path:
+                    unknown = object()
+                    preimage = expected = unknown
+                    try:
+                        preimage = config_manager.read_config_image(self.config_path)
+                    except Exception:
+                        pass
+                    try:
+                        expected = config_manager.config_image(candidate)
+                    except Exception:
+                        pass  # A successful ordinary write still needs no readback.
                     try:
                         config_manager.write_config(self.config_path, candidate)
                     except Exception:
-                        raise ConfigError('config save failed', 500, code='config_save_failed') from None
+                        observed = unknown
+                        try:
+                            observed = config_manager.read_config_image(self.config_path)
+                        except Exception:
+                            pass
+                        if expected is unknown or observed != expected:
+                            if preimage is not unknown and observed == preimage:
+                                raise ConfigError('config save failed', 500, code='config_save_failed') from None
+                            # Serialize the latch with final admission/publication
+                            # (config -> AI lock). Do not call cleanup, audit, or
+                            # another owner callback while either lock is held.
+                            owner = self.local_ai
+                            with (owner._lock if owner is not None else nullcontext()):
+                                self._storage_unknown.set()
+                            raise ConfigError('config_storage_unavailable', 503,
+                                              code='config_storage_unavailable') from None
                 warnings = []
+
+                def effect(callback, *args, **kwargs):
+                    try:
+                        return callback(*args, **kwargs)
+                    except Exception:
+                        if command != 'ai_settings':
+                            raise
+                        if 'ai_runtime_apply_failed' not in warnings:
+                            warnings.append('ai_runtime_apply_failed')
+                        return None
+
                 if self.read_model is not None:
-                    self.read_model.invalidate(hard=True)
+                    effect(self.read_model.invalidate, hard=True)
                 if self.state_repository is not None:
-                    warnings.extend(self.state_repository.configure(candidate, removed) or [])
+                    warnings.extend(effect(self.state_repository.configure, candidate, removed) or [])
                 elif removed and callable(self.purge):
                     try:
                         self.purge(self.current_results, self.history, self.history_dir, removed)
@@ -307,18 +382,62 @@ class ConfigService:
                 self.shared_config.update(candidate)
                 self.shared_config.update(private)
                 self.shared_config['_config_revision'] = revision + 1
+                if command == 'ai_settings' and self.local_ai is not None:
+                    try:
+                        self.local_ai.configuration_committed(candidate['local_ai'], revision + 1)
+                    except Exception:
+                        # The file and revision are already committed. Fence
+                        # admission before unlocking, even if ordinary owner
+                        # publication failed before its first state change.
+                        self.local_ai.configuration_publication_failed(candidate['local_ai'], revision + 1)
+                        if 'ai_runtime_apply_failed' not in warnings:
+                            warnings.append('ai_runtime_apply_failed')
                 if self.delivery_runtime is not None:
-                    warnings.extend(self.delivery_runtime.configuration_committed(candidate, repair_channels))
-                decoder_registry.publish(view)
+                    warnings.extend(effect(self.delivery_runtime.configuration_committed, candidate, repair_channels) or [])
+                effect(decoder_registry.publish, view)
                 condition = self.shared_config.get('_monitor_condition')
                 if condition is not None:
-                    condition.notify_all()
+                    effect(condition.notify_all)
                 if self.read_model is not None:
-                    self.read_model.invalidate(hard=True)
+                    effect(self.read_model.invalidate, hard=True)
                 result = {'status': 'ok', 'revision': revision + 1,
                           'catalog': catalog(candidate, view), 'config': deepcopy(candidate), 'warnings': warnings}
             if self.delivery_runtime is not None:
-                result['warnings'].extend(self.delivery_runtime.apply_configuration(candidate))
+                result['warnings'].extend(effect(self.delivery_runtime.apply_configuration, candidate) or [])
+            if command == 'ai_settings':
+                result['runtime'] = {'applied': False, 'state': 'unavailable'}
+                try:
+                    if self.local_ai is not None:
+                        if warnings:
+                            self.local_ai.configuration_apply_failed()
+                        else:
+                            self.local_ai.apply_configuration(candidate['local_ai'], revision + 1)
+                        result['runtime'] = self.local_ai.runtime()
+                except Exception:
+                    if self.local_ai is not None:
+                        try:
+                            self.local_ai.configuration_apply_failed()
+                        except Exception:
+                            pass
+                result['warnings'] = []  # AI receipts have their own closed warning grammar.
+                if not result['runtime']['applied']:
+                    result['warnings'].append('ai_runtime_apply_failed')
+                elif result['runtime']['state'] == 'unsettled':
+                    result['warnings'].append('ai_provider_unsettled')
+                elif result['runtime']['state'] == 'draining':
+                    result['warnings'].append('ai_previous_call_draining')
+                if self.read_model is not None:
+                    from http_api.ai_settings import encode_receipt
+                    from local_ai.provider_settings import public_settings
+                    try:
+                        result['ai_settings_wire'] = encode_receipt(self, {
+                            'status': 'ok', 'revision': revision + 1,
+                            'settings': public_settings(candidate['local_ai']),
+                            'runtime': result['runtime'], 'warnings': result['warnings']}, post=True)
+                    except Exception:
+                        # Keep committed truth, but never re-project an old
+                        # credential-bearing candidate against a later key set.
+                        result['ai_settings_wire'] = None
             if command == 'settings':
                 result['alerts'] = deepcopy(candidate['alerts'])
                 if self.delivery_runtime is None:
@@ -357,9 +476,9 @@ def commit_request(ctx, handler, command, data):
     from http_api.utils import send_json
     service = get_config_service(ctx)
     expected = data.get('revision')
-    if getattr(handler, 'principal', None) is None:
-        expected = service.snapshot()['config_revision']
     try:
+        if getattr(handler, 'principal', None) is None:
+            expected = service.snapshot()['config_revision']
         return service.commit(command, data, expected_revision=expected)
     except ConfigError as exc:
         send_json(handler, exc.payload, exc.status)

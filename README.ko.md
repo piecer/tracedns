@@ -92,7 +92,7 @@ Teams, MISP, VirusTotal 연동은 선택 사항입니다. 초기 설정에는 �
 | VirusTotal | Settings에서 VT API 키를 설정합니다. 별도의 VT SDK는 필요하지 않습니다. |
 | Teams / MISP | Settings에서 전송 대상을 설정합니다. PyMISP는 기본 의존성에 포함되어 있습니다. |
 | GeoIP 국가 정보 보완 | `GEOIP_MMDB_PATH` 또는 설정의 `geoip_mmdb_path`로 MaxMind `.mmdb` 파일을 지정합니다. 기본 의존성에 `geoip2`가 포함되어 있습니다. |
-| 실험적 로컬 AI | 기본 비활성화입니다. 명시적으로 검증한 로컬 Ollama 모델/프로필과 정확한 digest가 필요합니다. 범위·검증 상태·한도는 [로컬 AI 보조](docs/LOCAL_AI.md)를 참고하세요. |
+| 실험적 AI | 기본 비활성화입니다. 관리자가 Settings → AI provider에서 네이티브 Ollama 또는 OpenAI-compatible Chat Completions를 선택하고 URL·모델·발신 Bearer 키를 설정합니다. Ollama는 검증한 프로필·정확한 digest를 유지합니다. 전송 대상·개인정보·검증 한도는 [AI 보조](docs/LOCAL_AI.md)를 참고하세요. 저장은 연결 검사가 아닙니다. |
 
 이미 Python 3.10에서 TraceDNS를 실행 중이라면, 전환 전에 별도의 Python 3.11+
 환경을 준비하고 검증하세요. 기존 환경과 일관된 상태 백업을 보관하세요.
@@ -249,7 +249,7 @@ TraceDNS는 관측과 조사를 위한 도구입니다. 엔드포인트 보호 �
   리소스 제한으로 관측에 빈틈이 생길 수 있습니다. 특히 실패한 DHT 조회 시도는
   마지막으로 확인된 서명 레코드와 별도로 보관됩니다.
 - **AI 보조는 탐지기가 아닙니다.** API와 `SKILL.md`는 외부 도구를 지원합니다.
-  별도의 [로컬 AI 보조](docs/LOCAL_AI.md)는 기본 비활성화이며 디코더 후보를
+  별도의 [AI 보조](docs/LOCAL_AI.md)는 기본 비활성화이며 디코더 후보를
   제안하거나 선택한 근거를 설명합니다. 결정론적 판정을 바꾸거나 변경을 자동
   적용하지 않습니다. 검증 상태와 운영 한도는 해당 안내에 명시합니다.
 
@@ -302,7 +302,7 @@ TraceDNS에는 로컬 계정 데이터베이스가 필요합니다. 서버 콘�
 | **Domain Verify** | 모니터링 전에 대상을 확인하고 디코딩 결과를 비교합니다. |
 | **Domain Analysis** | 현재 페이지에 있는 모니터링 도메인의 IP·ASN·국가 통계와 각 도메인의 NXDOMAIN 수명 주기 상태를 확인합니다. |
 | **Botnet IP Analysis** | IP 사이의 관계를 조사합니다. 인프라를 공유하거나 같은 클러스터에 속한다고 해서 감염이 증명되는 것은 아닙니다. |
-| **Settings** | 대상, 리졸버, 조회 주기, 연동, 사용자 정의 디코더를 관리합니다. |
+| **Settings** | 대상, 리졸버, 조회 주기, 연동, 사용자 정의 디코더 및 관리자 AI 제공자 설정을 관리합니다. |
 
 VirusTotal 요청에는 제공되는 페이지·요청 예산 제어가 적용됩니다. VT 워커나
 요청 예산을 늘릴 때는 API 할당량을 고려하세요. `max_workers` 또는
@@ -602,7 +602,7 @@ bash scripts/ci/loopback_only.sh make botnet-coverage
 | [배포와 계정](docs/security/deployment.md) | HTTPS, 역할, 감사, 계정 복구, 백업. |
 | [REST API](docs/API.md) / [OpenAPI](docs/openapi.json) | 인증, 요청, 응답 계약, 외부 클라이언트. |
 | [AI 클라이언트 지침](SKILL.md) | 외부 에이전트가 API를 안전하게 사용하는 방법. 내장 LLM 분석 엔진이 아닙니다. |
-| [실험적 로컬 AI 보조](docs/LOCAL_AI.md) | 명시적 디코더 후보 생성, 선택 pair·캐시 진단 설명, 시작 정책, 개인정보 보호, 소유권, 종료 미확인 추론 복구. |
+| [실험적 AI 보조](docs/LOCAL_AI.md) | 네이티브 Ollama/호환 제공자 선택, UI 실시간 설정·발신 Bearer, 명시적 후보·설명, 개인정보 보호, 소유권, 종료 미확인 추론 복구. |
 | [DHT 추적](docs/DHT_TRACKING.md) | 공개 키 대상, 서명 레코드, 상태 보관, 조회 제한. |
 | [RPC 추적](docs/RPC_TRACKING.md) | Polygon 설정 추적과 오프라인 디코더 예시. |
 | [화면 사용 안내](docs/VIEW_PRESENTATION.md) | 결과·상세·고급 작업 흐름, 수치 범위, 초안 소유권, 취소와 UI 제한. |

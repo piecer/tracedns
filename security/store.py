@@ -8,6 +8,8 @@ import sqlite3
 import time
 from contextlib import contextmanager
 
+from local_ai.provider_outcomes import HTTP_REJECTION_CODES
+
 
 # AI operations have a short lock wait and a cooperative SQLite VM work budget.
 # These do not promise a hard deadline for filesystem syscalls or fsync.
@@ -173,11 +175,13 @@ class SecurityStore:
     @staticmethod
     def _llm_provider_state(db):
         # Insertion order, not wall-clock time, defines the latest reservation.
-        row = db.execute("SELECT job_id,outcome FROM audit_events WHERE action='llm.provider' "
+        row = db.execute("SELECT job_id,outcome,status FROM audit_events WHERE action='llm.provider' "
                          "ORDER BY rowid DESC LIMIT 1").fetchone()
         if row is None:
             return {'blocked': False, 'job_id': None, 'outcome': 'absent'}
-        return {'blocked': row['outcome'] not in ('settled', 'operator_confirmed_stopped'),
+        rejected = (row['outcome'] == 'http_rejected' and type(row['status']) is int
+                    and row['status'] in HTTP_REJECTION_CODES)
+        return {'blocked': not rejected and row['outcome'] not in ('settled', 'operator_confirmed_stopped'),
                 'job_id': row['job_id'], 'outcome': row['outcome']}
 
     def llm_provider_state(self):
@@ -219,6 +223,23 @@ class SecurityStore:
             if not state['blocked'] or state['job_id'] != job_id:
                 return False
             self._audit(db, actor, 'llm.provider', outcome='settled', job_id=job_id)
+            return True
+
+    def reject_llm_provider(self, job_id, *, actor=None, http_status):
+        """Record a complete bounded rejection from the configured endpoint.
+
+        Only a trusted transport receipt qualifies, not a status line, exception,
+        timeout, settings edit or operator assertion. No upstream body is kept.
+        """
+        self._llm_job_id(job_id)
+        if type(http_status) is not int or http_status not in HTTP_REJECTION_CODES:
+            raise SecurityError('Invalid provider rejection')
+        with self._llm_db() as db:
+            state = self._llm_provider_state(db)
+            if not state['blocked'] or state['job_id'] != job_id:
+                return False
+            self._audit(db, actor, 'llm.provider', outcome='http_rejected',
+                        status=http_status, job_id=job_id)
             return True
 
     def acknowledge_llm_provider_stopped(self, job_id, *, tracedns_stopped, provider_stopped):

@@ -134,10 +134,51 @@ STATUS_SCHEMA = closed({'enabled': {'type': 'boolean'}, 'accepting': {'type': 'b
 # schemas close the result envelope and the new sidecars; they do not replace
 # the bound model-output schemas in local_ai.contracts or verifier semantics.
 RETAINED_OBJECT = {'type': 'object', 'description': 'Retained task-validated payload; existing contract unchanged.'}
+
+
+def _int64_decimal_schema():
+    # A string counter must also fit int64 in ordinary JSON Schema validators,
+    # not just in consumers implementing an optional format/x-* annotation.
+    maximum = str((1 << 63) - 1)
+    choices = ['0', '[1-9][0-9]{0,17}', maximum]
+    for index, digit in enumerate(maximum):
+        lower = 1 if index == 0 else 0
+        if int(digit) > lower:
+            choices.append(maximum[:index] + f'[{lower}-{int(digit) - 1}]'
+                           + '[0-9]{' + str(len(maximum) - index - 1) + '}')
+    return {'type': 'string', 'minLength': 1, 'maxLength': 19,
+            'pattern': '^(?:' + '|'.join(choices) + r')(?![\s\S])'}
+
+
+MODEL_COUNTER = _int64_decimal_schema()
+NATIVE_MODEL_METADATA = {**closed({
+    'model': {'type': 'string', 'minLength': 1, 'maxLength': 256, 'x-max-utf8-bytes': 256},
+    'model_digest': SHA256,
+    'done_reason': {'enum': ['stop', 'length']},
+    **{key: MODEL_COUNTER for key in ('eval_count', 'prompt_eval_count', 'total_duration',
+                                     'load_duration', 'prompt_eval_duration', 'eval_duration')},
+}), 'required': ['model', 'model_digest']}
+COMPATIBLE_MODEL_NAME = {'type': 'string', 'minLength': 1, 'maxLength': 256,
+                         'pattern': r'^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}(?![\s\S])'}
+COMPATIBLE_MODEL_METADATA = {**closed({
+    'provider': {'const': 'openai_compatible'},
+    'requested_model': COMPATIBLE_MODEL_NAME, 'reported_model': COMPATIBLE_MODEL_NAME,
+    'finish_reason': {'enum': ['stop', 'length', 'content_filter']},
+    'response_format': {'const': 'json_object'},
+    **{key: MODEL_COUNTER for key in ('prompt_tokens', 'completion_tokens', 'total_tokens')},
+}), 'required': ['provider', 'requested_model', 'reported_model', 'finish_reason', 'response_format']}
+MODEL_METADATA_SCHEMA = {
+    'oneOf': [NATIVE_MODEL_METADATA, COMPATIBLE_MODEL_METADATA],
+    'description': 'Positive legacy native metadata or explicit OpenAI-compatible metadata, never a fallback '
+                   'for malformed provider fields. Requested and reported model names may differ. '
+                   'Compatible APIs do not claim native digests or timings. Missing usage is unobserved, '
+                   'not zero; observed counters are decimal int64 strings. If all three compatible usage '
+                   'counters are present, total must equal prompt plus completion (runtime validation).',
+}
 RESULT_COMMON = {
     'snapshot_digest': SHA256,
     'source_revision': {'type': 'integer', 'minimum': 0},
-    'model': RETAINED_OBJECT,
+    'model': MODEL_METADATA_SCHEMA,
 }
 DECODER_SNAPSHOT = closed({
     'version': VERSION, 'kind': {'type': 'string', 'const': 'decoder_suggest'},
@@ -150,7 +191,7 @@ DECODER_SNAPSHOT.update({'x-max-encoded-bytes': MAX_SOURCE_BYTES,
 DECODER_RESULT_SCHEMA = closed({
     **RESULT_COMMON, 'snapshot': DECODER_SNAPSHOT,
     'catalog': RETAINED_OBJECT,
-    'model': {'anyOf': [{'type': 'null'}, RETAINED_OBJECT]},
+    'model': {'anyOf': [{'type': 'null'}, MODEL_METADATA_SCHEMA]},
     'generated': {'anyOf': [{'type': 'null'}, RETAINED_OBJECT]},
     'proposal': {'anyOf': [{'type': 'null'}, RETAINED_OBJECT]},
     'model_input': {'anyOf': [{'type': 'null'}, MODEL_INPUT_SCHEMA]},

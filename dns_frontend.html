@@ -65,7 +65,7 @@
     <button id="diagnosticsDownload" type="button" disabled>Download sanitized JSON</button>
   </div>
   <p id="diagnosticsStatus" role="status" aria-live="polite" aria-atomic="true">Unknown — read diagnostics explicitly.</p>
-  <button id="deliveryLocalAI" type="button">Local AI assistance · 로컬 AI 도움</button>
+  <button id="deliveryLocalAI" type="button">AI assistance · AI 도움</button>
   <div id="deliveryLocalAIPanel"></div>
   <details id="diagnosticsDisclosure">
     <summary>Diagnostic evidence and next checks</summary>
@@ -96,6 +96,7 @@
     <button id="settingsTabDomains" class="active">Domain settings</button>
     <button id="settingsTabCustom" data-access="admin">Custom decoders</button>
     <button id="settingsTabAlerts" data-access="admin">Alert integrations</button>
+    <button id="settingsTabAI" type="button" data-access="admin" aria-controls="aiSettingsSection" aria-pressed="false">AI provider · AI 제공자</button>
   </div>
   <div id="domainSettingsSection">
     <div class="domain-settings-heading">
@@ -177,7 +178,7 @@
       <button id="reloadCustom">Reload catalog</button>
     </div>
     <div id="customPreviewResult" style="background:#fff7e6;padding:15px;margin-top:15px;white-space:pre-wrap;font-family:monospace;border-radius:8px;border:2px solid #ffeaa7;"></div>
-    <button id="decoderLocalAI" type="button">Local AI assistance · 로컬 AI 도움</button>
+    <button id="decoderLocalAI" type="button">AI assistance · AI 도움</button>
     <div id="decoderLocalAIPanel"></div>
     <h5 style="margin-top:15px;color:#1b5970;">Registered Custom Decoders</h5>
     <div id="customList" style="border:2px solid #e9ecef;padding:15px;max-height:220px;overflow:auto;background:#f8f9fa;border-radius:8px;"></div>
@@ -226,6 +227,41 @@
       <span id="alertSettingsStatus" class="settings-status" role="status" aria-live="polite"></span>
     </div>
   </div>
+  <section id="aiSettingsSection" data-access="admin" style="display:none" aria-labelledby="aiSettingsHeading">
+    <h4 id="aiSettingsHeading">AI provider settings · AI 제공자 설정</h4>
+    <p id="aiSettingsHelp" class="hint">Save stores local configuration only: no connectivity test or inference. Explicit AI actions may send selected, secret-checked evidence to the configured remote service; holdouts are never transmitted. Remote model quality is unverified. In-flight work cannot be recalled; changing settings does not clear uncertain-request quarantine.<br>저장은 로컬 설정만 변경하며 연결 검사나 추론을 하지 않습니다. 명시적인 AI 실행 시 선택되고 비밀 검사를 통과한 근거가 원격 서비스로 전송될 수 있으며 홀드아웃은 전송하지 않습니다. 원격 모델 품질은 검증되지 않았습니다. 진행 중 요청은 회수할 수 없고 불확실한 요청의 격리는 유지됩니다.</p>
+    <form id="aiSettingsForm" method="post" action="/ai/settings" autocomplete="off" aria-describedby="aiSettingsHelp">
+      <fieldset id="aiSettingsFields" disabled>
+        <legend>Saved provider · 저장된 제공자</legend>
+        <label class="ai-check"><input id="aiEnabled" type="checkbox"> Enable AI · AI 활성화</label>
+        <div class="ai-settings-grid">
+          <label for="aiProvider">Provider · 제공자
+            <select id="aiProvider"><option value="ollama">Ollama (local · 로컬)</option><option value="openai_compatible">OpenAI-compatible</option></select>
+          </label>
+          <label for="aiBaseURL">Base URL · 기본 URL
+            <input id="aiBaseURL" type="text" maxlength="1024" spellcheck="false" aria-describedby="aiURLHelp">
+          </label>
+          <label for="aiModel">Model · 모델<input id="aiModel" type="text" maxlength="256" spellcheck="false"></label>
+          <label id="aiNativeFields" for="aiModelDigest">Ollama model digest · 모델 다이제스트<input id="aiModelDigest" type="text" maxlength="64" spellcheck="false"></label>
+        </div>
+        <p id="aiURLHelp" class="hint">Use the exact base prefix, not /chat/completions. Public HTTPS requires globally routable addresses; explicit loopback permits HTTP/HTTPS localhost or loopback literals only. No private LAN, self-signed TLS or proxies. Ollama retains its local tagged model and digest.<br>정확한 기본 접두 경로를 입력하세요. 공개 HTTPS 또는 명시적인 루프백만 허용됩니다. 사설 LAN, 자체 서명 TLS 및 프록시는 지원하지 않습니다.</p>
+        <div id="aiRemoteFields" hidden>
+          <div class="ai-settings-grid">
+            <label for="aiEndpointPolicy">Endpoint policy · 엔드포인트 정책<select id="aiEndpointPolicy"><option value="public_https">Public HTTPS · 공개 HTTPS</option><option value="loopback">Explicit loopback · 명시적 루프백</option></select></label>
+            <label for="aiTokenLimitField">Token limit field · 토큰 제한 필드<select id="aiTokenLimitField"><option value="max_completion_tokens">max_completion_tokens</option><option value="max_tokens">max_tokens</option></select></label>
+            <label for="aiApiKey">Replacement API key · 교체 API 키<input id="aiApiKey" type="password" maxlength="4096" autocomplete="off" spellcheck="false" aria-describedby="aiKeyHelp aiKeyConfigured"></label>
+          </div>
+        </div>
+        <p id="aiKeyConfigured">Key presence unknown · 키 설정 여부 미확인</p>
+        <label class="ai-check"><input id="aiClearKey" type="checkbox"> Clear configured key on Save · 저장 시 기존 키 삭제</label>
+        <p id="aiKeyHelp" class="hint">Blank keeps the key only for the same provider, exact URL and endpoint policy. Changing that destination requires a replacement or explicit Clear. Public HTTPS requires a key when enabled; loopback can be anonymous. A saved key is never displayed.<br>빈 입력은 동일한 제공자·URL·정책에서만 기존 키를 유지합니다. 대상 변경 시 새 키 또는 명시적 삭제가 필요합니다. 저장된 키는 표시하지 않습니다.</p>
+        <button id="saveAISettings" type="submit" disabled>Save AI settings · AI 설정 저장</button>
+      </fieldset>
+      <button id="loadAISettings" type="button" disabled>Load saved AI settings · 저장된 AI 설정 불러오기</button>
+    </form>
+    <p id="aiSettingsRuntime" role="status" aria-live="polite">Local setup unknown · 로컬 적용 상태 미확인</p>
+    <p id="aiSettingsStatus" role="status" aria-live="polite" aria-atomic="true">Not loaded · 불러오지 않음</p>
+  </section>
   <pre id="log"></pre>
 </div>
 

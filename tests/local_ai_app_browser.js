@@ -123,7 +123,7 @@ async function decoderSamples(page, generate=true) {
   await validation.getByLabel('Raw data',{exact:true}).fill('MTk4LjUxLjEwMC4xNw==');
   await validation.getByLabel('Expected IPv4 (comma or space separated)',{exact:true}).fill('198.51.100.17');
   await validation.getByLabel('Usage',{exact:true}).selectOption('validation');
-  if(generate) await panel(page).getByLabel('Generate new candidates (uses local model)',{exact:true}).check();
+  if(generate) await panel(page).getByLabel('Generate new candidates (uses configured model)',{exact:true}).check();
 }
 async function candidate(page, name) {
   const found=[];
@@ -210,7 +210,7 @@ cases['decoder-max-excerpt'] = async page => {
   await holdout.getByLabel('Raw data',{exact:true}).fill('MTk4LjUxLjEwMC4xNw==');
   await holdout.getByLabel('Expected IPv4 (comma or space separated)',{exact:true}).fill('198.51.100.17');
   await holdout.getByLabel('Usage',{exact:true}).selectOption('validation');
-  await panel(page).getByLabel('Generate new candidates (uses local model)',{exact:true}).check();
+  await panel(page).getByLabel('Generate new candidates (uses configured model)',{exact:true}).check();
   await run(page);
   const accepted=await completed(page), input=accepted.model_input;
   assert.deepEqual(accepted.snapshot,snapshot);
@@ -391,7 +391,7 @@ cases['manual-check'] = async page => {
 cases['result-order'] = async page => {
   await page.setViewportSize({width:360,height:800});
   await deliveryOpen(page);await run(page);await completed(page);
-  await panel(page).getByRole('heading',{name:'Local AI assistance',exact:true}).evaluate(el=>el.scrollIntoView({block:'start'}));
+  await panel(page).getByRole('heading',{name:'AI assistance',exact:true}).evaluate(el=>el.scrollIntoView({block:'start'}));
   const summary=panel(page).locator('[data-ai="server-summary"]');
   await expect(summary).toBeInViewport();
   await expect(summary.locator('[data-claim-code="delivery_overview"]')).toBeInViewport();
@@ -404,10 +404,10 @@ cases['result-order'] = async page => {
   await panel(page).locator('[data-ai="provenance"] summary').click();
   await expect(panel(page).locator('[data-ai="provenance"] pre')).toHaveCount(0);
   assert.equal((await measure(page,'metadata closed')).component,before.component);
-  await panel(page).getByRole('heading',{name:'Local AI assistance',exact:true}).evaluate(el=>el.scrollIntoView({block:'start'}));
+  await panel(page).getByRole('heading',{name:'AI assistance',exact:true}).evaluate(el=>el.scrollIntoView({block:'start'}));
   await page.screenshot({path:path.join(output,'result-first-narrow.png')});
 };
-for(const [mode,label] of [['unavailable','Security or audit storage'],['stopped','Local assistance is stopped'],['unsettled','Provider settlement is unknown'],['disabled','Local AI is disabled']]) {
+for(const [mode,label] of [['unavailable','Security or audit storage'],['stopped','AI assistance is stopped'],['unsettled','Provider settlement is unknown'],['disabled','AI assistance is disabled']]) {
   cases[mode]=async page=>{
     if(mode!=='disabled')await configure('availability',mode);
     await deliveryOpen(page);await run(page);

@@ -7,6 +7,18 @@
   const auth = window.TraceAuth = {user: null, accessInvalidated: false};
   const messages = new Map();
   const invalidationListeners = new Set();
+  const readyListeners = new Set();
+  function notifyReady(listener){
+    if(!readyListeners.has(listener) || !auth.user || auth.accessInvalidated) return;
+    try { Promise.resolve(listener(auth.user)).catch(() => {}); }
+    catch (_) { /* A subscriber cannot fail authentication or another owner. */ }
+  }
+  // Observe the existing auth retry; subscribing never initiates another request.
+  auth.onReady = listener => {
+    readyListeners.add(listener);
+    if(auth.user && !auth.accessInvalidated) Promise.resolve().then(() => notifyReady(listener));
+    return () => readyListeners.delete(listener);
+  };
   auth.onInvalidated = listener => { invalidationListeners.add(listener); return () => invalidationListeners.delete(listener); };
   function invalidate(status){
     auth.accessInvalidated = true;
@@ -85,6 +97,7 @@
       auth.accessInvalidated = false;
       if (auth.user && auth.user.must_change_password && location.pathname !== '/account.html') location.replace('/account.html');
       failures = 0;
+      for(const listener of [...readyListeners]) notifyReady(listener);
       return auth.user;
     }).catch(error => {
       csrf = ''; auth.user = null; authFailed = true;

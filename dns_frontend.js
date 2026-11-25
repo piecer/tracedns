@@ -306,10 +306,10 @@ document.getElementById('menuValidIPs').onclick = ()=> showSection('validips');
 
 function openViewAnchor(){
   const hash = window.location.hash;
-  if(hash === '#settings-alerts'){
+  if(['#settings-alerts', '#settings-ai'].includes(hash)){
     showSection('settings');
-    showSettingsTab('alerts');
-    document.getElementById('settingsTabAlerts').focus();
+    showSettingsTab(hash === '#settings-ai' ? 'ai' : 'alerts');
+    document.getElementById(hash === '#settings-ai' ? 'settingsTabAI' : 'settingsTabAlerts').focus();
   }
   const ids = hash === '#deliveryHealth' ? ['deliveryDisclosure','deliveryHeading']
     : hash === '#deliveryDiagnostics' ? ['deliveryOperations','diagnosticsHeading'] : null;
@@ -3364,20 +3364,235 @@ function touchOverviewTs(section){
   updateOverviewPanel();
 }
 
+// AI secrets never enter the generic settings draft serializer.
+const aiSettingsPanel = (() => {
+  const el = id => document.getElementById(id);
+  const form = el('aiSettingsForm');
+  if(!form) return {open() {}};
+  let opened = false, aiSettingsRevision = null, loadedSettings = null;
+  let aiDraftGeneration = 0, keyEditGeneration = 0, writing = false, needsLoad = false;
+  let aiReadOwner = 0, aiWriteOwner = 0, readController = null, writeController = null;
+  let pageStopped = false, accessLost = false;
+  let stopAuthRecovery = () => {};
+  const draftStamp = () => JSON.stringify([aiSettingsRevision, aiDraftGeneration, keyEditGeneration,
+    el('aiEnabled').checked, el('aiClearKey').checked,
+    ...['aiProvider','aiBaseURL','aiModel','aiModelDigest','aiEndpointPolicy','aiTokenLimitField'].map(id => el(id).value)]);
+  const clearKey = () => { el('aiApiKey').value = ''; keyEditGeneration++; };
+  const changed = event => {
+    if(!event.target.matches('input, select')) return;
+    aiDraftGeneration++;
+    if(event.target.id === 'aiApiKey') keyEditGeneration++;
+  };
+  form.addEventListener('input', changed);
+  form.addEventListener('change', changed);
+  const allowed = () => !pageStopped && !accessLost && form.isConnected && window.TraceAuth?.user?.role === 'admin' && !window.TraceAuth.accessInvalidated && !window.TraceAuth.user.must_change_password;
+  const status = text => { el('aiSettingsStatus').textContent = text; };
+  function providerFields(){
+    const remote = el('aiProvider').value === 'openai_compatible';
+    el('aiRemoteFields').hidden = !remote;
+    el('aiNativeFields').hidden = remote;
+  }
+  const exact = (value, names) => value !== null && typeof value === 'object' && !Array.isArray(value) &&
+    Object.keys(value).length === names.length && names.every(name => Object.hasOwn(value, name));
+  const ascii = (value, limit) => typeof value === 'string' && value.length <= limit && /^[\x21-\x7e]*$/.test(value);
+  const warningCodes = ['ai_runtime_apply_failed','ai_previous_call_draining','ai_provider_unsettled'];
+  function validateReceipt(receipt, post = false){
+    const invalid = () => { throw new Error('Invalid AI settings receipt'); };
+    if(!exact(receipt, post ? ['revision','settings','runtime','status','warnings'] : ['revision','settings','runtime']) ||
+       !Number.isSafeInteger(receipt.revision) || receipt.revision < 0) invalid();
+    const s = receipt.settings, runtime = receipt.runtime;
+    if(!s || !['ollama','openai_compatible'].includes(s.provider)) invalid();
+    const native = s.provider === 'ollama';
+    if(!exact(s, ['enabled','provider','base_url','model','configured', ...(native ? ['model_digest'] : ['endpoint_policy','token_limit_field'])]) ||
+       typeof s.enabled !== 'boolean' || !ascii(s.base_url,1024) || !ascii(s.model,256) ||
+       !exact(s.configured,['api_key']) || typeof s.configured.api_key !== 'boolean' ||
+       (s.enabled && (!s.base_url || !s.model))) invalid();
+    if(native){
+      if(!ascii(s.model_digest,64) || (s.model_digest && !/^[0-9a-f]{64}$/.test(s.model_digest)) ||
+         (s.enabled && !s.model_digest) || s.configured.api_key) invalid();
+    } else if(!['public_https','loopback'].includes(s.endpoint_policy) ||
+       !['max_completion_tokens','max_tokens'].includes(s.token_limit_field) ||
+       (s.enabled && s.endpoint_policy === 'public_https' && !s.configured.api_key)) invalid();
+    if(!exact(runtime,['applied','state']) || typeof runtime.applied !== 'boolean' ||
+       !['disabled','ready','draining','unsettled','unavailable','stopped'].includes(runtime.state)) invalid();
+    if(post && (receipt.status !== 'ok' || !Array.isArray(receipt.warnings) ||
+       receipt.warnings.length > warningCodes.length || new Set(receipt.warnings).size !== receipt.warnings.length ||
+       !receipt.warnings.every(code => warningCodes.includes(code)))) invalid();
+    return receipt;
+  }
+  function runtimeStatus(receipt){
+    el('aiSettingsRuntime').textContent = `Local setup: ${receipt.runtime.state}; applied: ${receipt.runtime.applied}. ` +
+      'This is not a connection test or model-quality assessment · 연결 검사나 모델 품질 평가가 아닌 로컬 적용 상태입니다.' +
+      (receipt.warnings?.length ? ' Warnings · 경고: ' + receipt.warnings.join(', ') : '');
+  }
+  function apply(receipt){
+    runtimeStatus(receipt);
+    const s = receipt.settings;
+    aiSettingsRevision = receipt.revision;
+    loadedSettings = s;
+    el('aiEnabled').checked = s.enabled;
+    el('aiProvider').value = s.provider;
+    el('aiBaseURL').value = s.base_url;
+    el('aiModel').value = s.model;
+    el('aiModelDigest').value = s.model_digest || '';
+    el('aiEndpointPolicy').value = s.endpoint_policy || 'public_https';
+    el('aiTokenLimitField').value = s.token_limit_field || 'max_completion_tokens';
+    clearKey();
+    needsLoad = false;
+    el('aiClearKey').checked = false;
+    el('aiKeyConfigured').textContent = s.configured.api_key ? 'Key configured · 키 설정됨' : 'Key not configured · 키 미설정';
+    el('aiSettingsFields').disabled = false;
+    el('saveAISettings').disabled = false;
+    providerFields();
+  }
+  el('aiProvider').addEventListener('change', () => { clearKey(); providerFields(); });
+  function retire(permanent = false){
+    stopAuthRecovery();
+    accessLost = accessLost || permanent;
+    pageStopped = true;
+    ++aiReadOwner; ++aiWriteOwner;
+    readController?.abort(); writeController?.abort();
+    clearKey();
+    aiSettingsRevision = null; loadedSettings = null; needsLoad = true; writing = false;
+    el('aiSettingsFields').disabled = true;
+    el('saveAISettings').disabled = el('loadAISettings').disabled = true;
+    status('Access or page changed; key cleared. Explicitly Load to review · 접근 또는 페이지 변경; 키 삭제됨. 다시 불러오세요.');
+  }
+  function resume(){
+    pageStopped = false;
+    el('loadAISettings').disabled = !allowed();
+  }
+  window.TraceAuth?.onInvalidated?.(() => retire(true));
+  window.addEventListener('pagehide', () => retire());
+  window.addEventListener('pageshow', resume);
+  document.addEventListener('visibilitychange', () => document.hidden ? retire() : resume());
+  document.addEventListener('click', event => { if(event.target.closest('#logout')) retire(true); }, true);
+  form.addEventListener('submit', event => { event.preventDefault(); save(); });
+  async function save(){
+    if(!allowed() || aiSettingsRevision === null || writing || needsLoad) return;
+    const settings = {enabled:el('aiEnabled').checked, provider:el('aiProvider').value,
+      base_url:el('aiBaseURL').value, model:el('aiModel').value};
+    if(settings.provider === 'ollama') settings.model_digest = el('aiModelDigest').value;
+    else {
+      settings.endpoint_policy = el('aiEndpointPolicy').value;
+      settings.token_limit_field = el('aiTokenLimitField').value;
+      if(el('aiApiKey').value.trim()) settings.api_key = el('aiApiKey').value;
+    }
+    const payload = {revision:aiSettingsRevision, settings};
+    if(el('aiClearKey').checked) payload.clear_fields = ['api_key'];
+    if(loadedSettings.configured.api_key && ['provider','base_url','endpoint_policy'].some(name => settings[name] !== loadedSettings[name]) && !settings.api_key && !payload.clear_fields){
+      status('Destination changed: supply a replacement key or explicitly Clear · 대상 변경: 새 키 또는 명시적 삭제가 필요합니다.');
+      return;
+    }
+    const submittedDraft = draftStamp(), submittedKey = keyEditGeneration;
+    const expected = {...settings, configured:{api_key:settings.provider === 'openai_compatible' &&
+      (settings.api_key ? true : payload.clear_fields ? false : loadedSettings.configured.api_key)}};
+    delete expected.api_key; // Receipt commitment contains no credential or credential hash.
+    const owner = ++aiWriteOwner;
+    writeController = new AbortController();
+    const signal = writeController.signal;
+    const current = () => owner === aiWriteOwner && !signal.aborted && allowed();
+    writing = true;
+    ++aiReadOwner;
+    readController?.abort();
+    el('loadAISettings').disabled = true;
+    el('saveAISettings').disabled = true;
+    retireLocalAI(); // Even a lost receipt may follow a committed configuration change.
+    status('Saving local settings… · 로컬 설정 저장 중…');
+    try {
+      const receipt = await window.TraceAuth.readJSON('/ai/settings', {method:'POST', cache:'no-store', signal,
+        headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+      if(!current()) return;
+      validateReceipt(receipt, true);
+      if(receipt.revision !== payload.revision + 1 || Object.keys(expected).some(name =>
+        name === 'configured' ? receipt.settings.configured.api_key !== expected.configured.api_key : receipt.settings[name] !== expected[name])) throw new Error('Foreign receipt');
+      runtimeStatus(receipt);
+      const unchanged = submittedDraft === draftStamp();
+      if(unchanged) apply(receipt); else needsLoad = true;
+      status('Saved local settings; no connectivity test or inference · 로컬 설정 저장; 연결·추론 미검사.' +
+        (unchanged ? '' : ' Later draft retained with its original revision; explicitly Load to review · 이후 편집 유지; 명시적으로 불러오세요.'));
+    } catch(error) {
+      if(!current()) return;
+      needsLoad = error.status !== 400;
+      // The shared fetch boundary throws on these statuses. Never echo its
+      // body or assume a non-2xx Response reaches this component.
+      status(error.status === 409
+        ? 'Conflict: nonsecret draft retained at its original revision. Explicitly Load and review; re-enter the key · 충돌: 편집 유지; 불러온 뒤 검토하고 키를 다시 입력하세요.'
+        : error.status === 400
+          ? 'Invalid settings; review the fields and key rules · 잘못된 설정; 필드와 키 규칙을 확인하세요.'
+          : 'Save outcome unknown; Load saved settings before retrying · 저장 결과 미확인; 다시 불러오세요.');
+    }
+    finally {
+      if(submittedKey === keyEditGeneration) clearKey();
+      delete settings.api_key;
+      if(owner === aiWriteOwner){
+        writing = false;
+        el('saveAISettings').disabled = !allowed() || needsLoad;
+        el('loadAISettings').disabled = !allowed();
+      }
+    }
+  }
+  async function load(){
+    if(writing || pageStopped || accessLost || !form.isConnected) return; // A read cannot reconcile a POST whose outcome is still pending.
+    stopAuthRecovery();
+    const owner = ++aiReadOwner;
+    readController?.abort();
+    readController = new AbortController();
+    const signal = readController.signal;
+    clearKey();
+    const draft = draftStamp();
+    needsLoad = true;
+    el('saveAISettings').disabled = true;
+    status('Loading saved settings… · 저장된 설정 불러오는 중…');
+    const owned = () => owner === aiReadOwner && !signal.aborted && !pageStopped && !accessLost && form.isConnected;
+    const current = () => owned() && allowed();
+    try {
+      await window.TraceAuth.ready;
+      if(!current()) return;
+      el('loadAISettings').disabled = false;
+      const receipt = await window.TraceAuth.readJSON('/ai/settings', {cache:'no-store', signal});
+      if(!current()) return;
+      validateReceipt(receipt);
+      if(draft !== draftStamp()){
+        status('Later draft retained with its original revision. Explicitly Load to discard it · 이후 편집 유지; 폐기하려면 명시적으로 불러오세요.');
+        return;
+      }
+      apply(receipt);
+      status('Loaded saved AI settings · 저장된 AI 설정을 불러왔습니다.');
+    } catch(_) {
+      // A transient auth failure is still ours to report, but grants no access.
+      if(!owned() || (!allowed() && (window.TraceAuth.user || window.TraceAuth.accessInvalidated))) return;
+      needsLoad = true;
+      el('saveAISettings').disabled = true;
+      el('loadAISettings').disabled = !allowed();
+      status('Load failed; explicitly Load to retry · 불러오기 실패; 다시 불러오세요.');
+      if(!window.TraceAuth.user) stopAuthRecovery = window.TraceAuth.onReady?.(() => {
+        stopAuthRecovery();
+        if(!owned() || !allowed() || writing) return;
+        // Recovery makes the explicit action reachable, never reloads a draft.
+        el('loadAISettings').disabled = false;
+        status('Authentication restored; explicitly Load to review · 인증 복구됨; 명시적으로 불러오세요.');
+      }) || (() => {});
+    }
+  }
+  el('loadAISettings').addEventListener('click', load);
+  return {open() { if(!opened) { opened = true; load(); } }};
+})();
+
 function settingsDraftStamp(sectionId){
   const section = document.getElementById(sectionId);
   if(!section._draftBound){
     section._draftBound = true;
     section._draftGeneration = 0;
     const changed = event=>{
-      if(event.target.matches('input, select, textarea') && event.target.id !== 'domainSettingsSearch') ++section._draftGeneration;
+      if(event.target.matches('input, select, textarea') && !event.target.closest('#aiSettingsForm') && event.target.id !== 'domainSettingsSearch') ++section._draftGeneration;
     };
     section.addEventListener('input', changed);
     section.addEventListener('change', changed);
   }
   return JSON.stringify([section._draftGeneration,
     sectionId === 'alertsSection' ? alertRevision : configRevision,
-    [...section.querySelectorAll('input, select, textarea')].filter(el=>el.id !== 'domainSettingsSearch').map(el=>[el.id, el.className, el.value, el.checked])]);
+    [...section.querySelectorAll('input, select, textarea')].filter(el=>el.id !== 'domainSettingsSearch' && !el.closest('#aiSettingsForm')).map(el=>[el.id, el.className, el.value, el.checked])]);
 }
 
 function setAlertSettingsStatus(message, kind){
@@ -3928,6 +4143,16 @@ function showSettingsTab(tab){
   const btnDomains = document.getElementById('settingsTabDomains');
   const btnCustom = document.getElementById('settingsTabCustom');
   const btnAlerts = document.getElementById('settingsTabAlerts');
+  const ai = document.getElementById('aiSettingsSection');
+  const btnAI = document.getElementById('settingsTabAI');
+  if(ai) ai.style.display = tab === 'ai' ? 'block' : 'none';
+  if(btnAI){ btnAI.classList.toggle('active', tab === 'ai'); btnAI.setAttribute('aria-pressed', String(tab === 'ai')); }
+  if(tab === 'ai'){
+    dom.style.display = custom.style.display = alerts.style.display = customTitle.style.display = 'none';
+    [btnDomains, btnCustom, btnAlerts].forEach(button => button.classList.remove('active'));
+    aiSettingsPanel.open();
+    return;
+  }
   if(tab === 'custom'){
     dom.style.display = 'none'; custom.style.display = 'block';
     alerts.style.display = 'none';
@@ -3958,6 +4183,7 @@ function showSettingsTab(tab){
 document.getElementById('settingsTabDomains').onclick = ()=> showSettingsTab('domains');
 document.getElementById('settingsTabCustom').onclick = ()=> showSettingsTab('custom');
 document.getElementById('settingsTabAlerts').onclick = ()=> showSettingsTab('alerts');
+document.getElementById('settingsTabAI')?.addEventListener('click', ()=> showSettingsTab('ai'));
 document.getElementById('loadAlertSettingsBtn').onclick = ()=> loadAlertSettings();
 document.getElementById('saveAlertSettingsBtn').onclick = ()=> saveAlertSettings();
 if(window.TraceTeamsTest) window.TraceTeamsTest.bind(() => alertSettingsReady ? alertRevision : null);
@@ -5069,16 +5295,17 @@ window.addEventListener('load', ()=>{
   updateRefreshStateBadge();
   updateOverviewPanel();
   const openAlertsSettings = (window.location.hash || '').toLowerCase() === '#settings-alerts';
+  const openAISettings = window.location.hash === '#settings-ai';
   
   // Initialize sections
   try {
-    showSection(openAlertsSettings ? 'settings' : 'status');
+    showSection(openAlertsSettings || openAISettings ? 'settings' : 'status');
   } catch(e) {
     console.error('Failed to show settings section:', e);
   }
   
   try {
-    showSettingsTab(openAlertsSettings ? 'alerts' : 'domains');
+    showSettingsTab(openAISettings ? 'ai' : openAlertsSettings ? 'alerts' : 'domains');
   } catch(e) {
     console.error('Failed to show settings tab:', e);
   }
@@ -6810,7 +7037,7 @@ function openIpRelationshipEvidence(title, record, button, cache, generation){
   const source = ipRelationshipAISources.get(cache);
   if(source?.eligible && cache.pairs?.includes(record)){
     const owner = ipRelationshipEvidenceOwner;
-    const entry = viewNode('button','Local AI assistance · 로컬 AI 도움');
+    const entry = viewNode('button','AI assistance · AI 도움');
     entry.type='button'; entry.id='pairLocalAI';
     const host = viewNode('div'); host.id='pairLocalAIPanel';
     const isCurrent = ()=>ipRelationshipEvidenceOwner === owner && window.IP_REL_CACHE === cache &&

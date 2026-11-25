@@ -6,6 +6,7 @@ Provides simple read/write helpers and domain normalization.
 import json
 import logging
 import os
+import stat
 import tempfile
 from copy import deepcopy
 
@@ -151,6 +152,47 @@ def read_config(path):
     except Exception as e:
         logging.warning("read_config failed (%s): %s", path, e)
         return {}
+
+
+# Outcome proofs are bounded byte comparisons, not the lossy startup reader.
+CONFIG_PROOF_BYTES = 8 * 1024 * 1024
+
+
+def config_image(cfg):
+    image = bytearray()
+    for part in json.JSONEncoder(ensure_ascii=False, indent=2).iterencode(cfg):
+        encoded = part.encode('utf-8')
+        if len(image) + len(encoded) > CONFIG_PROOF_BYTES:
+            raise ValueError('config proof unavailable')
+        image.extend(encoded)
+    return bytes(image)
+
+
+def read_config_image(path):
+    """Exact local file visibility, or absence; unsupported shapes raise.
+
+    NONBLOCK prevents a FIFO open/read from waiting for a peer. Never follow a
+    symlink, parse untrusted JSON, log content, or read more than the fixed cap.
+    This is not a power-loss or arbitrary cross-process writer guarantee.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > CONFIG_PROOF_BYTES:
+            raise ValueError('config proof unavailable')
+        image = os.read(fd, before.st_size + 1)
+        after = os.fstat(fd)
+        current = os.stat(path, follow_symlinks=False)
+        identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+        if (len(image) != before.st_size or identity(before) != identity(after)
+                or identity(after) != identity(current)):
+            raise ValueError('config proof unavailable')
+        return image
+    finally:
+        os.close(fd)
 
 
 def write_config(path, cfg):

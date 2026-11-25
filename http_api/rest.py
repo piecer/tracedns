@@ -14,6 +14,7 @@ ROUTES = {
     '/delivery-resend': {'POST': 'POST'},
     '/delivery-health': {'GET': 'GET'},
     '/delivery-diagnostics': {'GET': 'GET'},
+    '/ai/settings': {'GET': 'GET', 'POST': 'POST'},
     '/ai/status': {'GET': 'GET'},
     '/ai/jobs': {'POST': 'POST'},
     '/ai/jobs/{job_id}': {'GET': 'GET'},
